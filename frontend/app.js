@@ -1,5 +1,4 @@
 
-
 // ExamPartner MVP client (auth + browse + Paystack upgrade) + filters + admin mini tools
 
 const els = (id) => document.getElementById(id);
@@ -24,13 +23,6 @@ function focusViewer() {
 }
 
 let activeQuestionId = null;
-// --- List pagination (users should not set offset manually)
-const LIST_LIMIT = 20;
-let listOffset = 0;
-let lastGoodOffset = 0;
-let lastGoodItems = [];
-let endReached = false;
-
 
 // Viewer navigation + option state
 let currentListIds = [];      // IDs from the current rendered list
@@ -552,97 +544,27 @@ async function doLogout() {
   updateAdminUI();
 }
 
-async async function loadList(targetOffset = listOffset) {
+async function loadList() {
   saveApiBase();
   const mode = els("mode").value;
-
-  // Normalize offset
-  let offset = parseInt(String(targetOffset ?? 0), 10);
-  if (Number.isNaN(offset) || offset < 0) offset = 0;
+  const offset = parseInt(els("offset").value || "0", 10) || 0;
 
   els("paywall").hidden = true;
   setStatus("Loading…", "ok");
 
   const filterQs = buildFilterQuery();
-  const r = await api(`/questions/${mode}?limit=${LIST_LIMIT}&offset=${offset}${filterQs}`);
+  const r = await api(`/questions/${mode}?limit=20&offset=${offset}${filterQs}`);
 
-  // Unpaid preview limit hit
   if (r?.paywall) {
-    setStatus("Preview limit reached. Please upgrade to continue.", "bad");
+    setStatus("Preview limit reached. Please upgrade.", "bad");
+    els("list").innerHTML = "";
     els("paywall").hidden = false;
-
-    // keep the last good page visible
-    if (lastGoodItems?.length) renderList(lastGoodItems);
-
-    // stop further paging forward
-    endReached = true;
-    updatePagerUI();
     return;
   }
 
-  const items = r?.items || [];
-
-  // Past-the-end paging
-  if (!items.length) {
-    if (offset === 0) {
-      // Legit empty dataset / filters
-      listOffset = 0;
-      lastGoodOffset = 0;
-      lastGoodItems = [];
-      endReached = true;
-      renderList(items);
-      setStatus("No questions found. Try clearing filters.", "bad");
-      updatePagerUI();
-      return;
-    }
-
-    // Revert to last good page
-    els("offset").value = String(lastGoodOffset);
-    listOffset = lastGoodOffset;
-    renderList(lastGoodItems);
-
-    endReached = true;
-    setStatus(`End reached. No more questions after offset ${offset}.`, "bad");
-    updatePagerUI();
-    return;
-  }
-
-  // Success
-  listOffset = offset;
-  els("offset").value = String(offset);
-
-  lastGoodOffset = offset;
-  lastGoodItems = items;
-  endReached = items.length < LIST_LIMIT; // if fewer than a page, likely last page
-
-  renderList(items);
-
-  const startN = offset + 1;
-  const endN = offset + items.length;
-  setStatus(`Showing ${startN}–${endN}.`, "ok");
-
-  updatePagerUI();
+  renderList(r.items);
+  setStatus(`Loaded ${r.items?.length || 0} items.`, "ok");
 }
-
-function updatePagerUI() {
-  const info = els("pageInfo");
-  const btnPrev = els("btnPagePrev");
-  const btnNext = els("btnPageNext");
-
-  if (info) {
-    if (!lastGoodItems?.length) {
-      info.textContent = "";
-    } else {
-      const startN = listOffset + 1;
-      const endN = listOffset + (lastGoodItems?.length || 0);
-      info.textContent = `Showing ${startN}–${endN}`;
-    }
-  }
-
-  if (btnPrev) btnPrev.disabled = listOffset <= 0;
-  if (btnNext) btnNext.disabled = endReached || !lastGoodItems?.length;
-}
-
 
 function updateUpgradeUI() {
   const btnPay = els("btnPay");
@@ -952,26 +874,8 @@ function init() {
   els("btnLogin").onclick = doLogin;
   els("btnLogout").onclick = doLogout;
 
-  els("btnLoad").onclick = () => { endReached = false; loadList(0); };
+  els("btnLoad").onclick = loadList;
   els("btnClose").onclick = closeViewer;
-  // List paging buttons (Prev/Next page)
-  const btnPagePrev = els("btnPagePrev");
-  if (btnPagePrev) {
-    btnPagePrev.onclick = () => {
-      if (listOffset <= 0) return;
-      endReached = false;
-      loadList(Math.max(0, listOffset - LIST_LIMIT));
-    };
-  }
-
-  const btnPageNext = els("btnPageNext");
-  if (btnPageNext) {
-    btnPageNext.onclick = () => {
-      if (endReached) return;
-      loadList(listOffset + LIST_LIMIT);
-    };
-  }
-
 
   const btnPractice = els("btnPractice");
   if (btnPractice) btnPractice.onclick = () => {
@@ -1024,7 +928,6 @@ if (btnNext) {
   const btnAdminClear = els("btnAdminClear");
   if (btnAdminClear) btnAdminClear.onclick = adminClearKey;
 
-  updatePagerUI();
   refreshMe();
 }
 
