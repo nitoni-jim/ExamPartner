@@ -50,6 +50,10 @@ logger = logging.getLogger("exampartner")
 # APP
 # -----------------------------
 app = FastAPI(title="ExamPartner API", version="1.0.0")
+@app.get("/health")
+def health():
+    return {"ok": True, "service": "ExamPartner API"}
+
 
 app.add_middleware(
     CORSMiddleware,
