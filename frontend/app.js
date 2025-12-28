@@ -23,6 +23,10 @@ function focusViewer() {
 }
 
 let activeQuestionId = null;
+// Pagination helpers (limit=20)
+let lastGoodOffset = 0;
+let lastGoodItems = [];
+
 
 // Viewer navigation + option state
 let currentListIds = [];      // IDs from the current rendered list
@@ -547,13 +551,17 @@ async function doLogout() {
 async function loadList() {
   saveApiBase();
   const mode = els("mode").value;
-  const offset = parseInt(els("offset").value || "0", 10) || 0;
+  const limit = 20;
+
+  // normalize offset (>=0 and step-friendly)
+  let offset = parseInt(els("offset").value || "0", 10);
+  if (Number.isNaN(offset) || offset < 0) offset = 0;
 
   els("paywall").hidden = true;
   setStatus("Loading…", "ok");
 
   const filterQs = buildFilterQuery();
-  const r = await api(`/questions/${mode}?limit=20&offset=${offset}${filterQs}`);
+  const r = await api(`/questions/${mode}?limit=${limit}&offset=${offset}${filterQs}`);
 
   if (r?.paywall) {
     setStatus("Preview limit reached. Please upgrade.", "bad");
@@ -562,8 +570,34 @@ async function loadList() {
     return;
   }
 
-  renderList(r.items);
-  setStatus(`Loaded ${r.items?.length || 0} items.`, "ok");
+  const items = r?.items || [];
+
+  // ✅ Case: user went past the end (no items)
+  if (!items.length) {
+    // If this is the first page, just show empty state
+    if (offset === 0) {
+      renderList(items);
+      setStatus("No questions found for these filters.", "bad");
+      return;
+    }
+
+    // Otherwise, revert to last good page
+    els("offset").value = String(lastGoodOffset);
+    renderList(lastGoodItems);
+
+    setStatus(
+      `End reached. There are no more questions after offset ${offset}. Returned to offset ${lastGoodOffset}.`,
+      "bad"
+    );
+    return;
+  }
+
+  // ✅ Normal success: save good page
+  lastGoodOffset = offset;
+  lastGoodItems = items;
+
+  renderList(items);
+  setStatus(`Loaded ${items.length} items.`, "ok");
 }
 
 function updateUpgradeUI() {
