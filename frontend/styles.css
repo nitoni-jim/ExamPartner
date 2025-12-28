@@ -1,0 +1,574 @@
+
+
+:root {
+  --bg: #0b1020;
+  --card: #111827;
+  --muted: #9ca3af;
+  --text: #e5e7eb;
+  --line: #1f2937;
+  --accent: #60a5fa;
+  --danger: #fb7185;
+  --ok: #34d399;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  background: radial-gradient(1200px 600px at 50% -10%, #1f2a44 0%, var(--bg) 45%);
+  color: var(--text);
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: rgba(17, 24, 39, 0.92);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(8px);
+}
+
+.brand { display: flex; gap: 10px; align-items: center; }
+.logo {
+  width: 34px; height: 34px; border-radius: 10px;
+  display: grid; place-items: center;
+  background: linear-gradient(180deg, #2563eb, #60a5fa);
+  font-weight: 900;
+}
+.title { font-weight: 800; letter-spacing: 0.2px; }
+.subtitle { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+.container { max-width: 980px; margin: 0 auto; padding: 14px; }
+.card {
+  background: rgba(17, 24, 39, 0.78);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+  margin-bottom: 14px;
+}
+
+.grid2 {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+@media (min-width: 860px) {
+  .grid2 { grid-template-columns: 1fr 1fr; }
+}
+
+.panel {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(3, 7, 18, 0.35);
+}
+
+h2, h3 { margin: 8px 0 10px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.row.space { justify-content: space-between; }
+.col { flex: 1; min-width: 230px; }
+.col.actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+.label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 6px; }
+.label.small { margin: 0; }
+.hint { margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.3; }
+
+.input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(0,0,0,0.22);
+  color: var(--text);
+  outline: none;
+}
+.input.small { width: 86px; }
+
+.btn {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid #2b3548;
+  background: rgba(96, 165, 250, 0.18);
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+}
+.btn:active { transform: translateY(1px); }
+.btn.ghost {
+  background: rgba(255,255,255,0.06);
+}
+
+.status {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(0,0,0,0.22);
+  border: 1px dashed #2b3548;
+  color: var(--muted);
+}
+
+.status.ok { border-color: rgba(52, 211, 153, 0.35); color: rgba(52, 211, 153, 0.95); }
+.status.bad { border-color: rgba(251, 113, 133, 0.35); color: rgba(251, 113, 133, 0.95); }
+
+.divider {
+  height: 1px;
+  background: var(--line);
+  margin: 12px 0;
+}
+
+.access {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(96, 165, 250, 0.25);
+  background: rgba(96, 165, 250, 0.08);
+}
+
+.list { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; }
+.item {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(0,0,0,0.18);
+  cursor: pointer;
+}
+.item .id { font-weight: 900; color: var(--accent); }
+.item .txt { margin-top: 6px; color: var(--text); line-height: 1.25; }
+.item .meta { margin-top: 6px; font-size: 12px; color: var(--muted); }
+
+.meta { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+.qtext { font-size: 16px; line-height: 1.4; white-space: pre-wrap; }
+.options { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.opt {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(0,0,0,0.18);
+  white-space: pre-wrap;
+}
+
+.answer, .explain {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(52, 211, 153, 0.20);
+  background: rgba(52, 211, 153, 0.06);
+  white-space: pre-wrap;
+}
+
+.footer { text-align: center; color: var(--muted); font-size: 12px; padding: 10px; }
+
+/* Paystack section tweaks */
+#btnPay {
+  border-color: rgba(52, 211, 153, 0.35);
+  background: rgba(52, 211, 153, 0.14);
+}
+
+#payMsg {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px dashed #2b3548;
+  background: rgba(0,0,0,0.18);
+  color: var(--muted);
+}
+
+/* =========================
+   Viewer v1: focus + auto-collapse list
+   ========================= */
+
+/* When viewer is open, make it feel like "new context" */
+body.viewer-open #viewer {
+  border-color: rgba(96, 165, 250, 0.45);
+  box-shadow:
+    0 0 0 2px rgba(96, 165, 250, 0.20),
+    0 16px 50px rgba(0,0,0,0.35);
+}
+
+/* Small "flash" animation so user instantly knows something changed */
+@keyframes viewerFlash {
+  0%   { transform: translateY(0); }
+  25%  { transform: translateY(-2px); }
+  100% { transform: translateY(0); }
+}
+#viewer.viewer-flash {
+  animation: viewerFlash 240ms ease-out;
+}
+
+/* Optional but powerful: collapse list slightly so attention shifts */
+/* ✅ Always keep #list a scroll container so it never resets to top */
+#list {
+  overflow: auto;
+  max-height: none; /* normal full height when viewer is closed */
+  transition: max-height 180ms ease, opacity 180ms ease;
+}
+
+/* When viewer is open, only shrink height + fade (do NOT change overflow) */
+body.viewer-open #list {
+  max-height: 260px;  /* adjust to taste */
+  opacity: 0.78;
+}
+
+
+/* Make list feel less clickable when viewer is open (but still usable) */
+body.viewer-open .item {
+  opacity: 0.92;
+}
+
+/* =========================
+   Question card highlight (Viewer v1)
+   ========================= */
+
+.item {
+  transition: background-color 160ms ease, border-color 160ms ease, opacity 160ms ease;
+}
+
+/* Highlight the active question */
+.item.active-question {
+  background-color: rgba(96, 165, 250, 0.12);
+  border-left: 4px solid #60a5fa;
+  opacity: 1;
+}
+
+/* Slightly dim others when a question is open */
+body.viewer-open .item:not(.active-question) {
+  opacity: 0.65;
+}
+
+.item.active-question {
+  scroll-margin-top: 12px; /* helps when scrollIntoView aligns */
+}
+
+
+/* ---- A1: Header + Practice entry ---- */
+.topbar-right { display: flex; align-items: center; gap: 10px; }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(16, 185, 129, 0.12);
+  color: rgba(167, 243, 208, 0.95);
+}
+
+.h2-tight { margin: 0; line-height: 1.1; }
+
+
+/* =========================
+   Option interaction (visual only)
+   ========================= */
+
+.opt {
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 160ms ease, background-color 160ms ease;
+}
+.opt:hover { transform: translateY(-1px); }
+.opt.selected {
+  border-color: rgba(96, 165, 250, 0.55);
+  background: rgba(96, 165, 250, 0.14);
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.18);
+}
+
+/* =========================
+   Sticky bottom actions (Viewer)
+   ========================= */
+
+.viewer-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+
+  padding: 10px;
+  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  margin-top: 12px;
+
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+
+  background: rgba(9, 12, 18, 0.72);
+  backdrop-filter: blur(10px);
+}
+.viewer-actions-spacer { flex: 1; }
+
+#viewer { padding-bottom: 14px; }
+/* =========================
+   A2: Collapsible Filters
+   ========================= */
+
+.filters-panel {
+  margin-top: 12px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.03);
+  overflow: hidden;
+}
+
+.filters-panel > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 12px 14px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+}
+
+/* Hide default arrow */
+.filters-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Custom chevron */
+.filters-panel > summary::after {
+  content: "▾";
+  opacity: 0.8;
+  transition: transform 180ms ease;
+}
+
+.filters-panel[open] > summary::after {
+  transform: rotate(180deg);
+}
+
+/* Inner spacing */
+.filters-panel > summary + * {
+  padding: 0 14px 14px 14px;
+}
+
+@media (max-width: 520px) {
+  .filters-panel > summary {
+    padding: 12px;
+  }
+  .filters-panel > summary + * {
+    padding: 0 12px 12px 12px;
+  }
+}
+/* =========================
+   A3: Question list hierarchy
+   ========================= */
+
+.card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.qid {
+  font-weight: 800;
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(96,165,250,0.14);
+  border: 1px solid rgba(96,165,250,0.35);
+}
+
+.pill {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  opacity: 0.85;
+}
+
+.item .qtext {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  margin-bottom: 6px;
+}
+
+/* =========================
+   B1: Theme polish (safe)
+   ========================= */
+
+/* Slightly improve global readability */
+:root {
+  --radius: 16px;
+  --radius-sm: 12px;
+  --shadow: 0 10px 26px rgba(0,0,0,0.28);
+  --shadow-sm: 0 6px 16px rgba(0,0,0,0.18);
+}
+
+/* Softer app containers */
+.panel, .box, .filters-panel, .viewer {
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Headings feel intentional */
+h1, h2, h3 {
+  letter-spacing: -0.2px;
+}
+
+.section-title {
+  font-size: 18px;
+  font-weight: 800;
+  margin: 4px 0 2px 0;
+}
+
+.subtle {
+  opacity: 0.78;
+}
+
+/* Buttons: consistent sizing + tap comfort */
+.btn {
+  border-radius: 14px;
+  padding: 11px 14px;
+  font-weight: 750;
+  letter-spacing: 0.1px;
+  transition: transform 120ms ease, filter 160ms ease, background-color 160ms ease, border-color 160ms ease;
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn.ghost {
+  background: rgba(255,255,255,0.04);
+  border-color: rgba(255,255,255,0.12);
+}
+
+.btn.ghost:hover {
+  background: rgba(255,255,255,0.06);
+}
+
+/* Inputs feel cleaner */
+input, select {
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.10);
+}
+
+input:focus, select:focus {
+  outline: none;
+  border-color: rgba(96, 165, 250, 0.55);
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.14);
+}
+
+/* Status messages: clearer */
+.status.ok { border-color: rgba(34, 197, 94, 0.35); }
+.status.bad { border-color: rgba(239, 68, 68, 0.35); }
+
+/* Viewer: tighten spacing + clarity */
+#viewer {
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+#qTitle {
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: -0.2px;
+}
+
+#qMeta {
+  opacity: 0.75;
+}
+
+/* Make list feel a bit more “app-like” */
+#list {
+  scroll-behavior: smooth;
+}
+
+/* Optional: reduce “busy” look on very small screens */
+@media (max-width: 520px) {
+  .btn { width: 100%; }
+  .viewer-actions { gap: 8px; }
+  .viewer-actions .viewer-actions-spacer { display: none; }
+}
+
+/* =========================
+   B2: Brand accent tuning
+   ========================= */
+
+/* Brand accents (single source of truth) */
+:root{
+  --brand: rgba(96, 165, 250, 1);          /* blue accent */
+  --brand-weak: rgba(96, 165, 250, 0.14);  /* soft bg */
+  --brand-line: rgba(96, 165, 250, 0.42);  /* borders */
+  --brand-glow: rgba(96, 165, 250, 0.18);  /* glow */
+}
+
+/* Links / highlights */
+a, .link {
+  color: var(--brand);
+}
+
+/* Primary button: consistent “ExamPartner” feel */
+.btn:not(.ghost) {
+  border-color: var(--brand-line);
+  background: rgba(96, 165, 250, 0.18);
+}
+
+.btn:not(.ghost):hover {
+  background: rgba(96, 165, 250, 0.24);
+}
+
+.btn:not(.ghost):active {
+  background: rgba(96, 165, 250, 0.20);
+}
+
+/* Paid badge / chips feel branded */
+.badge,
+.pill,
+.qid,
+.item .id {
+  border-color: var(--brand-line);
+}
+
+/* Active question card — match brand */
+.item.active-question {
+  border-color: var(--brand-line);
+  background: var(--brand-weak);
+  box-shadow: 0 0 0 2px var(--brand-glow), 0 10px 22px rgba(0,0,0,0.20);
+}
+
+/* Option selected state — match brand */
+.opt.selected {
+  border-color: var(--brand-line);
+  background: var(--brand-weak);
+  box-shadow: 0 0 0 2px var(--brand-glow);
+}
+
+/* Inputs focus — match brand */
+input:focus, select:focus {
+  border-color: var(--brand-line);
+  box-shadow: 0 0 0 2px var(--brand-glow);
+}
+
+/* Filters panel summary accent on open */
+.filters-panel[open] > summary {
+  background: rgba(96, 165, 250, 0.06);
+}
+
+/* Viewer sticky actions panel border polish */
+.viewer-actions {
+  border-color: rgba(255,255,255,0.12);
+}
+
+/* Subtle separators feel consistent */
+hr {
+  border: none;
+  height: 1px;
+  background: rgba(255,255,255,0.10);
+}
+
