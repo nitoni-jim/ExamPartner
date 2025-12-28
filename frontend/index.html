@@ -11,132 +11,175 @@
   <link rel="stylesheet" href="styles.css" />
 
   <style>
-    /* tiny inline safety (optional) */
-    .muted { opacity: .85; }
+    .diagrams { margin: 12px 0; display: flex; flex-wrap: wrap; gap: 12px; }
+    .diagram-img { max-width: 100%; height: auto; border: 1px solid rgba(0,0,0,0.12); border-radius: 12px; }
+
+    .filters-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .filters-row label { font-size: 12px; opacity: 0.85; }
+    .filters-row select, .filters-row button { height: 38px; }
+
+    /* Admin mini tools */
+    .admin-row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:10px; }
+    .admin-row input { height: 38px; }
+    .admin-box { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(0,0,0,0.08); }
+    .admin-logs {
+      width: 100%;
+      min-height: 140px;
+      max-height: 280px;
+      overflow: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 12px;
+      white-space: pre;
+      padding: 10px;
+      border: 1px solid rgba(0,0,0,0.12);
+      border-radius: 12px;
+      background: rgba(0,0,0,0.02);
+    }
   </style>
 </head>
-
 <body>
-  <header class="top">
-    <div class="wrap row space">
-      <div class="brand">
-        <div class="logo">EP</div>
-        <div>
-          <div class="title">ExamPartner</div>
-          <div class="sub muted">NECO / WAEC / JAMB past questions practice</div>
-        </div>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">N</div>
+      <div>
+        <div class="title">ExamPartner</div>
+        <div class="subtitle">Your trusted partner for exam success</div>
       </div>
+    </div>
 
-      <div class="auth">
-        <span id="authState" class="pill">Guest</span>
-        <button id="btnLogout" class="btn ghost" type="button" hidden>Logout</button>
-      </div>
+    <div class="topbar-right">
+      <div class="chip" id="chipPaid" hidden>PAID</div>
     </div>
   </header>
 
   <main class="wrap">
-    <section class="card hero">
+    <section class="card">
+      <div class="row space">
+        <h2>Account & Settings</h2>
+      </div>
+
+      <div class="grid2">
+        <div class="col">
+          <label for="apiBase">Server URL (advanced)</label>
+          <input id="apiBase" type="text" placeholder="http://127.0.0.1:8000" />
+          <div class="hint">If you are using the hosted app, you can ignore this. For local testing, keep your server running.</div>
+        </div>
+        <div class="col actions">
+          <button id="btnCheck" class="btn">Check API</button>
+          <button id="btnLogout" class="btn ghost" hidden>Logout</button>
+        </div>
+      </div>
+
+      <div id="status" class="status">Not connected.</div>
+
+      <div class="grid2">
+        <div class="panel">
+          <h3>Login / Register</h3>
+          <div class="hint">Use phone or email as your identifier.</div>
+
+          <label for="identifier">Phone or Email</label>
+          <input id="identifier" type="text" placeholder="example@email.com or 0803..." />
+
+          <label for="password">Password</label>
+          <input id="password" type="password" placeholder="••••" />
+
+          <div class="row">
+            <button id="btnRegister" class="btn">Register</button>
+            <button id="btnLogin" class="btn ghost">Login</button>
+          </div>
+
+          <div id="authMsg" class="hint"></div>
+        </div>
+
+        <div class="panel">
+          <div class="row space">
+            <h3>Upgrade (Paystack)</h3>
+
+            <!-- ✅ Tiny Admin-only button -->
+            <button id="btnAdmin" class="btn ghost" type="button" title="Admin tools">Admin</button>
+          </div>
+
+          <div class="hint">Unlock more than the free preview limit.</div>
+
+          <div class="row">
+            <button id="btnPay" class="btn">Pay ₦1,000</button>
+            <button id="btnCheckPaid" class="btn ghost">Refresh Paid Status</button>
+          </div>
+
+          <!-- ✅ Admin tools (hidden unless admin key is set in sessionStorage) -->
+          <div id="adminTools" class="admin-box" hidden>
+
+            <div class="admin-row">
+              <input id="adminRef" class="input" type="text" placeholder="Reference e.g. EP_..." />
+              <button id="btnAdminReconcile" class="btn" type="button">Reconcile</button>
+              <button id="btnAdminClear" class="btn ghost" type="button">Exit Admin</button>
+            </div>
+
+            <!-- ✅ Refund mini UI -->
+            <div class="admin-row">
+              <input id="refundAmount" class="input" type="number" min="0" step="1" placeholder="Amount (kobo) optional" />
+              <input id="refundNote" class="input" type="text" placeholder="Merchant note (optional)" />
+              <button id="btnAdminRefund" class="btn ghost" type="button">Refund</button>
+            </div>
+
+            <!-- ✅ Audit logs mini UI -->
+            <div class="admin-row">
+              <input id="auditLimit" class="input" type="number" min="1" max="50" step="1" value="20" />
+              <button id="btnAdminAudit" class="btn ghost" type="button">View Audit Logs</button>
+              <button id="btnAdminAuditClear" class="btn ghost" type="button">Clear</button>
+            </div>
+
+            <div id="auditBox" class="admin-logs" hidden></div>
+          </div>
+
+          <div id="payMsg" class="hint"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
       <div class="row space">
         <div>
-          <h1>Practice smarter. Improve faster.</h1>
-          <p class="muted">
-            Browse questions, view diagrams, and upgrade when you’re ready.
-          </p>
+          <h2 class="h2-tight">📘 Practice Questions</h2>
+          <div id="practiceMeta" class="hint">NECO • Mathematics • 2023</div>
         </div>
-        <div class="hero-actions">
+
+        <div class="row" style="gap:10px; flex-wrap:wrap; align-items:center;">
           <button id="btnPractice" class="btn" type="button">Start Practice</button>
+
+          <select id="mode">
+            <option value="objective">Objective</option>
+            <option value="theory">Theory</option>
+          </select>
+
+          <input id="offset" type="number" min="0" step="10" value="0" />
+          <button id="btnLoad" class="btn">Load</button>
         </div>
       </div>
-
-      <div class="row" style="gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px;">
-        <select id="mode">
-          <option value="objective">Objective</option>
-          <option value="theory">Theory</option>
-        </select>
-
-        <div class="pager">
-          <button id="btnPagePrev" class="btn ghost" type="button" disabled>Prev</button>
-          <button id="btnPageNext" class="btn ghost" type="button" disabled>Next</button>
-          <div id="pageInfo" class="pageinfo"></div>
-        </div>
-      </div>
-    </section>
 
     <details id="filtersPanel" class="filters-panel">
-      <summary>Filters</summary>
-      <div class="filters-row" style="margin-top:10px;">
-        <label for="examFilter">Exam</label>
-        <select id="examFilter"></select>
+       <summary>Filters</summary>  
+       <div class="filters-row" style="margin-top:10px;">
+          <label for="examFilter">Exam</label>
+          <select id="examFilter"></select>
 
-        <label for="yearFilter">Year</label>
-        <select id="yearFilter"></select>
+          <label for="yearFilter">Year</label>
+          <select id="yearFilter"></select>
 
-        <label for="subjectFilter">Subject</label>
-        <select id="subjectFilter"></select>
+          <label for="subjectFilter">Subject</label>
+          <select id="subjectFilter"></select>
 
-        <button id="btnClearFilters" class="btn ghost" type="button">Clear Filters</button>
-      </div>
+          <button id="btnClearFilters" class="btn ghost" type="button">Clear Filters</button>
+       </div>
     </details>
 
-    <!-- Start Gate (First-run selection) -->
-    <div id="startGate" class="startgate" hidden>
-      <div class="startgate-title">Choose your exam to start</div>
-      <div class="startgate-text">
-        Select <b>Exam</b> and <b>Subject</b> in Filters, then questions will load automatically.
-      </div>
-      <button id="btnOpenFilters" class="btn" type="button">Open Filters</button>
-    </div>
-
-    <div id="status" class="status ok">Ready.</div>
-
-    <div id="list" class="list"></div>
-
-    <section id="paywall" class="pay card" hidden>
-      <div class="paywall-title">Upgrade required</div>
-      <div class="paywall-text">Please upgrade to continue browsing.</div>
-
-      <div class="row" style="gap:10px; flex-wrap:wrap; margin-top:10px;">
-        <button id="btnPay" class="btn" type="button">Upgrade</button>
-        <button id="btnCheckPaid" class="btn ghost" type="button">I already paid</button>
-      </div>
-      <div id="payHint" class="muted" style="margin-top:10px;"></div>
-    </section>
-
-    <section class="card authbox">
-      <h2>Account</h2>
-      <div class="row" style="gap:10px; flex-wrap:wrap;">
-        <input id="email" placeholder="Email" />
-        <input id="password" placeholder="Password" type="password" />
-      </div>
-
-      <div class="row" style="gap:10px; flex-wrap:wrap; margin-top:10px;">
-        <button id="btnRegister" class="btn ghost" type="button">Create account</button>
-        <button id="btnLogin" class="btn" type="button">Login</button>
-      </div>
-
-      <div class="adv" style="margin-top:14px;">
-        <h3>Account & Settings</h3>
-
-        <div class="grid2">
-          <div>
-            <label>Server URL (advanced)</label>
-            <input id="apiBase" placeholder="https://exampartner-backend.onrender.com" />
-            <div class="muted" style="margin-top:6px;">
-              If you are using the hosted app, you can ignore this. For local testing, keep your server running.
-            </div>
-          </div>
-          <div class="row" style="gap:10px; align-items:flex-end; flex-wrap:wrap;">
-            <button id="btnCheck" class="btn ghost" type="button">Check API</button>
-          </div>
-        </div>
+      <div id="list" class="list"></div>
+      <div id="paywall" class="paywall" hidden>
+        <div class="paywall-title">Preview limit reached</div>
+        <div class="paywall-text">Please upgrade to continue browsing.</div>
       </div>
     </section>
 
-    <footer class="muted" style="margin: 18px 0;">
-      © <span id="yr"></span> ExamPartner
-    </footer>
-
-    <!-- Viewer -->
     <section id="viewer" class="card" hidden>
       <div class="row space">
         <h2 id="qTitle">Question</h2>
@@ -147,26 +190,29 @@
       <div id="qText" class="qtext"></div>
       <div id="qDiagrams" class="diagrams"></div>
 
-      <div id="qOptions" class="opts"></div>
+      <div id="qOptions" class="options"></div>
 
-      <div class="row" style="gap:10px; margin-top:12px;">
-        <button id="btnPrev" class="btn ghost" type="button">Prev Question</button>
-        <button id="btnNext" class="btn ghost" type="button">Next Question</button>
-      </div>
+      <div class="divider"></div>
 
-      <details class="card" style="margin-top:12px;">
-        <summary>Answer & Explanation</summary>
-        <div id="qAnswer" class="answer"></div>
-        <div id="qExplain" class="explain"></div>
-      </details>
+      <div id="viewerActions" class="viewer-actions">
+  <button id="btnPrev" class="btn ghost" type="button">◀ Prev</button>
+  <button id="btnNext" class="btn ghost" type="button">Next ▶</button>
+
+  <div class="viewer-actions-spacer"></div>
+
+  <button id="btnReveal" class="btn" type="button">Reveal Answer</button>
+  <button id="btnExplain" class="btn ghost" type="button">Show Explanation / Steps</button>
+</div>
+
+      <div id="qExplain" class="explain" hidden></div>
     </section>
+
+    <footer class="footer">
+      <div>© <span id="yr"></span> ExamPartner MVP • Built to ship fast.</div>
+    </footer>
   </main>
 
-  <script src="app.js"></script>
-  <script>
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("./sw.js").catch(() => {});
-    }
-  </script>
+  <script src="https://js.paystack.co/v1/inline.js"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>
