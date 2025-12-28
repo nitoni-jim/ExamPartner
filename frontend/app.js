@@ -1,14 +1,10 @@
 
+
 // ExamPartner MVP client (auth + browse + Paystack upgrade) + filters + admin mini tools
 
 const els = (id) => document.getElementById(id);
 const apiBaseNoSlash = () => (state.apiBase || "").replace(/\/$/, "");
 const FILTERS_PANEL_OPEN = "ep_filters_open";
-
-const PAGE_LIMIT = 20;
-let pageOffset = 0;
-let lastGoodOffset = 0;
-let lastGoodItems = [];
 
 function setViewerOpen(isOpen) {
   document.body.classList.toggle("viewer-open", !!isOpen);
@@ -16,161 +12,229 @@ function setViewerOpen(isOpen) {
 
 function focusViewer() {
   const viewer = els("viewer");
-  if (viewer) viewer.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (!viewer) return;
+
+  // Re-trigger the flash animation
+  viewer.classList.remove("viewer-flash");
+  void viewer.offsetWidth; // force reflow
+  viewer.classList.add("viewer-flash");
+
+  // ✅ Auto-scroll so user cannot miss it
+  viewer.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function setStatus(msg, kind = "ok") {
-  const el = els("status");
+let activeQuestionId = null;
+// --- List pagination (users should not set offset manually)
+const LIST_LIMIT = 20;
+let listOffset = 0;
+let lastGoodOffset = 0;
+let lastGoodItems = [];
+let endReached = false;
+
+
+// Viewer navigation + option state
+let currentListIds = [];      // IDs from the current rendered list
+let currentIndex = -1;        // index of activeQuestionId within currentListIds
+let selectedOptionKey = null; // visual-only option highlight
+
+function highlightQuestionCard(qid) {
+  const items = document.querySelectorAll(".item");
+  items.forEach((el) => {
+    if (el.dataset.qid === qid) {
+      el.classList.add("active-question");
+    } else {
+      el.classList.remove("active-question");
+    }
+  });
+}
+
+function clearQuestionHighlight() {
+  const items = document.querySelectorAll(".item");
+  items.forEach((el) => el.classList.remove("active-question"));
+  activeQuestionId = null;
+}
+
+function ensureActiveCardVisibleInList(qid) {
+  const list = els("list");
+  if (!list) return;
+
+  const el = list.querySelector(`.item[data-qid="${CSS.escape(qid)}"]`);
   if (!el) return;
-  el.className = `status ${kind}`;
-  el.textContent = msg || "";
+
+  // Best UX: make selected question actually visible (centered) inside the list container
+  el.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
 }
 
-function escapeHtml(s) {
-  return String(s || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+function syncCurrentIndexFromId(qid) {
+  currentIndex = currentListIds.indexOf(qid);
 }
 
-function trimText(s, n) {
-  const t = String(s || "");
-  return t.length > n ? t.slice(0, n - 1) + "…" : t;
+function updatePrevNextButtons() {
+  const bPrev = els("btnPrev");
+  const bNext = els("btnNext");
+  if (!bPrev || !bNext) return;
+
+  bPrev.disabled = currentIndex <= 0;
+  bNext.disabled = currentIndex < 0 || currentIndex >= currentListIds.length - 1;
 }
 
-/** ------------------------------
- * State
- * ------------------------------ */
+function clearOptionSelection() {
+  selectedOptionKey = null;
+  const optBox = els("qOptions");
+  if (!optBox) return;
+  optBox.querySelectorAll(".opt").forEach((el) => el.classList.remove("selected"));
+}
+
+function renderDiagrams(diagrams) {
+  const box = els("qDiagrams");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!diagrams || !diagrams.length) return;
+
+  for (const name of diagrams) {
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = name;
+    img.className = "diagram-img";
+    img.src = `${apiBaseNoSlash()}/static/diagrams/${encodeURIComponent(name)}`;
+    box.appendChild(img);
+  }
+}
+function scrollToExplainBox() {
+  const exp = els("qExplain");
+  if (!exp) return;
+
+  // Ensure it’s visible before scrolling
+  exp.hidden = false;
+
+  exp.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+
+// ====== CONFIG ======
+const PAYSTACK_AMOUNT_NGN = 1000; // ₦1,000
+const PAYSTACK_CURRENCY = "NGN";
+// ====================
+
+// ---- Filter presets ----
+const EXAM_OPTIONS = ["", "NECO", "WAEC", "JAMB"];
+const SUBJECT_OPTIONS = ["", "Mathematics"];
+const YEAR_OPTIONS = (() => {
+  const now = new Date().getFullYear();
+  const years = [""];
+  for (let y = now; y >= 2000; y--) years.push(String(y));
+  return years;
+})();
+
+// Admin key stored ONLY in sessionStorage
+const ADMIN_KEY_STORAGE = "ep_admin_key";
+
 const state = {
   apiBase: localStorage.getItem("apiBase") || "https://exampartner-backend.onrender.com",
   token: localStorage.getItem("token") || "",
-  email: localStorage.getItem("email") || "",
+  
+  isPaid: false,
+  authenticated: false,
+  freeLimit: 10,
   busyPay: false,
-  user: null,
+
   filters: {
     exam: localStorage.getItem("filter_exam") || "",
     year: localStorage.getItem("filter_year") || "",
     subject: localStorage.getItem("filter_subject") || "",
   },
+
+  adminKey: sessionStorage.getItem(ADMIN_KEY_STORAGE) || "",
 };
 
-/** ------------------------------
- * API helpers
- * ------------------------------ */
-async function api(path, opts = {}) {
-  const url = apiBaseNoSlash() + path;
-  const headers = opts.headers || {};
-  if (state.token) headers["Authorization"] = `Bearer ${state.token}`;
-  headers["Content-Type"] = headers["Content-Type"] || "application/json";
-
-  try {
-    const res = await fetch(url, { ...opts, headers });
-    const ct = res.headers.get("content-type") || "";
-    const data = ct.includes("application/json") ? await res.json() : await res.text();
-
-    if (!res.ok) {
-      const msg = data?.detail || data?.message || (typeof data === "string" ? data : "Request failed");
-      throw new Error(msg);
-    }
-    return data;
-  } catch (e) {
-    setStatus(e?.message || "Network error", "bad");
-    throw e;
-  }
+function setStatus(msg, kind = "ok") {
+  const el = els("status");
+  el.textContent = msg;
+  el.className = `status ${kind}`;
 }
+
+function setAuthMsg(msg) {
+  els("authMsg").textContent = msg || "";
+}
+
+function setPayMsg(msg) {
+  els("payMsg").textContent = msg || "";
+}
+
+function setPaidChip(paid) {
+  state.isPaid = !!paid;
+  const chip = els("chipPaid");
+  chip.hidden = !state.isPaid;
+}
+
+function updatePracticeMetaUI() {
+  const el = els("practiceMeta");
+  if (!el) return;
+
+  const exam = state.filters.exam || "All Exams";
+  const subject = state.filters.subject || "All Subjects";
+  year = state.filters.year || "All Years";
+ els("practiceMeta").textContent = `${exam} • ${subject} • ${year}`;
+
+}
+
 
 function saveApiBase() {
-  const el = els("apiBase");
-  if (!el) return;
-  const val = (el.value || "").trim();
-  if (val) {
-    state.apiBase = val;
-    localStorage.setItem("apiBase", val);
+  const v = els("apiBase").value.trim();
+  if (v) {
+    state.apiBase = v.replace(/\/$/, "");
+    localStorage.setItem("apiBase", state.apiBase);
   }
 }
 
-/** ------------------------------
- * Auth
- * ------------------------------ */
-async function doRegister() {
-  const email = (els("email")?.value || "").trim();
-  const password = els("password")?.value || "";
-  if (!email || !password) return setStatus("Email and password required.", "bad");
-
-  const r = await api("/auth/register", {
-    method: "POST",
-    body: JSON.stringify({ email, password }),
-  });
-
-  setStatus(r?.message || "Registered.", "ok");
+function saveToken(t) {
+  state.token = t || "";
+  if (state.token) localStorage.setItem("token", state.token);
+  else localStorage.removeItem("token");
 }
 
-async function doLogin() {
-  const email = (els("email")?.value || "").trim();
-  const password = els("password")?.value || "";
-  if (!email || !password) return setStatus("Email and password required.", "bad");
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#039;",
+  }[c]));
+}
 
-  const r = await api("/auth/login", {
-    method: "POST",
-    body: JSON.stringify({ email, password }),
-  });
+function trimText(s, n = 140) {
+  s = (s || "").trim();
+  if (s.length <= n) return s;
+  return s.slice(0, n - 1) + "…";
+}
 
-  if (r?.access_token) {
-    state.token = r.access_token;
-    state.email = email;
-    localStorage.setItem("token", state.token);
-    localStorage.setItem("email", email);
+function isEmail(v) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v || "");
+}
+
+async function api(path, opts = {}) {
+  const url = `${state.apiBase.replace(/\/$/, "")}${path}`;
+  const headers = opts.headers ? { ...opts.headers } : {};
+  if (state.token) headers.Authorization = `Bearer ${state.token}`;
+  if (!headers["Content-Type"] && opts.method && opts.method !== "GET") {
+    headers["Content-Type"] = "application/json";
   }
 
-  await refreshMe();
-  setStatus("Logged in.", "ok");
-}
+  const res = await fetch(url, { ...opts, headers });
+  const ct = res.headers.get("content-type") || "";
 
-function doLogout() {
-  state.token = "";
-  state.user = null;
-  localStorage.removeItem("token");
-  setStatus("Logged out.", "ok");
-  updateAuthUI();
-  updateUpgradeUI();
-}
+  let body = null;
+  if (ct.includes("application/json")) body = await res.json().catch(() => null);
+  else body = await res.text().catch(() => null);
 
-async function refreshMe() {
-  updateAuthUI();
-  try {
-    if (!state.token) return;
-    const me = await api("/auth/me");
-    state.user = me;
-    updateAuthUI();
-    updateUpgradeUI();
-  } catch {
-    // ignore
+  if (!res.ok) {
+    return { ok: false, status: res.status, error: body?.detail || body || "Request failed" };
   }
+  return body || { ok: true };
 }
 
-function updateAuthUI() {
-  const pill = els("authState");
-  const btnLogout = els("btnLogout");
-  if (!pill || !btnLogout) return;
-
-  if (state.token) {
-    pill.textContent = state.email || "Logged in";
-    btnLogout.hidden = false;
-  } else {
-    pill.textContent = "Guest";
-    btnLogout.hidden = true;
-  }
-}
-
-/** ------------------------------
- * Filters UI
- * ------------------------------ */
-const EXAM_OPTIONS = ["", "NECO", "WAEC", "JAMB"];
-const YEAR_OPTIONS = ["", "2025", "2024", "2023", "2022", "2021", "2020"];
-const SUBJECT_OPTIONS = ["", "Mathematics", "English", "Biology", "Chemistry", "Physics"];
-
+// ====== Filters ======
 function fillSelect(el, values) {
   el.innerHTML = "";
   for (const v of values) {
@@ -204,9 +268,9 @@ function initFiltersUI() {
     localStorage.setItem("filter_subject", state.filters.subject);
   };
 
-  examSel.onchange = () => { save(); updatePracticeMetaUI(); onFiltersChanged(); };
-  yearSel.onchange = () => { save(); updatePracticeMetaUI(); onFiltersChanged(); };
-  subjSel.onchange = () => { save(); updatePracticeMetaUI(); onFiltersChanged(); };
+  examSel.onchange = () => { save(); updatePracticeMetaUI(); };
+  yearSel.onchange = () => { save(); updatePracticeMetaUI(); };
+  subjSel.onchange = () => { save(); updatePracticeMetaUI(); };
 
   const btnClear = els("btnClearFilters");
   if (btnClear) {
@@ -216,7 +280,6 @@ function initFiltersUI() {
       subjSel.value = "";
       save();
       updatePracticeMetaUI();
-      onFiltersChanged();
       setStatus("Filters cleared.", "ok");
     };
   }
@@ -227,246 +290,363 @@ function buildFilterQuery() {
   if (state.filters.exam) params.set("exam", state.filters.exam);
   if (state.filters.year) params.set("year", state.filters.year);
   if (state.filters.subject) params.set("subject", state.filters.subject);
-  const s = params.toString();
-  return s ? `&${s}` : "";
+  const qs = params.toString();
+  return qs ? `&${qs}` : "";
 }
 
-function hasRequiredSelection() {
-  // For scalable multi-subject/exam UX: require Exam + Subject.
-  return !!(state.filters.exam && state.filters.subject);
-}
-
-function setPagerState({ canPrev, canNext, info }) {
-  const prevBtn = els("btnPagePrev");
-  const nextBtn = els("btnPageNext");
-  const infoEl = els("pageInfo");
-  if (prevBtn) prevBtn.disabled = !canPrev;
-  if (nextBtn) nextBtn.disabled = !canNext;
-  if (infoEl) infoEl.textContent = info || "";
-}
-
-function showStartGate(show) {
-  const gate = els("startGate");
-  if (gate) gate.hidden = !show;
-}
-
-function openFilters() {
-  const panel = els("filtersPanel");
-  if (panel) panel.open = true;
-  if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-function resetPagination() {
-  pageOffset = 0;
-  lastGoodOffset = 0;
-  lastGoodItems = [];
-  setPagerState({ canPrev: false, canNext: false, info: "" });
-}
-
-function onFiltersChanged() {
-  // Anytime the user changes exam/year/subject, restart from page 1.
-  resetPagination();
-
-  if (!hasRequiredSelection()) {
-    els("list").innerHTML = "";
-    showStartGate(true);
-    setStatus("Select Exam and Subject in Filters to start.", "bad");
-    return;
-  }
-
-  showStartGate(false);
-  loadList({ offset: 0, reason: "filters_changed" });
-}
-
-/** ------------------------------
- * Question list + viewer
- * ------------------------------ */
-let currentListIds = [];
-let currentIndex = -1;
-
+// ====== List ======
 function renderList(items) {
   const list = els("list");
   list.innerHTML = "";
 
-  if (!items || !items.length) {
-    list.innerHTML = `<div class="status">No questions found. Try clearing filters.</div>`;
-    currentListIds = [];
-    currentIndex = -1;
+  
+  currentListIds = (items || []).map(x => x.id).filter(Boolean);
+if (!items || !items.length) {
+    list.innerHTML = `<div class="status">No items returned. Try a smaller offset or clear filters.</div>`;
     return;
   }
 
-  currentListIds = items.map((x) => x.id);
-  currentIndex = -1;
-
   for (const q of items) {
-    const div = document.createElement("div");
-    div.className = "item";
-    div.onclick = () => openQuestion(q.id);
+     const div = document.createElement("div");
+     div.className = "item";
+     div.dataset.qid = q.id;
+     div.onclick = () => openQuestion(q.id);
+
 
     const meta = [];
     if (q.type) meta.push(q.type);
     if (q.paper) meta.push(q.paper);
-    if (q.section) meta.push(q.section);
+    if (q.section && q.type !== "objective") meta.push(q.section);
     if (q.marks) meta.push(`${q.marks} marks`);
     if (q.page) meta.push(`page ${q.page}`);
 
+    const tag = [];
+    if (q.exam) tag.push(q.exam);
+    if (q.year) tag.push(String(q.year));
+    if (q.subject) tag.push(q.subject);
+    if (tag.length) meta.push(tag.join(" "));
+
     div.innerHTML = `
-      <div class="id">${escapeHtml(q.id || "")}</div>
-      <div class="txt">${escapeHtml(trimText(q.question_text, 140))}</div>
-      <div class="meta">${escapeHtml(meta.join(" • "))}</div>
-    `;
+       <div class="card-top">
+         <span class="qid">${escapeHtml(q.id || "")}</span>
+         ${q.type ? `<span class="pill">${escapeHtml(q.type)}</span>` : ""}
+       </div>
+
+    <div class="qtext">${escapeHtml(trimText(q.question_text, 140))}</div>
+
+  <div class="meta">${escapeHtml(meta.join(" • "))}</div>
+`;
+
+
     list.appendChild(div);
+  }
+
+  // restore highlight + visibility if a question is already selected
+  if (activeQuestionId) {
+    highlightQuestionCard(activeQuestionId);
+    requestAnimationFrame(() => ensureActiveCardVisibleInList(activeQuestionId));
   }
 }
 
-async function loadList(options = {}) {
+async function openQuestion(id) {
+  try {
+    activeQuestionId = id;
+
+    syncCurrentIndexFromId(id);
+    updatePrevNextButtons();
+    clearOptionSelection();
+
+// Reset explanation state for new question
+        const exp = els("qExplain");
+      if (exp) {
+      exp.hidden = true;
+      exp.innerHTML = "";
+}
+
+    
+    highlightQuestionCard(id);
+
+     // ✅ open viewer context first (this changes list max-height)
+    setViewerOpen(true);
+
+    // ✅ Now scroll the list AFTER the layout change
+    requestAnimationFrame(() => {
+      ensureActiveCardVisibleInList(id);
+    });
+
+
+    const q = await api(`/question/${encodeURIComponent(id)}`);
+
+    els("viewer").hidden = false;
+    els("qTitle").textContent = id;
+
+    focusViewer();
+
+
+    const meta = [];
+    if (q.type) meta.push(q.type);
+    if (q.paper) meta.push(q.paper);
+    if (q.section && q.type !== "objective") meta.push(q.section);
+    if (q.marks) meta.push(`${q.marks} marks`);
+    if (q.page) meta.push(`page ${q.page}`);
+
+    const tag = [];
+    if (q.exam) tag.push(q.exam);
+    if (q.year) tag.push(String(q.year));
+    if (q.subject) tag.push(q.subject);
+    if (tag.length) meta.push(tag.join(" "));
+
+    if (q.diagrams && q.diagrams.length) meta.push(`diagrams: ${q.diagrams.join(", ")}`);
+
+    els("qMeta").textContent = meta.join(" • ");
+    els("qText").textContent = q.question_text || "";
+    renderDiagrams(q.diagrams || []);
+
+
+const optBox = els("qOptions");
+optBox.innerHTML = "";
+if (q.options) {
+  for (const k of Object.keys(q.options)) {
+    const d = document.createElement("div");
+    d.className = "opt";
+    d.dataset.key = k;
+    d.innerHTML = `<b>${escapeHtml(k)}</b>. ${escapeHtml(q.options[k])}`;
+
+    // visual-only option selection
+     d.onclick = () => {
+  const alreadySelected = d.classList.contains("selected");
+
+         // clear others first
+        optBox.querySelectorAll(".opt").forEach((el) => el.classList.remove("selected"));
+
+         if (alreadySelected) {
+        //   toggle OFF
+        selectedOptionKey = null;
+        return;
+      }
+
+      // toggle ON
+       selectedOptionKey = k;
+     d.classList.add("selected");
+   };
+
+
+    optBox.appendChild(d);
+  }
+}
+
+// safe re-sync after render
+updatePrevNextButtons();       els("btnReveal").onclick = () => {
+      const exp = els("qExplain");
+      exp.hidden = false;
+
+       exp.innerHTML = `<div><b>Answer:</b> ${escapeHtml(q.answer || "—")}</div>`;
+
+      // ✅ auto-scroll so user sees it immediately
+      scrollToExplainBox();
+     };
+
+
+      els("btnExplain").onclick = () => {
+      const exp = els("qExplain");
+      exp.hidden = false;
+
+      const pieces = [];
+      if (q.explanation) pieces.push(`<div><b>Explanation:</b><br>${escapeHtml(q.explanation)}</div>`);
+      if (q.solution_steps) pieces.push(`<div><b>Steps:</b><br>${escapeHtml(JSON.stringify(q.solution_steps, null, 2))}</div>`);
+      if (q.sub_questions) pieces.push(`<div><b>Sub-questions:</b><br>${escapeHtml(JSON.stringify(q.sub_questions, null, 2))}</div>`);
+
+      exp.innerHTML = pieces.length ? pieces.join("<hr/>") : `<div>No explanation/steps available.</div>`;
+
+      // ✅ auto-scroll so user sees it immediately
+      scrollToExplainBox();
+     };
+
+  } catch (e) {
+    setStatus(`Failed to open question: ${e?.message || e}`, "bad");
+  }
+}
+
+function closeViewer() {
+  els("viewer").hidden = true;
+  setViewerOpen(false);
+  clearQuestionHighlight();
+
+  currentIndex = -1;
+  updatePrevNextButtons();
+
+if (els("qDiagrams")) els("qDiagrams").innerHTML = "";
+  els("qOptions").innerHTML = "";
+  els("qExplain").hidden = true;
+  els("qExplain").innerHTML = "";
+}
+
+async function checkApi() {
+  saveApiBase();
+  setStatus("Checking API…", "ok");
+  const r = await api("/health");
+  if (r?.ok) setStatus(`Connected: ${r.service}`, "ok");
+  else setStatus(`Failed: ${r?.error || "unknown error"}`, "bad");
+}
+
+async function refreshMe() {
+  if (!state.token) return;
+  const r = await api("/me");
+  if (r?.identifier) {
+    state.authenticated = true;
+    setPaidChip(r.is_paid);
+    els("btnLogout").hidden = false;
+    setAuthMsg(`Logged in as: ${r.identifier}`);
+  } else {
+    state.authenticated = false;
+    setPaidChip(false);
+    els("btnLogout").hidden = true;
+  }
+  updateUpgradeUI();
+  updateAdminUI();
+}
+
+async function doRegister() {
+  saveApiBase();
+  const identifier = els("identifier").value.trim();
+  const password = els("password").value;
+
+  setAuthMsg("Registering…");
+  const r = await api("/auth/register", { method: "POST", body: JSON.stringify({ identifier, password }) });
+
+  if (r?.token) {
+    saveToken(r.token);
+    setAuthMsg("Registered ✅");
+    await refreshMe();
+  } else {
+    setAuthMsg(`Register failed: ${r?.error || "unknown error"}`);
+  }
+}
+
+async function doLogin() {
+  saveApiBase();
+  const identifier = els("identifier").value.trim();
+  const password = els("password").value;
+
+  setAuthMsg("Logging in…");
+  const r = await api("/auth/login", { method: "POST", body: JSON.stringify({ identifier, password }) });
+
+  if (r?.token) {
+    saveToken(r.token);
+    setAuthMsg("Logged in ✅");
+    await refreshMe();
+  } else {
+    setAuthMsg(`Login failed: ${r?.error || "unknown error"}`);
+  }
+}
+
+async function doLogout() {
+  saveToken("");
+  state.authenticated = false;
+  setPaidChip(false);
+  setAuthMsg("Logged out.");
+  els("btnLogout").hidden = true;
+
+  adminClearKey();
+  updateUpgradeUI();
+  updateAdminUI();
+}
+
+async async function loadList(targetOffset = listOffset) {
   saveApiBase();
   const mode = els("mode").value;
-  const limit = PAGE_LIMIT;
 
-  // Guard: require selection before loading
-  if (!hasRequiredSelection()) {
-    els("list").innerHTML = "";
-    showStartGate(true);
-    setStatus("Select Exam and Subject in Filters to start.", "bad");
-    setPagerState({ canPrev: false, canNext: false, info: "" });
-    return;
-  }
-
-  showStartGate(false);
-
-  const offset = typeof options.offset === "number" ? options.offset : pageOffset;
+  // Normalize offset
+  let offset = parseInt(String(targetOffset ?? 0), 10);
+  if (Number.isNaN(offset) || offset < 0) offset = 0;
 
   els("paywall").hidden = true;
   setStatus("Loading…", "ok");
 
   const filterQs = buildFilterQuery();
-  const r = await api(`/questions/${mode}?limit=${limit}&offset=${offset}${filterQs}`);
+  const r = await api(`/questions/${mode}?limit=${LIST_LIMIT}&offset=${offset}${filterQs}`);
 
+  // Unpaid preview limit hit
   if (r?.paywall) {
-    // Unpaid users reached preview cap
     setStatus("Preview limit reached. Please upgrade to continue.", "bad");
-    els("list").innerHTML = "";
     els("paywall").hidden = false;
-    // disable next/prev while paywalled
-    setPagerState({ canPrev: offset > 0, canNext: false, info: "Upgrade required" });
+
+    // keep the last good page visible
+    if (lastGoodItems?.length) renderList(lastGoodItems);
+
+    // stop further paging forward
+    endReached = true;
+    updatePagerUI();
     return;
   }
 
   const items = r?.items || [];
 
-  // End reached for paid users (or for the current filter set)
+  // Past-the-end paging
   if (!items.length) {
     if (offset === 0) {
+      // Legit empty dataset / filters
+      listOffset = 0;
+      lastGoodOffset = 0;
+      lastGoodItems = [];
+      endReached = true;
       renderList(items);
-      setStatus("No questions found for these filters.", "bad");
-      setPagerState({ canPrev: false, canNext: false, info: "" });
+      setStatus("No questions found. Try clearing filters.", "bad");
+      updatePagerUI();
       return;
     }
 
-    // Revert to last good page and disable Next
-    pageOffset = lastGoodOffset;
+    // Revert to last good page
+    els("offset").value = String(lastGoodOffset);
+    listOffset = lastGoodOffset;
     renderList(lastGoodItems);
-    setStatus("End reached. No more questions.", "bad");
-    const canPrev = pageOffset > 0;
-    setPagerState({
-      canPrev,
-      canNext: false,
-      info: pageOffset ? `Showing page starting at ${pageOffset}` : "Showing first page",
-    });
+
+    endReached = true;
+    setStatus(`End reached. No more questions after offset ${offset}.`, "bad");
+    updatePagerUI();
     return;
   }
 
-  // Success: store page
-  pageOffset = offset;
+  // Success
+  listOffset = offset;
+  els("offset").value = String(offset);
+
   lastGoodOffset = offset;
   lastGoodItems = items;
+  endReached = items.length < LIST_LIMIT; // if fewer than a page, likely last page
 
   renderList(items);
 
-  const startNum = pageOffset + 1;
-  const endNum = pageOffset + items.length;
-  const canPrev = pageOffset > 0;
-  const canNext = items.length === limit; // optimistic
-  setPagerState({ canPrev, canNext, info: `Showing ${startNum}–${endNum}` });
+  const startN = offset + 1;
+  const endN = offset + items.length;
+  setStatus(`Showing ${startN}–${endN}.`, "ok");
 
-  setStatus(`Loaded ${items.length} questions.`, "ok");
+  updatePagerUI();
 }
 
-async function openQuestion(qid) {
-  const q = await api(`/question/${encodeURIComponent(qid)}`);
-  const viewer = els("viewer");
-  if (!viewer) return;
+function updatePagerUI() {
+  const info = els("pageInfo");
+  const btnPrev = els("btnPagePrev");
+  const btnNext = els("btnPageNext");
 
-  viewer.hidden = false;
-  setViewerOpen(true);
-
-  const title = els("qTitle");
-  if (title) title.textContent = q?.id || "Question";
-
-  const meta = els("qMeta");
-  if (meta) {
-    const parts = [];
-    if (q.exam) parts.push(q.exam);
-    if (q.year) parts.push(q.year);
-    if (q.subject) parts.push(q.subject);
-    if (q.paper) parts.push(q.paper);
-    if (q.section) parts.push(q.section);
-    meta.textContent = parts.filter(Boolean).join(" • ");
-  }
-
-  const text = els("qText");
-  if (text) text.textContent = q?.question_text || "";
-
-  const di = els("qDiagrams");
-  if (di) {
-    di.innerHTML = "";
-    const ds = q?.diagrams || [];
-    for (const src of ds) {
-      const img = document.createElement("img");
-      img.src = apiBaseNoSlash() + (src.startsWith("/") ? src : `/${src}`);
-      img.alt = "diagram";
-      di.appendChild(img);
+  if (info) {
+    if (!lastGoodItems?.length) {
+      info.textContent = "";
+    } else {
+      const startN = listOffset + 1;
+      const endN = listOffset + (lastGoodItems?.length || 0);
+      info.textContent = `Showing ${startN}–${endN}`;
     }
   }
 
-  const opts = els("qOptions");
-  if (opts) {
-    opts.innerHTML = "";
-    const arr = q?.options || [];
-    if (arr?.length) {
-      for (const o of arr) {
-        const div = document.createElement("div");
-        div.className = "opt";
-        div.textContent = o;
-        opts.appendChild(div);
-      }
-    }
-  }
-
-  const ans = els("qAnswer");
-  if (ans) ans.textContent = q?.answer || "";
-
-  const ex = els("qExplain");
-  if (ex) ex.textContent = q?.explanation || "";
-
-  currentIndex = currentListIds.indexOf(qid);
-  focusViewer();
+  if (btnPrev) btnPrev.disabled = listOffset <= 0;
+  if (btnNext) btnNext.disabled = endReached || !lastGoodItems?.length;
 }
 
-function closeViewer() {
-  const viewer = els("viewer");
-  if (viewer) viewer.hidden = true;
-  setViewerOpen(false);
-}
 
-/** ------------------------------
- * Payments
- * ------------------------------ */
 function updateUpgradeUI() {
   const btnPay = els("btnPay");
   const btnCheckPaid = els("btnCheckPaid");
-  if (!btnPay || !btnCheckPaid) return;
 
   if (state.busyPay) {
     btnPay.disabled = true;
@@ -474,68 +654,265 @@ function updateUpgradeUI() {
     return;
   }
 
-  btnPay.disabled = false;
-  btnCheckPaid.disabled = false;
+  btnPay.disabled = !state.authenticated || state.isPaid;
+  btnCheckPaid.disabled = !state.authenticated;
 
-  const hint = els("payHint");
-  if (hint) {
-    hint.textContent = state.user?.paid ? "You’re already upgraded ✅" : "";
-  }
+  if (!state.authenticated) setPayMsg("Login to upgrade.");
+  else if (state.isPaid) setPayMsg("You are already paid ✅");
+  else setPayMsg("");
 }
 
-async function startUpgrade() {
-  state.busyPay = true;
+async function getPaystackPublicKeyOrThrow() {
+  const r = await api("/payments/public-key", { method: "GET" });
+  if (!r?.ok) throw new Error(r?.error || "Failed to get Paystack public key");
+  if (!r.public_key || typeof r.public_key !== "string" || !r.public_key.startsWith("pk_")) {
+    throw new Error("Backend returned an invalid Paystack public key");
+  }
+  return r.public_key;
+}
+
+function setPayBusy(isBusy, msg) {
+  state.busyPay = !!isBusy;
+  if (msg) setPayMsg(msg);
   updateUpgradeUI();
+}
+
+async function verifyPayment(reference, email) {
+  return await api("/payments/verify", {
+    method: "POST",
+    body: JSON.stringify({ reference, email }),
+  });
+}
+
+async function startPaystackPayment() {
+  if (!state.authenticated) {
+    setStatus("Please login before paying.", "bad");
+    setPayMsg("Login to upgrade.");
+    return;
+  }
+
+  const email = els("identifier").value.trim().toLowerCase();
+  if (!isEmail(email)) {
+    setStatus("Paystack requires an email. Please login/register with an email to pay.", "bad");
+    setPayMsg("Use an email address to pay with Paystack.");
+    return;
+  }
+
+  if (!window.PaystackPop || typeof window.PaystackPop.setup !== "function") {
+    setStatus("Paystack script not loaded. Check inline.js in index.html", "bad");
+    setPayMsg("Paystack failed to load. Check your internet connection and reload.");
+    return;
+  }
+
+  setPayBusy(true, "Opening Paystack…");
 
   try {
-    const r = await api("/payments/init", { method: "POST", body: JSON.stringify({}) });
-    if (r?.authorization_url) {
-      window.location.href = r.authorization_url;
-    } else {
-      setStatus("Unable to start payment.", "bad");
-    }
-  } finally {
-    state.busyPay = false;
-    updateUpgradeUI();
+    const pk = await getPaystackPublicKeyOrThrow();
+    const amount = PAYSTACK_AMOUNT_NGN * 100;
+
+    const identifier = email;
+
+    const handler = window.PaystackPop.setup({
+      key: pk,
+      email: email,
+      amount: amount,
+      currency: PAYSTACK_CURRENCY,
+      ref: "EP_" + Date.now(),
+      metadata: { identifier, app: "ExamPartner" },
+
+      callback: function (resp) {
+        (async () => {
+          const reference = resp?.reference;
+          if (!reference) {
+            setPayBusy(false, "");
+            setStatus("Payment returned no reference. Please try again.", "bad");
+            return;
+          }
+
+          setPayBusy(true, "Verifying payment…");
+          const vr = await verifyPayment(reference, email);
+
+          if (!vr?.ok) {
+            setPayBusy(false, "");
+            setStatus(`Payment received but verification failed: ${vr?.error || "unknown"}`, "bad");
+            setPayMsg(`Ref: ${reference} (not verified)`);
+            return;
+          }
+
+          await refreshMe();
+          setPayBusy(false, "");
+          setStatus("Payment verified ✅", "ok");
+          setPayMsg(`Paid ✅ Ref: ${reference}`);
+        })().catch((e) => {
+          setPayBusy(false, "");
+          setStatus(`Pay verify error: ${e?.message || e}`, "bad");
+        });
+      },
+
+      onClose: function () {
+        setPayBusy(false, "Payment cancelled.");
+      },
+    });
+
+    handler.openIframe();
+  } catch (e) {
+    setPayBusy(false, "");
+    setStatus(`Pay error: ${e?.message || e}`, "bad");
   }
 }
 
 async function checkPaidStatus() {
   await refreshMe();
-  if (state.user?.paid) {
-    els("paywall").hidden = true;
-    setStatus("Upgrade confirmed ✅", "ok");
-    // after confirming, load again (if selection exists)
-    if (hasRequiredSelection()) loadList({ offset: pageOffset, reason: "paid_confirmed" });
-  } else {
-    setStatus("Not upgraded yet. If you paid, wait 1–2 minutes and try again.", "bad");
+  setStatus(state.isPaid ? "Paid ✅" : "Not paid yet.", state.isPaid ? "ok" : "bad");
+}
+
+/* =========================
+   Admin mini tools (SAFE MVP)
+   ========================= */
+
+function adminSetKey() {
+  const v = window.prompt("Enter Admin Key (server ADMIN_SECRET):");
+  if (!v) return;
+  state.adminKey = v.trim();
+  sessionStorage.setItem(ADMIN_KEY_STORAGE, state.adminKey);
+  updateAdminUI();
+  setPayMsg("Admin mode enabled (session only).");
+}
+
+function adminClearKey() {
+  state.adminKey = "";
+  sessionStorage.removeItem(ADMIN_KEY_STORAGE);
+  updateAdminUI();
+  const box = els("auditBox");
+  if (box) {
+    box.textContent = "";
+    box.hidden = true;
   }
+  setPayMsg("Admin mode exited.");
 }
 
-/** ------------------------------
- * Practice meta (optional UI tweaks)
- * ------------------------------ */
-function updatePracticeMetaUI() {
-  // You can expand this later (e.g. show selected exam/year/subject in the hero)
+function updateAdminUI() {
+  const tools = els("adminTools");
+  if (!tools) return;
+  tools.hidden = !state.adminKey;
 }
 
-/** ------------------------------
- * API health check
- * ------------------------------ */
-async function checkApi() {
-  saveApiBase();
-  const r = await api("/health");
-  setStatus(r?.status ? `API OK: ${r.status}` : "API OK", "ok");
+async function adminReconcile() {
+  if (!state.adminKey) return setStatus("Admin key not set.", "bad");
+
+  const ref = (els("adminRef")?.value || "").trim();
+  if (!ref) return setStatus("Enter a reference to reconcile.", "bad");
+
+  setStatus("Reconciling…", "ok");
+
+  const r = await api(`/admin/reconcile/${encodeURIComponent(ref)}`, {
+    method: "POST",
+    headers: { "x-admin-key": state.adminKey },
+  });
+
+  if (!r?.ok) return setStatus(`Reconcile failed: ${r?.error || "unknown"}`, "bad");
+
+  setStatus(`Reconciled: paid=${!!r.paid}`, r.paid ? "ok" : "bad");
+  setPayMsg(`Admin reconcile done. Ref: ${ref}`);
+  await refreshMe().catch(() => {});
 }
 
-/** ------------------------------
- * Init
- * ------------------------------ */
+async function adminRefund() {
+  if (!state.adminKey) return setStatus("Admin key not set.", "bad");
+
+  const ref = (els("adminRef")?.value || "").trim();
+  if (!ref) return setStatus("Enter a reference to refund.", "bad");
+
+  const amountStr = (els("refundAmount")?.value || "").trim();
+  const note = (els("refundNote")?.value || "").trim();
+
+  const payload = {
+    reference: ref,
+    amount_kobo: amountStr ? Number(amountStr) : null,
+    merchant_note: note || null,
+    customer_note: null,
+  };
+
+  // clean nulls (backend accepts omit or null, but let's be neat)
+  if (!payload.amount_kobo) delete payload.amount_kobo;
+  if (!payload.merchant_note) delete payload.merchant_note;
+  delete payload.customer_note;
+
+  const ok = window.confirm(
+    `Refund transaction?\n\nReference: ${ref}\nAmount(kobo): ${amountStr || "FULL"}\n\nProceed?`
+  );
+  if (!ok) return;
+
+  setStatus("Sending refund…", "ok");
+
+  const r = await api(`/admin/refund`, {
+    method: "POST",
+    headers: { "x-admin-key": state.adminKey },
+    body: JSON.stringify(payload),
+  });
+
+  if (!r?.ok) return setStatus(`Refund failed: ${r?.error || "unknown"}`, "bad");
+
+  setStatus("Refund requested ✅ (webhook will confirm)", "ok");
+  setPayMsg(`Refund queued. Ref: ${ref}`);
+}
+
+function formatAudit(items) {
+  if (!items || !items.length) return "No audit logs found.";
+  const lines = [];
+  for (const x of items) {
+    lines.push(
+      [
+        `#${x.id}  ${x.created_at}`,
+        `action: ${x.action}`,
+        x.reference ? `ref: ${x.reference}` : null,
+        x.actor_ip ? `ip: ${x.actor_ip}` : null,
+        x.user_agent ? `ua: ${x.user_agent}` : null,
+        x.payload_json ? `payload: ${x.payload_json}` : null,
+        "----",
+      ].filter(Boolean).join("\n")
+    );
+  }
+  return lines.join("\n");
+}
+
+async function adminFetchAudit() {
+  if (!state.adminKey) return setStatus("Admin key not set.", "bad");
+
+  const limit = Math.max(1, Math.min(200, Number((els("auditLimit")?.value || "20")) || 20));
+  setStatus("Fetching audit logs…", "ok");
+
+  // ✅ Backend endpoint in your code is /admin/audit
+  const r = await api(`/admin/audit?limit=${encodeURIComponent(String(limit))}`, {
+    method: "GET",
+    headers: { "x-admin-key": state.adminKey },
+  });
+
+  if (!r?.ok) return setStatus(`Audit fetch failed: ${r?.error || "unknown"}`, "bad");
+
+  const box = els("auditBox");
+  if (box) {
+    box.textContent = formatAudit(r.items || []);
+    box.hidden = false;
+  }
+
+  setStatus(`Loaded ${r.items?.length || 0} audit logs.`, "ok");
+}
+
+
+function adminClearAuditBox() {
+  const box = els("auditBox");
+  if (!box) return;
+  box.textContent = "";
+  box.hidden = true;
+}
+
+// ====== Init ======
 function init() {
   els("yr").textContent = new Date().getFullYear();
   els("apiBase").value = state.apiBase;
 
-  // Hide advanced server tools in production
+    // Hide advanced server tools in production
   const params = new URLSearchParams(window.location.search);
   const isLocal = ["localhost", "127.0.0.1"].includes(window.location.hostname);
   const devMode = isLocal || params.has("dev"); // use https://your-site.netlify.app/?dev=1
@@ -545,6 +922,7 @@ function init() {
     state.apiBase = "https://exampartner-backend.onrender.com";
     localStorage.removeItem("apiBase");
 
+    // Hide the input + hint column, hide Check API button
     const apiBaseEl = els("apiBase");
     if (apiBaseEl && apiBaseEl.parentElement) apiBaseEl.parentElement.hidden = true;
 
@@ -552,87 +930,102 @@ function init() {
     if (btnCheck) btnCheck.hidden = true;
   }
 
-  initFiltersUI();
 
-  // B + C: Start Screen (first run) then remember last selection
-  if (!hasRequiredSelection()) {
-    showStartGate(true);
-    setStatus("Select Exam and Subject in Filters to start.", "bad");
-    setPagerState({ canPrev: false, canNext: false, info: "" });
-    const panel = els("filtersPanel");
-    if (panel) panel.open = true;
-  } else {
-    showStartGate(false);
-    resetPagination();
-    loadList({ offset: 0, reason: "autoload" });
-  }
+  initFiltersUI();
 
   // A2: remember filters panel open/closed
   const fp = els("filtersPanel");
   if (fp) {
     const saved = localStorage.getItem(FILTERS_PANEL_OPEN);
     if (saved === "1") fp.open = true;
+
     fp.addEventListener("toggle", () => {
-      localStorage.setItem(FILTERS_PANEL_OPEN, fp.open ? "1" : "0");
-    });
-  }
+     localStorage.setItem(FILTERS_PANEL_OPEN, fp.open ? "1" : "0");
+   });
+ }
+
+  updatePracticeMetaUI();
+  updateAdminUI();
 
   els("btnCheck").onclick = checkApi;
   els("btnRegister").onclick = doRegister;
   els("btnLogin").onclick = doLogin;
   els("btnLogout").onclick = doLogout;
 
-  const btnPrevPage = els("btnPagePrev");
-  const btnNextPage = els("btnPageNext");
-  if (btnPrevPage) btnPrevPage.onclick = () => {
-    if (pageOffset <= 0) return;
-    loadList({ offset: Math.max(0, pageOffset - PAGE_LIMIT), reason: "prev_page" });
-  };
-  if (btnNextPage) btnNextPage.onclick = () => {
-    loadList({ offset: pageOffset + PAGE_LIMIT, reason: "next_page" });
-  };
-
-  const btnOpenFilters = els("btnOpenFilters");
-  if (btnOpenFilters) btnOpenFilters.onclick = openFilters;
-
+  els("btnLoad").onclick = () => { endReached = false; loadList(0); };
   els("btnClose").onclick = closeViewer;
+  // List paging buttons (Prev/Next page)
+  const btnPagePrev = els("btnPagePrev");
+  if (btnPagePrev) {
+    btnPagePrev.onclick = () => {
+      if (listOffset <= 0) return;
+      endReached = false;
+      loadList(Math.max(0, listOffset - LIST_LIMIT));
+    };
+  }
+
+  const btnPageNext = els("btnPageNext");
+  if (btnPageNext) {
+    btnPageNext.onclick = () => {
+      if (endReached) return;
+      loadList(listOffset + LIST_LIMIT);
+    };
+  }
+
 
   const btnPractice = els("btnPractice");
   if (btnPractice) btnPractice.onclick = () => {
-    resetPagination();
-    if (!hasRequiredSelection()) {
-      showStartGate(true);
-      openFilters();
-      return;
-    }
-    loadList({ offset: 0, reason: "practice_click" });
+    const off = els("offset");
+    if (off) off.value = 0;
+    loadList();
+    // bring the list into view on mobile
     const list = els("list");
     if (list) list.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  els("btnPay").onclick = startUpgrade;
+  els("btnPay").onclick = startPaystackPayment;
   els("btnCheckPaid").onclick = checkPaidStatus;
 
-  const btnPrev = els("btnPrev");
-  if (btnPrev) {
-    btnPrev.onclick = () => {
-      if (!currentListIds.length) return;
-      if (currentIndex > 0) openQuestion(currentListIds[currentIndex - 1]);
-    };
-  }
 
-  const btnNext = els("btnNext");
-  if (btnNext) {
-    btnNext.onclick = () => {
-      if (!currentListIds.length) return;
-      if (currentIndex >= 0 && currentIndex < currentListIds.length - 1) {
-        openQuestion(currentListIds[currentIndex + 1]);
-      }
-    };
-  }
+const btnPrev = els("btnPrev");
+if (btnPrev) {
+  btnPrev.onclick = () => {
+    if (!currentListIds.length) return;
+    if (currentIndex > 0) openQuestion(currentListIds[currentIndex - 1]);
+  };
+}
 
+const btnNext = els("btnNext");
+if (btnNext) {
+  btnNext.onclick = () => {
+    if (!currentListIds.length) return;
+    if (currentIndex >= 0 && currentIndex < currentListIds.length - 1) {
+      openQuestion(currentListIds[currentIndex + 1]);
+    }
+  };
+}
+
+  // Admin buttons
+  const btnAdmin = els("btnAdmin");
+  if (btnAdmin) btnAdmin.onclick = adminSetKey;
+
+  const btnAdminReconcile = els("btnAdminReconcile");
+  if (btnAdminReconcile) btnAdminReconcile.onclick = adminReconcile;
+
+  const btnAdminRefund = els("btnAdminRefund");
+  if (btnAdminRefund) btnAdminRefund.onclick = adminRefund;
+
+  const btnAdminAudit = els("btnAdminAudit");
+  if (btnAdminAudit) btnAdminAudit.onclick = adminFetchAudit;
+
+  const btnAdminAuditClear = els("btnAdminAuditClear");
+  if (btnAdminAuditClear) btnAdminAuditClear.onclick = adminClearAuditBox;
+
+  const btnAdminClear = els("btnAdminClear");
+  if (btnAdminClear) btnAdminClear.onclick = adminClearKey;
+
+  updatePagerUI();
   refreshMe();
-  updateUpgradeUI();
 }
 
 init();
