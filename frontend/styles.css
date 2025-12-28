@@ -572,3 +572,30 @@ hr {
   background: rgba(255,255,255,0.10);
 }
 
+/* Pagination + start gate */
+.pager{
+  display:flex;
+  gap:10px;
+  align-items:center;
+}
+.pageinfo{
+  font-size: 0.9rem;
+  opacity: 0.85;
+}
+.startgate{
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 14px;
+  background: rgba(17,24,39,0.35);
+}
+.startgate-title{
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.startgate-text{
+  margin-bottom: 10px;
+  opacity: 0.9;
+}
+
+
