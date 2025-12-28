@@ -834,24 +834,7 @@ function init() {
   els("yr").textContent = new Date().getFullYear();
   els("apiBase").value = state.apiBase;
 
-    // Hide advanced server tools in production
-  const params = new URLSearchParams(window.location.search);
-  const isLocal = ["localhost", "127.0.0.1"].includes(window.location.hostname);
-  const devMode = isLocal || params.has("dev"); // use https://your-site.netlify.app/?dev=1
-
-  if (!devMode) {
-    // Force prod API base and prevent users from changing it
-    state.apiBase = "https://exampartner-backend.onrender.com";
-    localStorage.removeItem("apiBase");
-
-    // Hide the input + hint column, hide Check API button
-    const apiBaseEl = els("apiBase");
-    if (apiBaseEl && apiBaseEl.parentElement) apiBaseEl.parentElement.hidden = true;
-
-    const btnCheck = els("btnCheck");
-    if (btnCheck) btnCheck.hidden = true;
-  }
-
+  
 
   initFiltersUI();
 
