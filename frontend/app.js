@@ -1,4 +1,5 @@
 
+
 // ExamPartner MVP client (auth + browse + Paystack upgrade) + filters + admin mini tools
 
 const els = (id) => document.getElementById(id);
@@ -122,9 +123,8 @@ const YEAR_OPTIONS = (() => {
 const ADMIN_KEY_STORAGE = "ep_admin_key";
 
 const state = {
-  apiBase: localStorage.getItem("apiBase") || "https://exampartner-backend.onrender.com",
+  apiBase: localStorage.getItem("apiBase") || "http://127.0.0.1:8000",
   token: localStorage.getItem("token") || "",
-  
   isPaid: false,
   authenticated: false,
   freeLimit: 10,
@@ -833,8 +833,6 @@ function adminClearAuditBox() {
 function init() {
   els("yr").textContent = new Date().getFullYear();
   els("apiBase").value = state.apiBase;
-
-  
 
   initFiltersUI();
 
