@@ -1,4 +1,3 @@
-
 import os
 import json
 import time
@@ -170,13 +169,22 @@ def register(body: AuthReq):
     db = db_conn()
     cur = db.cursor()
     try:
+        # ✅ Use a real boolean for Postgres (works in SQLite too)
         cur.execute(
-            "INSERT INTO users (identifier, salt, pw_hash, is_paid) VALUES (?, ?, ?, 0)",
-            (identifier, salt, pw_hash),
+            "INSERT INTO users (identifier, salt, pw_hash, is_paid) VALUES (?, ?, ?, ?)",
+            (identifier, salt, pw_hash, False),
         )
         db.commit()
-    except Exception:
-        raise HTTPException(status_code=409, detail="User already exists")
+    except Exception as e:
+        # ✅ Only claim "already exists" when it's truly a unique/duplicate error
+        msg = (str(e) or "").lower()
+        logger.exception("Register failed for identifier=%s", identifier)
+
+        if "unique" in msg or "duplicate" in msg or "already exists" in msg:
+            raise HTTPException(status_code=409, detail="User already exists")
+
+        # Any other DB error is NOT "user exists"
+        raise HTTPException(status_code=500, detail="Registration failed. Server DB error.")
     finally:
         db.close()
 
@@ -233,12 +241,6 @@ def filters(
     exam: Optional[str] = Query(default=None),
     year: Optional[int] = Query(default=None),
 ):
-    """
-    Return available filter values based on what's in the DB.
-
-    - If qtype is provided ("objective" / "theory"), values are restricted to that type.
-    - If exam/year are provided, values are further narrowed (for cascading dropdowns).
-    """
     where: List[str] = []
     params: List[Any] = []
 
@@ -259,7 +261,6 @@ def filters(
     db = db_conn()
     cur = db.cursor()
 
-    # Exams (not dependent on exam/year filters unless qtype is passed)
     cur.execute(
         f"""SELECT DISTINCT exam FROM questions
         {('WHERE qtype = ?' if qtype else '')}
@@ -271,7 +272,6 @@ def filters(
     exams_rows = cur.fetchall()
     exams = sorted([r["exam"] for r in exams_rows if r.get("exam")])
 
-    # Years (depends on qtype/exam)
     where_y: List[str] = []
     params_y: List[Any] = []
     if qtype:
@@ -288,7 +288,6 @@ def filters(
     years_rows = cur.fetchall()
     years = sorted([int(r["year"]) for r in years_rows if r.get("year") is not None], reverse=True)
 
-    # Subjects (depends on qtype/exam/year)
     cur.execute(
         f"""SELECT DISTINCT subject FROM questions
         {where_sql}
