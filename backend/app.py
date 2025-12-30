@@ -30,7 +30,9 @@ JWT_SECRET = os.getenv("JWT_SECRET", "dev_secret_change_me")
 JWT_TTL_SECONDS = int(os.getenv("JWT_TTL_SECONDS", "86400"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
-DIAGRAMS_DIR = os.getenv("DIAGRAMS_DIR", str(Path(__file__).parent / "diagrams"))
+DIAGRAMS_DIR = Path(os.getenv("DIAGRAMS_DIR", str(Path(__file__).resolve().parent / "diagrams")))
+# Ensure diagrams dir exists (local + deployed)
+DIAGRAMS_DIR.mkdir(parents=True, exist_ok=True)
 
 cors_origins_raw = os.getenv("CORS_ORIGINS", "http://127.0.0.1:5173,http://127.0.0.1:5500")
 CORS_ORIGINS = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
@@ -50,10 +52,6 @@ logger = logging.getLogger("exampartner")
 # APP
 # -----------------------------
 app = FastAPI(title="ExamPartner API", version="1.0.0")
-@app.get("/health")
-def health():
-    return {"ok": True, "service": "ExamPartner API"}
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,9 +61,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve diagrams if present
-if Path(DIAGRAMS_DIR).exists():
-    app.mount("/static/diagrams", StaticFiles(directory=DIAGRAMS_DIR), name="diagrams")
+# Serve diagrams (served at /static/diagrams/<filename>)
+app.mount("/static/diagrams", StaticFiles(directory=str(DIAGRAMS_DIR)), name="diagrams")
 
 # Payments routes
 app.include_router(paystack_router)
@@ -382,3 +379,4 @@ def get_question(qid: str, user: Optional[Dict[str, Any]] = Depends(get_current_
         raise HTTPException(status_code=404, detail="Question not found")
 
     return _row_to_question(row)
+
