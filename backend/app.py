@@ -54,8 +54,8 @@ app = FastAPI(title="ExamPartner API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
+    allow_origins=["*"],          # ✅ MVP: allow all
+    allow_credentials=False,      # ✅ must be False when using "*"
     allow_methods=["*"],
     allow_headers=["*"],
 )
