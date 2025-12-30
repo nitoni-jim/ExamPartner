@@ -130,6 +130,13 @@ const state = {
   freeLimit: 10,
   busyPay: false,
 
+  // list paging (offset is internal)
+  pageSize: 20,
+  pageIndex: 0,
+  endReached: false,
+  paywalled: false,
+  lastItems: [],
+
   filters: {
     exam: localStorage.getItem("filter_exam") || "",
     year: localStorage.getItem("filter_year") || "",
@@ -137,6 +144,7 @@ const state = {
   },
 
   adminKey: sessionStorage.getItem(ADMIN_KEY_STORAGE) || "",
+  devMode: false,
 };
 
 function setStatus(msg, kind = "ok") {
@@ -156,8 +164,18 @@ function setPayMsg(msg) {
 function setPaidChip(paid) {
   state.isPaid = !!paid;
   const chip = els("chipPaid");
-  chip.hidden = !state.isPaid;
+  if (!chip) return;
+
+  if (state.isPaid) {
+    chip.hidden = false;
+    chip.style.removeProperty("display");
+  } else {
+    chip.hidden = true;
+    chip.style.setProperty("display", "none", "important"); // force-hide
+  }
 }
+
+
 
 function updatePracticeMetaUI() {
   const el = els("practiceMeta");
@@ -165,9 +183,8 @@ function updatePracticeMetaUI() {
 
   const exam = state.filters.exam || "All Exams";
   const subject = state.filters.subject || "All Subjects";
-  year = state.filters.year || "All Years";
- els("practiceMeta").textContent = `${exam} • ${subject} • ${year}`;
-
+  const year = state.filters.year || "All Years";
+  el.textContent = `${exam} • ${subject} • ${year}`;
 }
 
 
@@ -260,9 +277,9 @@ function initFiltersUI() {
     localStorage.setItem("filter_subject", state.filters.subject);
   };
 
-  examSel.onchange = () => { save(); updatePracticeMetaUI(); };
-  yearSel.onchange = () => { save(); updatePracticeMetaUI(); };
-  subjSel.onchange = () => { save(); updatePracticeMetaUI(); };
+  examSel.onchange = () => { save(); updatePracticeMetaUI(); maybeAutoLoadAfterFilterChange(); };
+  yearSel.onchange = () => { save(); updatePracticeMetaUI(); maybeAutoLoadAfterFilterChange(); };
+  subjSel.onchange = () => { save(); updatePracticeMetaUI(); maybeAutoLoadAfterFilterChange(); };
 
   const btnClear = els("btnClearFilters");
   if (btnClear) {
@@ -284,6 +301,62 @@ function buildFilterQuery() {
   if (state.filters.subject) params.set("subject", state.filters.subject);
   const qs = params.toString();
   return qs ? `&${qs}` : "";
+}
+
+
+// ====== First-time gate + list pager ======
+function filtersReady() {
+  // Require these three so first-time users don't load "everything"
+  return !!(state.filters.exam && state.filters.year && state.filters.subject);
+}
+
+function isFirstTimeUser() {
+  const started = localStorage.getItem("ep_started") === "1";
+  const hasAnySaved = !!(state.filters.exam || state.filters.year || state.filters.subject);
+  return !started && !hasAnySaved;
+}
+
+function openFiltersPanel() {
+  const fp = els("filtersPanel");
+  if (fp) fp.open = true;
+}
+
+function setStartGateVisible(visible) {
+  const gate = els("startGate");
+  if (!gate) return;
+  gate.hidden = !visible;
+  if (visible) openFiltersPanel();
+}
+
+function setListPagerUI({ loading = false } = {}) {
+  const prev = els("btnPrevPage");
+  const next = els("btnNextPage");
+  const label = els("pageLabel");
+  const hint = els("pageHint");
+
+  if (label) label.textContent = `Page ${state.pageIndex + 1}`;
+
+  if (hint) {
+    if (state.paywalled) hint.textContent = " • Upgrade to continue";
+    else if (state.endReached) hint.textContent = " • End reached";
+    else hint.textContent = "";
+  }
+
+  if (prev) prev.disabled = loading || state.pageIndex <= 0;
+  if (next) next.disabled = loading || state.paywalled || state.endReached;
+}
+
+function maybeAutoLoadAfterFilterChange() {
+  // First-time users: once filters are ready, load page 1 automatically
+  if (filtersReady()) {
+    setStartGateVisible(false);
+    state.pageIndex = 0;
+    state.endReached = false;
+    state.paywalled = false;
+    loadList(0);
+  } else {
+    if (isFirstTimeUser()) setStartGateVisible(true);
+  }
 }
 
 // ====== List ======
@@ -481,22 +554,40 @@ async function checkApi() {
   else setStatus(`Failed: ${r?.error || "unknown error"}`, "bad");
 }
 
-async function refreshMe() {
-  if (!state.token) return;
+ async function refreshMe() {
+  // 🔒 Always reset state first
+  if (!state.token) {
+    state.authenticated = false;
+    setPaidChip(false);          // ❌ hide PAID
+    const btnLogout = els("btnLogout");
+    if (btnLogout) btnLogout.hidden = true;
+    updateUpgradeUI();
+    updateAdminUI();
+    return;
+  }
+
   const r = await api("/me");
+
   if (r?.identifier) {
     state.authenticated = true;
-    setPaidChip(r.is_paid);
-    els("btnLogout").hidden = false;
+    setPaidChip(!!r.is_paid);    // ✅ show PAID only if truly paid
+
+    const btnLogout = els("btnLogout");
+    if (btnLogout) btnLogout.hidden = false;
+
     setAuthMsg(`Logged in as: ${r.identifier}`);
   } else {
     state.authenticated = false;
-    setPaidChip(false);
-    els("btnLogout").hidden = true;
+    setPaidChip(false);          // ❌ hide PAID
+
+    const btnLogout = els("btnLogout");
+    if (btnLogout) btnLogout.hidden = true;
   }
+
   updateUpgradeUI();
   updateAdminUI();
 }
+
 
 async function doRegister() {
   saveApiBase();
@@ -544,26 +635,59 @@ async function doLogout() {
   updateAdminUI();
 }
 
-async function loadList() {
+async function loadList(targetPageIndex = state.pageIndex) {
   saveApiBase();
-  const mode = els("mode").value;
-  const offset = parseInt(els("offset").value || "0", 10) || 0;
 
+  const mode = els("mode").value;
+  const limit = state.pageSize || 20;
+  const pageIndex = Math.max(0, parseInt(targetPageIndex || 0, 10) || 0);
+  const offset = pageIndex * limit;
+
+  // keep current list visible unless successful load
   els("paywall").hidden = true;
   setStatus("Loading…", "ok");
+  state.paywalled = false;
+  setListPagerUI({ loading: true });
 
   const filterQs = buildFilterQuery();
-  const r = await api(`/questions/${mode}?limit=20&offset=${offset}${filterQs}`);
+  const r = await api(`/questions/${mode}?limit=${limit}&offset=${offset}${filterQs}`);
 
-  if (r?.paywall) {
+  // Paywall: backend usually returns HTTP 402 (api() returns ok:false)
+  if ((r?.ok === false && r?.status === 402) || r?.paywall) {
+    state.paywalled = true;
     setStatus("Preview limit reached. Please upgrade.", "bad");
-    els("list").innerHTML = "";
     els("paywall").hidden = false;
+    setListPagerUI({ loading: false });
     return;
   }
 
-  renderList(r.items);
-  setStatus(`Loaded ${r.items?.length || 0} items.`, "ok");
+  if (r?.ok === false) {
+    setStatus(`Error: ${r.error || "Request failed"}`, "bad");
+    setListPagerUI({ loading: false });
+    return;
+  }
+
+  const items = r.items || [];
+
+  // end-of-list: don't show an empty page
+  if (!items.length && pageIndex > 0) {
+    state.endReached = true;
+    setStatus("End reached. No more questions.", "ok");
+    setListPagerUI({ loading: false });
+    return;
+  }
+
+  // success
+  localStorage.setItem("ep_started", "1");
+  state.pageIndex = pageIndex;
+  state.lastItems = items;
+  state.endReached = items.length < limit;
+
+  renderList(items);
+  setStatus(`Loaded ${items.length || 0} items.`, "ok");
+  if (state.endReached) setStatus("End reached. No more questions.", "ok");
+
+  setListPagerUI({ loading: false });
 }
 
 function updateUpgradeUI() {
@@ -715,8 +839,10 @@ function adminClearKey() {
 
 function updateAdminUI() {
   const tools = els("adminTools");
-  if (!tools) return;
-  tools.hidden = !state.adminKey;
+  if (tools) tools.hidden = !(state.devMode && state.adminKey);
+
+  const btnAdmin = els("btnAdmin");
+  if (btnAdmin) btnAdmin.hidden = !state.devMode;
 }
 
 async function adminReconcile() {
@@ -834,26 +960,57 @@ function init() {
   els("yr").textContent = new Date().getFullYear();
   els("apiBase").value = state.apiBase;
 
-    // Hide advanced server tools in production
+  // Dev mode: only when URL has ?dev=1 (so normal local testing can still be "user mode")
   const params = new URLSearchParams(window.location.search);
-  const isLocal = ["localhost", "127.0.0.1"].includes(window.location.hostname);
-  const devMode = isLocal || params.has("dev"); // use https://your-site.netlify.app/?dev=1
+  const devMode = params.has("dev");
+  state.devMode = devMode;
+  setPaidChip(false);
 
+
+  // Status: dev-only (user mode stays clean)
+  const statusEl = els("status");
+  if (statusEl) statusEl.hidden = !state.devMode;
+
+  // Check API button: dev-only
+  const btnCheck = els("btnCheck");
+  if (btnCheck) btnCheck.hidden = !state.devMode;
+
+  // In user mode, force the hosted backend and hide all dev/admin tools
   if (!devMode) {
-    // Force prod API base and prevent users from changing it
     state.apiBase = "https://exampartner-backend.onrender.com";
     localStorage.removeItem("apiBase");
 
-    // Hide the input + hint column, hide Check API button
-    const apiBaseEl = els("apiBase");
-    if (apiBaseEl && apiBaseEl.parentElement) apiBaseEl.parentElement.hidden = true;
+    const devServerCol = els("devServerCol");
+    const devActionsCol = els("devActionsCol");
+    if (devServerCol) devServerCol.hidden = true;
+    if (devActionsCol) devActionsCol.hidden = true;
 
-    const btnCheck = els("btnCheck");
+    // extra safety: keep status + check hidden even if layout changes
+    if (statusEl) statusEl.hidden = true;
     if (btnCheck) btnCheck.hidden = true;
+  } else {
+    // In dev mode, show server tools so you can point to local backend
+    const devServerCol = els("devServerCol");
+    const devActionsCol = els("devActionsCol");
+    if (devServerCol) devServerCol.hidden = false;
+    if (devActionsCol) devActionsCol.hidden = false;
+
+    if (statusEl) statusEl.hidden = false;
+    if (btnCheck) btnCheck.hidden = false;
   }
 
-
   initFiltersUI();
+
+  const modeEl = els("mode");
+  if (modeEl) {
+    modeEl.onchange = () => {
+      if (!filtersReady()) { setStartGateVisible(true); return; }
+      state.pageIndex = 0;
+      state.endReached = false;
+      state.paywalled = false;
+      loadList(0);
+    };
+  }
 
   // A2: remember filters panel open/closed
   const fp = els("filtersPanel");
@@ -862,52 +1019,97 @@ function init() {
     if (saved === "1") fp.open = true;
 
     fp.addEventListener("toggle", () => {
-     localStorage.setItem(FILTERS_PANEL_OPEN, fp.open ? "1" : "0");
-   });
- }
+      localStorage.setItem(FILTERS_PANEL_OPEN, fp.open ? "1" : "0");
+    });
+  }
 
   updatePracticeMetaUI();
   updateAdminUI();
+  setListPagerUI({ loading: false });
 
-  els("btnCheck").onclick = checkApi;
-  els("btnRegister").onclick = doRegister;
-  els("btnLogin").onclick = doLogin;
-  els("btnLogout").onclick = doLogout;
+  // First-time gate vs returning user auto-load
+  if (isFirstTimeUser() && !filtersReady()) {
+    setStartGateVisible(true);
+  } else {
+    setStartGateVisible(false);
+    if (filtersReady()) {
+      state.pageIndex = 0;
+      state.endReached = false;
+      state.paywalled = false;
+      loadList(0);
+    }
+  }
 
-  els("btnLoad").onclick = loadList;
-  els("btnClose").onclick = closeViewer;
+  // ✅ Safe event wiring (no null-crash)
+  if (btnCheck) btnCheck.onclick = checkApi;
+
+  const btnRegister = els("btnRegister");
+  if (btnRegister) btnRegister.onclick = doRegister;
+
+  const btnLogin = els("btnLogin");
+  if (btnLogin) btnLogin.onclick = doLogin;
+
+  const btnLogout = els("btnLogout");
+  if (btnLogout) btnLogout.onclick = doLogout;
+
+  const btnClose = els("btnClose");
+  if (btnClose) btnClose.onclick = closeViewer;
 
   const btnPractice = els("btnPractice");
   if (btnPractice) btnPractice.onclick = () => {
-    const off = els("offset");
-    if (off) off.value = 0;
-    loadList();
+    if (!filtersReady()) {
+      setStartGateVisible(true);
+      return;
+    }
+    state.pageIndex = 0;
+    state.endReached = false;
+    state.paywalled = false;
+    loadList(0);
+
     // bring the list into view on mobile
     const list = els("list");
     if (list) list.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  els("btnPay").onclick = startPaystackPayment;
-  els("btnCheckPaid").onclick = checkPaidStatus;
-
-
-const btnPrev = els("btnPrev");
-if (btnPrev) {
-  btnPrev.onclick = () => {
-    if (!currentListIds.length) return;
-    if (currentIndex > 0) openQuestion(currentListIds[currentIndex - 1]);
+  // List pager (separate from question viewer Prev/Next)
+  const btnPrevPage = els("btnPrevPage");
+  if (btnPrevPage) btnPrevPage.onclick = () => {
+    if (state.pageIndex <= 0) return;
+    state.endReached = false;
+    state.paywalled = false;
+    loadList(state.pageIndex - 1);
   };
-}
 
-const btnNext = els("btnNext");
-if (btnNext) {
-  btnNext.onclick = () => {
-    if (!currentListIds.length) return;
-    if (currentIndex >= 0 && currentIndex < currentListIds.length - 1) {
-      openQuestion(currentListIds[currentIndex + 1]);
-    }
+  const btnNextPage = els("btnNextPage");
+  if (btnNextPage) btnNextPage.onclick = () => {
+    if (state.endReached || state.paywalled) return;
+    loadList(state.pageIndex + 1);
   };
-}
+
+  const btnPay = els("btnPay");
+  if (btnPay) btnPay.onclick = startPaystackPayment;
+
+  const btnCheckPaid = els("btnCheckPaid");
+  if (btnCheckPaid) btnCheckPaid.onclick = checkPaidStatus;
+
+  // Viewer prev/next question buttons
+  const btnPrev = els("btnPrev");
+  if (btnPrev) {
+    btnPrev.onclick = () => {
+      if (!currentListIds.length) return;
+      if (currentIndex > 0) openQuestion(currentListIds[currentIndex - 1]);
+    };
+  }
+
+  const btnNext = els("btnNext");
+  if (btnNext) {
+    btnNext.onclick = () => {
+      if (!currentListIds.length) return;
+      if (currentIndex >= 0 && currentIndex < currentListIds.length - 1) {
+        openQuestion(currentListIds[currentIndex + 1]);
+      }
+    };
+  }
 
   // Admin buttons
   const btnAdmin = els("btnAdmin");
@@ -932,4 +1134,3 @@ if (btnNext) {
 }
 
 init();
-
