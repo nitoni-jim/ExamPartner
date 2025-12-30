@@ -225,6 +225,90 @@ def me(user: Optional[Dict[str, Any]] = Depends(get_current_user)):
 
 
 # -----------------------------
+# FILTER OPTIONS (dynamic)
+# -----------------------------
+@app.get("/filters")
+def filters(
+    qtype: Optional[str] = Query(default=None),
+    exam: Optional[str] = Query(default=None),
+    year: Optional[int] = Query(default=None),
+):
+    """
+    Return available filter values based on what's in the DB.
+
+    - If qtype is provided ("objective" / "theory"), values are restricted to that type.
+    - If exam/year are provided, values are further narrowed (for cascading dropdowns).
+    """
+    where: List[str] = []
+    params: List[Any] = []
+
+    if qtype:
+        where.append("qtype = ?")
+        params.append(qtype)
+
+    if exam:
+        where.append("exam = ?")
+        params.append(exam)
+
+    if year is not None:
+        where.append("year = ?")
+        params.append(year)
+
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    db = db_conn()
+    cur = db.cursor()
+
+    # Exams (not dependent on exam/year filters unless qtype is passed)
+    cur.execute(
+        f"""SELECT DISTINCT exam FROM questions
+        {('WHERE qtype = ?' if qtype else '')}
+        AND exam IS NOT NULL AND TRIM(exam) <> ''""" if qtype else
+        """SELECT DISTINCT exam FROM questions
+        WHERE exam IS NOT NULL AND TRIM(exam) <> ''""",
+        (qtype,) if qtype else None,
+    )
+    exams_rows = cur.fetchall()
+    exams = sorted([r["exam"] for r in exams_rows if r.get("exam")])
+
+    # Years (depends on qtype/exam)
+    where_y: List[str] = []
+    params_y: List[Any] = []
+    if qtype:
+        where_y.append("qtype = ?"); params_y.append(qtype)
+    if exam:
+        where_y.append("exam = ?"); params_y.append(exam)
+    where_y_sql = ("WHERE " + " AND ".join(where_y)) if where_y else ""
+    cur.execute(
+        f"""SELECT DISTINCT year FROM questions
+        {where_y_sql}
+        {'AND' if where_y_sql else 'WHERE'} year IS NOT NULL""",
+        tuple(params_y) if params_y else None,
+    )
+    years_rows = cur.fetchall()
+    years = sorted([int(r["year"]) for r in years_rows if r.get("year") is not None], reverse=True)
+
+    # Subjects (depends on qtype/exam/year)
+    cur.execute(
+        f"""SELECT DISTINCT subject FROM questions
+        {where_sql}
+        {'AND' if where_sql else 'WHERE'} subject IS NOT NULL AND TRIM(subject) <> ''""",
+        tuple(params) if params else None,
+    )
+    subs_rows = cur.fetchall()
+    subjects = sorted([r["subject"] for r in subs_rows if r.get("subject")])
+
+    db.close()
+
+    return {
+        "ok": True,
+        "exams": exams,
+        "years": years,
+        "subjects": subjects,
+    }
+
+
+# -----------------------------
 # QUESTIONS
 # -----------------------------
 def _jloads(x: Optional[str]):
@@ -379,4 +463,3 @@ def get_question(qid: str, user: Optional[Dict[str, Any]] = Depends(get_current_
         raise HTTPException(status_code=404, detail="Question not found")
 
     return _row_to_question(row)
-
