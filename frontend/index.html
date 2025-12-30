@@ -1,4 +1,6 @@
 
+
+
 <!doctype html>
 <html lang="en">
 <head>
@@ -55,22 +57,24 @@
   <main class="wrap">
     <section class="card">
       <div class="row space">
-        <h2>Account & Settings</h2>
+        <h2>Account</h2>
       </div>
 
       <div class="grid2">
-        <div class="col">
+        <div class="col" id="devServerCol" hidden>
           <label for="apiBase">Server URL (advanced)</label>
           <input id="apiBase" type="text" placeholder="http://127.0.0.1:8000" />
           <div class="hint">If you are using the hosted app, you can ignore this. For local testing, keep your server running.</div>
         </div>
-        <div class="col actions">
-          <button id="btnCheck" class="btn">Check API</button>
+        <div class="col actions" id="devActionsCol" hidden>
+          <button id="btnCheck" class="btn" hidden>Check API</button>
+
           <button id="btnLogout" class="btn ghost" hidden>Logout</button>
         </div>
       </div>
 
-      <div id="status" class="status">Not connected.</div>
+      <div id="status" class="status" hidden>Not connected.</div>
+
 
       <div class="grid2">
         <div class="panel">
@@ -96,7 +100,7 @@
             <h3>Upgrade (Paystack)</h3>
 
             <!-- ✅ Tiny Admin-only button -->
-            <button id="btnAdmin" class="btn ghost" type="button" title="Admin tools">Admin</button>
+            <button id="btnAdmin" class="btn ghost" type="button" title="Admin tools" hidden>Admin</button>
           </div>
 
           <div class="hint">Unlock more than the free preview limit.</div>
@@ -152,10 +156,18 @@
             <option value="theory">Theory</option>
           </select>
 
-          <input id="offset" type="number" min="0" step="10" value="0" />
-          <button id="btnLoad" class="btn">Load</button>
+          <!-- Offset + Load removed: paging is automatic -->
         </div>
       </div>
+
+        <div class="pager" id="listPager">
+          <button id="btnPrevPage" class="btn ghost" type="button">◀ Prev Page</button>
+          <div class="pager-meta">
+            <span id="pageLabel">Page 1</span>
+            <span id="pageHint" class="hint"></span>
+          </div>
+          <button id="btnNextPage" class="btn ghost" type="button">Next Page ▶</button>
+        </div>
 
     <details id="filtersPanel" class="filters-panel">
        <summary>Filters</summary>  
@@ -172,6 +184,14 @@
           <button id="btnClearFilters" class="btn ghost" type="button">Clear Filters</button>
        </div>
     </details>
+
+     <div id="startGate" class="gate" hidden>
+         <div class="gate-title">Choose your exam to start</div>
+         <div class="gate-sub">
+           Select <b>Exam</b>, <b>Year</b>, and <b>Subject</b> in the Filters above — questions will load automatically.
+         </div>
+      </div>
+
 
       <div id="list" class="list"></div>
       <div id="paywall" class="paywall" hidden>
@@ -213,6 +233,6 @@
   </main>
 
   <script src="https://js.paystack.co/v1/inline.js"></script>
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>
