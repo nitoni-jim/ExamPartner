@@ -236,7 +236,8 @@ def maybe_downgrade_user_on_refund(reference: str) -> None:
         if not row:
             return
         user_id = int(row["user_id"])
-        cur.execute("UPDATE users SET is_paid = 0 WHERE id = ?", (user_id,))
+        # ✅ boolean
+        cur.execute("UPDATE users SET is_paid = ? WHERE id = ?", (False, user_id))
         db.commit()
     finally:
         db.close()
@@ -278,10 +279,9 @@ def mark_user_paid_by_identifier(
             return
         user_id = int(urow["id"])
 
-        # mark paid
-        cur.execute("UPDATE users SET is_paid = 1 WHERE id = ?", (user_id,))
+        # ✅ boolean
+        cur.execute("UPDATE users SET is_paid = ? WHERE id = ?", (True, user_id))
 
-        # insert payment only if not exists
         cur.execute("SELECT id FROM payments WHERE reference = ?", (ref,))
         prow = cur.fetchone()
         if not prow:
@@ -317,7 +317,7 @@ class VerifyReq(BaseModel):
 
 class AdminRefundReq(BaseModel):
     reference: str
-    amount_kobo: Optional[int] = None  # omit for full refund
+    amount_kobo: Optional[int] = None
     customer_note: Optional[str] = None
     merchant_note: Optional[str] = None
 
@@ -334,10 +334,6 @@ def paystack_public_key():
 
 @router.post("/verify")
 def verify_payment(req: VerifyReq):
-    """
-    Frontend calls this after Paystack success callback.
-    Verifies reference with Paystack and marks the user as paid.
-    """
     ref = (req.reference or "").strip()
     email = (req.email or "").strip().lower()
 
@@ -360,13 +356,10 @@ def verify_payment(req: VerifyReq):
     if amount < MIN_AMOUNT_KOBO:
         raise HTTPException(status_code=400, detail="Amount too low")
 
-    # prefer Paystack customer email if present
     customer = tx.get("customer") or {}
     customer_email = (customer.get("email") or "").strip().lower()
-
     final_identifier = customer_email or email
 
-    # mark paid + store payment
     mark_user_paid_by_identifier(final_identifier, ref, source="paystack:verify", pay_data=tx)
 
     return {"ok": True, "reference": ref, "email": final_identifier, "amount_kobo": amount}
@@ -374,13 +367,6 @@ def verify_payment(req: VerifyReq):
 
 @router.post("/webhook")
 async def paystack_webhook(request: Request):
-    """
-    Paystack webhook:
-    - verify signature
-    - replay protection by reference
-    - handle refunds (optional downgrade)
-    - for other events: authoritative verify by reference and mark paid if success
-    """
     raw = await request.body()
     signature = request.headers.get("x-paystack-signature")
 
@@ -397,7 +383,6 @@ async def paystack_webhook(request: Request):
 
     reference = (data.get("reference") or "").strip()
     if not reference:
-        # sometimes nested
         tx = data.get("transaction")
         if isinstance(tx, dict):
             reference = (tx.get("reference") or "").strip()
@@ -405,20 +390,17 @@ async def paystack_webhook(request: Request):
     if not reference:
         return {"ok": True, "ignored": "no_reference", "event": event_type}
 
-    # replay protection
     body_hash = sha256_hex(raw)
     if is_webhook_reference_seen(reference):
         return {"ok": True, "ignored": "replay", "event": event_type, "reference": reference}
 
     remember_webhook_reference(reference, event_type, body_hash)
 
-    # refund handling
     if "refund" in event_type.lower():
         update_payment_status(reference, "refunded", raw_json=event)
         maybe_downgrade_user_on_refund(reference)
         return {"ok": True, "event": event_type, "reference": reference, "refunded": True}
 
-    # authoritative verify
     verify = paystack_api_get(f"/transaction/verify/{reference}")
     if not verify.get("status"):
         return {"ok": True, "event": event_type, "reference": reference, "verified": False}
@@ -489,16 +471,10 @@ def admin_refund(req: AdminRefundReq, request: Request):
     if req.merchant_note:
         payload["merchant_note"] = req.merchant_note
 
-    audit_admin_action(
-        request,
-        action="admin_refund",
-        reference=ref,
-        payload=payload,
-    )
+    audit_admin_action(request, action="admin_refund", reference=ref, payload=payload)
 
     out = paystack_api_post("/refund", payload)
 
-    # set local status as queued; webhook may later flip to refunded
     update_payment_status(ref, "refund_queued", raw_json=out)
 
     return {"ok": True, "reference": ref, "paystack": out}
@@ -562,10 +538,12 @@ def admin_mark_paid(request: Request, email: str):
     db = get_db()
     try:
         cur = db.cursor()
-        cur.execute("UPDATE users SET is_paid = 1 WHERE lower(identifier) = ?", (identifier,))
+        # ✅ boolean
+        cur.execute("UPDATE users SET is_paid = ? WHERE lower(identifier) = ?", (True, identifier))
         db.commit()
     finally:
         db.close()
 
     audit_admin_action(request, action="admin_mark_paid", reference=identifier, payload={"email": identifier})
     return {"ok": True, "email": identifier}
+
