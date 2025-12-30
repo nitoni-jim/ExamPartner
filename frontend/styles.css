@@ -1,5 +1,4 @@
 
-
 :root {
   --bg: #0b1020;
   --card: #111827;
@@ -10,6 +9,10 @@
   --danger: #fb7185;
   --ok: #34d399;
 }
+
+/* Always respect the HTML hidden attribute */
+[hidden] { display: none !important; }
+
 
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -572,30 +575,24 @@ hr {
   background: rgba(255,255,255,0.10);
 }
 
-/* Pagination + start gate */
+
+
+/* ====== Minimal additions: Gate + List pager ====== */
 .pager{
   display:flex;
   gap:10px;
   align-items:center;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+  margin-top: 8px;
 }
-.pageinfo{
-  font-size: 0.9rem;
-  opacity: 0.85;
-}
-.startgate{
-  margin-top: 12px;
-  padding: 12px;
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 14px;
-  background: rgba(17,24,39,0.35);
-}
-.startgate-title{
-  font-weight: 700;
-  margin-bottom: 6px;
-}
-.startgate-text{
-  margin-bottom: 10px;
-  opacity: 0.9;
-}
+.pager-meta{ display:flex; gap:8px; align-items:center; }
 
-
+.gate{
+  margin: 12px 0;
+  padding: 14px;
+  border: 1px dashed rgba(0,0,0,0.25);
+  border-radius: 12px;
+}
+.gate-title{ font-weight: 700; margin-bottom: 4px; }
+.gate-sub{ opacity: .85; margin-bottom: 10px; }
