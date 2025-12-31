@@ -38,9 +38,7 @@ DIAGRAMS_DIR.mkdir(parents=True, exist_ok=True)
 cors_origins_raw = os.getenv("CORS_ORIGINS", "http://127.0.0.1:5173,http://127.0.0.1:5500")
 CORS_ORIGINS = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
 
-FREE_SAMPLE_LIMIT_OBJ = int(os.getenv("FREE_SAMPLE_LIMIT_OBJ", "10"))
-FREE_SAMPLE_LIMIT_THEORY = int(os.getenv("FREE_SAMPLE_LIMIT_THEORY", "2"))
-
+FREE_SAMPLE_LIMIT = int(os.getenv("FREE_SAMPLE_LIMIT", "10"))
 
 # -----------------------------
 # LOGGING
