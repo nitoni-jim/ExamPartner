@@ -527,7 +527,6 @@ def admin_audit(request: Request, limit: int = 20):
 
     return {"ok": True, "limit": limit, "items": items}
 
-
 @router.post("/admin/mark-paid")
 def admin_mark_paid(request: Request, email: str):
     require_admin(request)
@@ -546,4 +545,3 @@ def admin_mark_paid(request: Request, email: str):
 
     audit_admin_action(request, action="admin_mark_paid", reference=identifier, payload={"email": identifier})
     return {"ok": True, "email": identifier}
-
