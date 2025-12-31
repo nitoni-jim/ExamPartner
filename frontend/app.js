@@ -1,9 +1,14 @@
 
+
+
 // ExamPartner MVP client (auth + browse + Paystack upgrade) + filters + admin mini tools
 
 const els = (id) => document.getElementById(id);
 const apiBaseNoSlash = () => (state.apiBase || "").replace(/\/$/, "");
 const FILTERS_PANEL_OPEN = "ep_filters_open";
+const FILTER_CACHE_KEY = "ep_filter_cache_v1";
+const FILTER_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 
 function setViewerOpen(isOpen) {
   document.body.classList.toggle("viewer-open", !!isOpen);
@@ -109,6 +114,7 @@ const PAYSTACK_CURRENCY = "NGN";
 // ====================
 
 // ---- Filter presets ----
+// These are FALLBACKS only. Real values are loaded from the backend (/filters).
 const EXAM_OPTIONS = ["", "NECO", "WAEC", "JAMB"];
 const SUBJECT_OPTIONS = ["", "Mathematics"];
 const YEAR_OPTIONS = (() => {
@@ -118,12 +124,14 @@ const YEAR_OPTIONS = (() => {
   return years;
 })();
 
+let FILTER_CACHE = { exams: EXAM_OPTIONS.slice(1), years: YEAR_OPTIONS.slice(1).map(Number).filter(Boolean), subjects: SUBJECT_OPTIONS.slice(1) };
+
 // Admin key stored ONLY in sessionStorage
 const ADMIN_KEY_STORAGE = "ep_admin_key";
 
 const state = {
   apiBase: localStorage.getItem("apiBase") || "https://exampartner-backend.onrender.com",
-  token: localStorage.getItem("token") || "",
+  token: sessionStorage.getItem("token") || "",
   
   isPaid: false,
   authenticated: false,
@@ -196,11 +204,18 @@ function saveApiBase() {
   }
 }
 
-function saveToken(t) {
+ function saveToken(t) {
   state.token = t || "";
-  if (state.token) localStorage.setItem("token", state.token);
-  else localStorage.removeItem("token");
+
+  if (state.token) {
+    sessionStorage.setItem("token", state.token); // ✅ session only
+    localStorage.removeItem("token");             // cleanup old persistent token
+  } else {
+    sessionStorage.removeItem("token");
+    localStorage.removeItem("token");
+  }
 }
+
 
 function escapeHtml(s) {
   return (s || "").replace(/[&<>"']/g, (c) => ({
@@ -223,6 +238,9 @@ function isEmail(v) {
 }
 
 async function api(path, opts = {}) {
+  // ✅ keep token consistent across tabs
+  state.token = sessionStorage.getItem("token") || "";
+
   const url = `${state.apiBase.replace(/\/$/, "")}${path}`;
   const headers = opts.headers ? { ...opts.headers } : {};
   if (state.token) headers.Authorization = `Bearer ${state.token}`;
@@ -230,7 +248,13 @@ async function api(path, opts = {}) {
     headers["Content-Type"] = "application/json";
   }
 
-  const res = await fetch(url, { ...opts, headers });
+ let res;
+ try {
+  res = await fetch(url, { ...opts, headers });
+ } catch (e) {
+  return { ok: false, status: 0, error: "Network error: cannot reach backend (CORS/down/wrong URL)" };
+ }
+
   const ct = res.headers.get("content-type") || "";
 
   let body = null;
@@ -254,19 +278,126 @@ function fillSelect(el, values) {
   }
 }
 
-function initFiltersUI() {
+function _safeSetSelectValue(sel, value) {
+  if (!sel) return;
+  const v = value || "";
+  const exists = Array.from(sel.options).some((o) => o.value === v);
+  sel.value = exists ? v : "";
+}
+function saveFilterCache(data) {
+  try {
+    localStorage.setItem(
+      FILTER_CACHE_KEY,
+      JSON.stringify({ ts: Date.now(), data })
+    );
+  } catch {}
+}
+
+function loadFilterCache() {
+  try {
+    const raw = localStorage.getItem(FILTER_CACHE_KEY);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw);
+    if (!parsed?.ts || !parsed?.data) return null;
+
+    if (Date.now() - parsed.ts > FILTER_CACHE_TTL_MS) return null;
+    return parsed.data;
+  } catch {
+    return null;
+  }
+}
+
+
+async function fetchFilters({ qtype = null, exam = null, year = null } = {}) {
+  const params = new URLSearchParams();
+  if (qtype) params.set("qtype", qtype);
+  if (exam) params.set("exam", exam);
+  if (year !== null && year !== undefined && year !== "") {
+    params.set("year", String(year));
+  }
+
+  const qs = params.toString();
+  const path = `/filters${qs ? `?${qs}` : ""}`;
+
+  try {
+    const r = await api(path, { method: "GET" });
+
+    // Expect { ok: true, exams, years, subjects }
+    if (r?.ok && Array.isArray(r.exams)) {
+      saveFilterCache(r);
+      return r;
+    }
+  } catch (e) {
+    console.warn("Filters API failed:", e);
+  }
+
+  // 🔁 fallback: last known good DB-driven filters only
+  const cached = loadFilterCache();
+  if (cached) {
+    console.warn("Using cached filters");
+    return cached;
+  }
+
+  return null; // caller must handle empty state
+}
+
+
+async function refreshFilterOptions({ exam, year, qtype, keepSelection = true } = {}) {
   const examSel = els("examFilter");
   const yearSel = els("yearFilter");
   const subjSel = els("subjectFilter");
   if (!examSel || !yearSel || !subjSel) return;
 
-  fillSelect(examSel, EXAM_OPTIONS);
-  fillSelect(yearSel, YEAR_OPTIONS);
-  fillSelect(subjSel, SUBJECT_OPTIONS);
+  const prev = keepSelection
+    ? { exam: examSel.value, year: yearSel.value, subject: subjSel.value }
+    : { exam: "", year: "", subject: "" };
 
-  examSel.value = state.filters.exam || "";
-  yearSel.value = state.filters.year || "";
-  subjSel.value = state.filters.subject || "";
+  const mode = els("mode")?.value || "objective";
+  const qtypeParam = qtype || mode || null;
+
+  const data = await fetchFilters({
+    qtype: qtypeParam,
+    exam: exam ?? prev.exam ?? null,
+    year: year ?? (prev.year ? parseInt(prev.year, 10) : null),
+  });
+
+  // ✅ Production behavior: no hardcoded fallbacks
+  if (!data || !Array.isArray(data.exams) || !Array.isArray(data.years) || !Array.isArray(data.subjects)) {
+    setStatus("Unable to load filters right now. Please check connection and retry.", "bad");
+    // Keep existing selections as-is (don't wipe UI)
+    return;
+  }
+
+  // Add empty option at top
+  const exams = ["", ...data.exams.map(String)];
+  const years = ["", ...data.years.map((y) => String(y))];
+  const subjects = ["", ...data.subjects.map(String)];
+
+  fillSelect(examSel, exams);
+  fillSelect(yearSel, years);
+  fillSelect(subjSel, subjects);
+
+  // Restore previous selection if still valid, else keep first available
+  _safeSetSelectValue(examSel, prev.exam);
+  _safeSetSelectValue(yearSel, prev.year);
+  _safeSetSelectValue(subjSel, prev.subject);
+}
+
+
+async function initFiltersUI() {
+  const examSel = els("examFilter");
+  const yearSel = els("yearFilter");
+  const subjSel = els("subjectFilter");
+  if (!examSel || !yearSel || !subjSel) return;
+
+  // Load options from backend (/filters). Falls back if unavailable.
+  await refreshFilterOptions({ keepSelection: true });
+
+  // Restore saved selection (after options are loaded)
+  examSel.value = state.filters.exam || examSel.value || "";
+  yearSel.value = state.filters.year || yearSel.value || "";
+  subjSel.value = state.filters.subject || subjSel.value || "";
 
   const save = () => {
     state.filters.exam = examSel.value || "";
@@ -277,22 +408,44 @@ function initFiltersUI() {
     localStorage.setItem("filter_subject", state.filters.subject);
   };
 
-  examSel.onchange = () => { save(); updatePracticeMetaUI(); maybeAutoLoadAfterFilterChange(); };
-  yearSel.onchange = () => { save(); updatePracticeMetaUI(); maybeAutoLoadAfterFilterChange(); };
-  subjSel.onchange = () => { save(); updatePracticeMetaUI(); maybeAutoLoadAfterFilterChange(); };
+  examSel.onchange = async () => {
+    save();
+    await refreshFilterOptions({ exam: state.filters.exam || undefined, keepSelection: true });
+    updatePracticeMetaUI();
+    maybeAutoLoadAfterFilterChange();
+  };
+
+  yearSel.onchange = async () => {
+    save();
+    await refreshFilterOptions({
+      exam: state.filters.exam || undefined,
+      year: state.filters.year ? parseInt(state.filters.year, 10) : undefined,
+      keepSelection: true
+    });
+    updatePracticeMetaUI();
+    maybeAutoLoadAfterFilterChange();
+  };
+
+  subjSel.onchange = () => {
+    save();
+    updatePracticeMetaUI();
+    maybeAutoLoadAfterFilterChange();
+  };
 
   const btnClear = els("btnClearFilters");
   if (btnClear) {
-    btnClear.onclick = () => {
+    btnClear.onclick = async () => {
       examSel.value = "";
       yearSel.value = "";
       subjSel.value = "";
       save();
+      await refreshFilterOptions({ keepSelection: true });
       updatePracticeMetaUI();
-      setStatus("Filters cleared.", "ok");
+      if (isFirstTimeUser()) setStartGateVisible(true);
     };
   }
 }
+
 
 function buildFilterQuery() {
   const params = new URLSearchParams();
@@ -566,18 +719,35 @@ async function checkApi() {
     return;
   }
 
+  const wasPaid = !!state.isPaid;   // ✅ capture previous state
+
   const r = await api("/me");
 
   if (r?.identifier) {
     state.authenticated = true;
-    setPaidChip(!!r.is_paid);    // ✅ show PAID only if truly paid
+
+    const nowPaid = !!r.is_paid;
+    state.isPaid = nowPaid;         // ✅ keep state in sync
+    setPaidChip(nowPaid);           // ✅ show PAID only if truly paid
 
     const btnLogout = els("btnLogout");
     if (btnLogout) btnLogout.hidden = false;
 
     setAuthMsg(`Logged in as: ${r.identifier}`);
+
+    // ✅ if user transitioned from unpaid -> paid, clear paywall + reload page 1
+    if (!wasPaid && nowPaid) {
+      state.paywalled = false;
+      state.endReached = false;
+      state.pageIndex = 0;
+     const pw = els("paywall");
+     if (pw) pw.hidden = true;
+
+      loadList(0);
+    }
   } else {
     state.authenticated = false;
+    state.isPaid = false;
     setPaidChip(false);          // ❌ hide PAID
 
     const btnLogout = els("btnLogout");
@@ -623,17 +793,30 @@ async function doLogin() {
   }
 }
 
-async function doLogout() {
+ async function doLogout() {
   saveToken("");
+
   state.authenticated = false;
+  state.isPaid = false;        // ✅ important
+  state.paywalled = false;     // ✅ reset
+  state.endReached = false;    // ✅ reset
+  state.pageIndex = 0;         // ✅ reset
+
   setPaidChip(false);
   setAuthMsg("Logged out.");
-  els("btnLogout").hidden = true;
+  const btn = els("btnLogout");
+  if (btn) btn.hidden = true;
+
+  // Clear UI so next user doesn't see previous content
+  const list = els("list");
+  if (list) list.innerHTML = "";
+  closeViewer?.();
 
   adminClearKey();
   updateUpgradeUI();
   updateAdminUI();
 }
+
 
 async function loadList(targetPageIndex = state.pageIndex) {
   saveApiBase();
@@ -693,6 +876,17 @@ async function loadList(targetPageIndex = state.pageIndex) {
 function updateUpgradeUI() {
   const btnPay = els("btnPay");
   const btnCheckPaid = els("btnCheckPaid");
+  if (!btnPay || !btnCheckPaid) return;
+
+  // ✅ Hide paid-refresh once user is already paid
+  btnCheckPaid.hidden = !!state.isPaid;
+
+  // ✅ Hide upgrade hint + paywall UI for paid users
+  const upgradeHint = els("upgradeHint");
+  if (upgradeHint) upgradeHint.hidden = !!state.isPaid;
+
+  const paywall = els("paywall");
+  if (paywall) paywall.hidden = !!state.isPaid;
 
   if (state.busyPay) {
     btnPay.disabled = true;
@@ -707,6 +901,8 @@ function updateUpgradeUI() {
   else if (state.isPaid) setPayMsg("You are already paid ✅");
   else setPayMsg("");
 }
+
+
 
 async function getPaystackPublicKeyOrThrow() {
   const r = await api("/payments/public-key", { method: "GET" });
@@ -786,6 +982,7 @@ async function startPaystackPayment() {
           }
 
           await refreshMe();
+          
           setPayBusy(false, "");
           setStatus("Payment verified ✅", "ok");
           setPayMsg(`Paid ✅ Ref: ${reference}`);
@@ -956,7 +1153,7 @@ function adminClearAuditBox() {
 }
 
 // ====== Init ======
-function init() {
+async function init() {
   els("yr").textContent = new Date().getFullYear();
   els("apiBase").value = state.apiBase;
 
@@ -999,7 +1196,7 @@ function init() {
     if (btnCheck) btnCheck.hidden = false;
   }
 
-  initFiltersUI();
+  await initFiltersUI();
 
   const modeEl = els("mode");
   if (modeEl) {
@@ -1133,4 +1330,5 @@ function init() {
   refreshMe();
 }
 
-init();
+
+init().catch((e)=>console.error(e));
