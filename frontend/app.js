@@ -1,6 +1,4 @@
 
-
-
 // ExamPartner MVP client (auth + browse + Paystack upgrade) + filters + admin mini tools
 
 const els = (id) => document.getElementById(id);
