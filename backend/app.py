@@ -1,5 +1,4 @@
 
-
 import os
 import json
 import time
@@ -38,7 +37,9 @@ DIAGRAMS_DIR.mkdir(parents=True, exist_ok=True)
 cors_origins_raw = os.getenv("CORS_ORIGINS", "http://127.0.0.1:5173,http://127.0.0.1:5500")
 CORS_ORIGINS = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
 
-FREE_SAMPLE_LIMIT = int(os.getenv("FREE_SAMPLE_LIMIT", "10"))
+FREE_SAMPLE_LIMIT_OBJ = int(os.getenv("FREE_SAMPLE_LIMIT_OBJ", "10"))
+FREE_SAMPLE_LIMIT_THEORY = int(os.getenv("FREE_SAMPLE_LIMIT_THEORY", "2"))
+
 
 # -----------------------------
 # LOGGING
@@ -385,8 +386,14 @@ def list_objective(
     subject: Optional[str] = Query(default="Mathematics"),
     user: Optional[Dict[str, Any]] = Depends(get_current_user),
 ):
-    if not _is_paid_user(user) and offset >= FREE_SAMPLE_LIMIT:
-        raise HTTPException(status_code=402, detail="Free preview limit reached. Upgrade to continue.")
+    is_paid = _is_paid_user(user)
+
+    # ✅ Objective preview cap (unpaid): max 10 total
+    if not is_paid:
+        if offset >= FREE_SAMPLE_LIMIT_OBJ:
+            raise HTTPException(status_code=402, detail="Free preview limit reached. Upgrade to continue.")
+        remaining = FREE_SAMPLE_LIMIT_OBJ - offset
+        limit = min(limit, remaining)
 
     where_sql, params = _build_filters("objective", exam, year, subject)
 
@@ -409,7 +416,6 @@ def list_objective(
 
     return {"items": [_row_to_question(r) for r in rows], "limit": limit, "offset": offset}
 
-
 @app.get("/questions/theory")
 def list_theory(
     limit: int = 20,
@@ -419,8 +425,14 @@ def list_theory(
     subject: Optional[str] = Query(default="Mathematics"),
     user: Optional[Dict[str, Any]] = Depends(get_current_user),
 ):
-    if not _is_paid_user(user) and offset >= FREE_SAMPLE_LIMIT:
-        raise HTTPException(status_code=402, detail="Free preview limit reached. Upgrade to continue.")
+    is_paid = _is_paid_user(user)
+
+    # ✅ Theory preview cap (unpaid): max 2 total
+    if not is_paid:
+        if offset >= FREE_SAMPLE_LIMIT_THEORY:
+            raise HTTPException(status_code=402, detail="Free preview limit reached. Upgrade to continue.")
+        remaining = FREE_SAMPLE_LIMIT_THEORY - offset
+        limit = min(limit, remaining)
 
     where_sql, params = _build_filters("theory", exam, year, subject)
 
