@@ -1,3 +1,5 @@
+
+
 import os
 import json
 import time
@@ -36,7 +38,9 @@ DIAGRAMS_DIR.mkdir(parents=True, exist_ok=True)
 cors_origins_raw = os.getenv("CORS_ORIGINS", "http://127.0.0.1:5173,http://127.0.0.1:5500")
 CORS_ORIGINS = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
 
-FREE_SAMPLE_LIMIT = int(os.getenv("FREE_SAMPLE_LIMIT", "10"))
+FREE_SAMPLE_LIMIT_OBJ = int(os.getenv("FREE_SAMPLE_LIMIT_OBJ", "10"))
+FREE_SAMPLE_LIMIT_THEORY = int(os.getenv("FREE_SAMPLE_LIMIT_THEORY", "2"))
+
 
 # -----------------------------
 # LOGGING
@@ -59,6 +63,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # Serve diagrams (served at /static/diagrams/<filename>)
 app.mount("/static/diagrams", StaticFiles(directory=str(DIAGRAMS_DIR)), name="diagrams")
