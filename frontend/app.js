@@ -127,8 +127,15 @@ let FILTER_CACHE = { exams: EXAM_OPTIONS.slice(1), years: YEAR_OPTIONS.slice(1).
 // Admin key stored ONLY in sessionStorage
 const ADMIN_KEY_STORAGE = "ep_admin_key";
 
+const params = new URLSearchParams(window.location.search);
+const isDev = params.has("dev");
+
 const state = {
-  apiBase: localStorage.getItem("apiBase") || "https://exampartner-backend.onrender.com",
+  apiBase:
+    localStorage.getItem("apiBase") ||
+    (isDev ? "https://proattack-unfurcate-cherise.ngrok-free.dev"
+           : "https://exampartner-backend.onrender.com"),
+ 
   token: sessionStorage.getItem("token") || "",
   
   isPaid: false,
@@ -193,26 +200,107 @@ function updatePracticeMetaUI() {
   el.textContent = `${exam} • ${subject} • ${year}`;
 }
 
-
 function saveApiBase() {
-  const v = els("apiBase").value.trim();
-  if (v) {
-    state.apiBase = v.replace(/\/$/, "");
-    localStorage.setItem("apiBase", state.apiBase);
+  let v = (els("apiBase")?.value || "").trim();
+
+  if (!v) return;
+
+  // remove ALL spaces anywhere
+  v = v.replace(/\s+/g, "");
+
+  // fix common paste mistakes:
+  // "https//" -> "https://"
+  v = v.replace(/^https\/\//i, "https://");
+  v = v.replace(/^http\/\//i, "http://");
+
+  // if someone pastes without scheme, default to https
+  if (!/^https?:\/\//i.test(v)) v = "https://" + v;
+
+  // remove trailing slash
+  v = v.replace(/\/$/, "");
+
+  state.apiBase = v;
+  localStorage.setItem("apiBase", state.apiBase);
+
+  // reflect cleaned value back into the input
+  const el = els("apiBase");
+  if (el) el.value = state.apiBase;
+}
+
+function storageOK(type) {
+  try {
+    const s = window[type];
+    const k = "__ep_test__" + Date.now();
+    s.setItem(k, "1");
+    s.removeItem(k);
+    return true;
+  } catch {
+    return false;
   }
 }
 
- function saveToken(t) {
+const HAS_LOCAL = storageOK("localStorage");
+const HAS_SESSION = storageOK("sessionStorage");
+
+
+function saveToken(t) {
   state.token = t || "";
 
-  if (state.token) {
-    sessionStorage.setItem("token", state.token); // ✅ session only
-    localStorage.removeItem("token");             // cleanup old persistent token
-  } else {
-    sessionStorage.removeItem("token");
+  if (HAS_SESSION) {
+    if (state.token) sessionStorage.setItem("token", state.token);
+    else sessionStorage.removeItem("token");
+  }
+
+  if (HAS_LOCAL) {
+    // cleanup old persistent token
     localStorage.removeItem("token");
   }
 }
+
+
+
+// ====== Idle timeout (public/shared systems) ======
+const IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+let _idleTimer = null;
+
+function stopIdleTimer() {
+  if (_idleTimer) {
+    clearTimeout(_idleTimer);
+    _idleTimer = null;
+  }
+}
+
+function resetIdleTimer() {
+  // Only enforce idle timeout when authenticated
+  if (!state.authenticated) return;
+  stopIdleTimer();
+  _idleTimer = setTimeout(async () => {
+    // If user is still authenticated, expire session
+    if (!state.authenticated) return;
+    try {
+      await doLogout();
+    } catch {}
+    setStatus("Session expired (idle). Please login again.", "bad");
+  }, IDLE_TIMEOUT_MS);
+}
+
+function setupIdleTimeout() {
+  const bump = () => resetIdleTimer();
+
+  // Common user activity events
+  ["click", "keydown", "mousemove", "touchstart", "scroll"].forEach((ev) => {
+    window.addEventListener(ev, bump, { passive: true });
+  });
+
+  // If user comes back to the tab, refresh timer
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) bump();
+  });
+
+  // Start timer if already logged in (session restore)
+  resetIdleTimer();
+}
+// ================================================
 
 
 function escapeHtml(s) {
@@ -235,6 +323,65 @@ function isEmail(v) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v || "");
 }
 
+function renderSolutionSteps(steps) {
+  if (!steps) return "";
+  // steps can be string, array, or object
+  if (typeof steps === "string") return `<div>${escapeHtml(steps)}</div>`;
+  if (Array.isArray(steps)) {
+    const items = steps
+      .map((s) => {
+        if (typeof s === "string") return `<li>${escapeHtml(s)}</li>`;
+        return `<li>${escapeHtml(JSON.stringify(s))}</li>`;
+      })
+      .join("");
+    return `<ol style="margin:6px 0 0 18px;">${items}</ol>`;
+  }
+  return `<pre style="white-space:pre-wrap;margin:6px 0 0;">${escapeHtml(JSON.stringify(steps, null, 2))}</pre>`;
+}
+
+function renderSubQuestions(items, opts = {}) {
+  const showAnswers = opts.showAnswers !== false;        // default true
+  const showExplanations = opts.showExplanations !== false; // default true
+
+  if (!items) return "";
+  if (!Array.isArray(items)) {
+    return `<pre style="white-space:pre-wrap;margin:6px 0 0;">${escapeHtml(JSON.stringify(items, null, 2))}</pre>`;
+  }
+
+  const renderNode = (n) => {
+    if (!n || typeof n !== "object") return "";
+
+    const label = n.label ? `<b>${escapeHtml(String(n.label))}</b> ` : "";
+    const text = n.text ? `${escapeHtml(String(n.text))}` : "";
+
+    const answer = (showAnswers && n.answer)
+      ? `<div style="margin-top:6px;"><b>Answer:</b> ${escapeHtml(String(n.answer))}</div>`
+      : "";
+
+    const explanation = (showExplanations && n.explanation)
+      ? `<div style="margin-top:6px;"><b>Explanation:</b><br>${escapeHtml(String(n.explanation))}</div>`
+      : "";
+
+    const children = Array.isArray(n.children) && n.children.length
+      ? `<div style="margin-top:10px;padding-left:10px;border-left:2px solid #ddd;">
+           ${n.children.map(renderNode).join("")}
+         </div>`
+      : "";
+
+    return `
+      <div style="margin:10px 0; padding:10px; border:1px solid #eee; border-radius:10px;">
+        <div>${label}${text}</div>
+        ${answer}
+        ${explanation}
+        ${children}
+      </div>
+    `;
+  };
+
+  return items.map(renderNode).join("");
+}
+
+
 async function api(path, opts = {}) {
   // ✅ keep token consistent across tabs
   state.token = sessionStorage.getItem("token") || "";
@@ -255,9 +402,29 @@ async function api(path, opts = {}) {
 
   const ct = res.headers.get("content-type") || "";
 
-  let body = null;
-  if (ct.includes("application/json")) body = await res.json().catch(() => null);
-  else body = await res.text().catch(() => null);
+let body = null;
+
+if (ct.includes("application/json")) {
+  body = await res.json().catch(() => null);
+} else {
+  const txt = await res.text().catch(() => null);
+  body = txt;
+
+  // ✅ FIX: parse JSON even if Content-Type is wrong
+  if (typeof txt === "string") {
+    const t = txt.trim();
+    if (
+      (t.startsWith("{") && t.endsWith("}")) ||
+      (t.startsWith("[") && t.endsWith("]"))
+    ) {
+      try {
+        body = JSON.parse(t);
+      } catch {
+        // leave as text
+      }
+    }
+  }
+}
 
   if (!res.ok) {
     return { ok: false, status: res.status, error: body?.detail || body || "Request failed" };
@@ -332,12 +499,12 @@ async function fetchFilters({ qtype = null, exam = null, year = null } = {}) {
 
   // 🔁 fallback: last known good DB-driven filters only
   const cached = loadFilterCache();
-  if (cached) {
-    console.warn("Using cached filters");
-    return cached;
-  }
+ if (cached) {
+  console.warn("Using cached filters");
+  return cached;
+}
+return null;
 
-  return null; // caller must handle empty state
 }
 
 
@@ -564,6 +731,7 @@ if (!items || !items.length) {
   }
 }
 
+
 async function openQuestion(id) {
   try {
     activeQuestionId = id;
@@ -572,17 +740,16 @@ async function openQuestion(id) {
     updatePrevNextButtons();
     clearOptionSelection();
 
-// Reset explanation state for new question
-        const exp = els("qExplain");
-      if (exp) {
+    // Reset explanation state for new question
+    const exp = els("qExplain");
+    if (exp) {
       exp.hidden = true;
       exp.innerHTML = "";
-}
+    }
 
-    
     highlightQuestionCard(id);
 
-     // ✅ open viewer context first (this changes list max-height)
+    // ✅ open viewer context first (this changes list max-height)
     setViewerOpen(true);
 
     // ✅ Now scroll the list AFTER the layout change
@@ -590,14 +757,15 @@ async function openQuestion(id) {
       ensureActiveCardVisibleInList(id);
     });
 
-
     const q = await api(`/question/${encodeURIComponent(id)}`);
+
+    // ✅ Keep current question in state so Reveal/Explain (wired once in init) can use it
+    state.currentQuestion = q;
 
     els("viewer").hidden = false;
     els("qTitle").textContent = id;
 
     focusViewer();
-
 
     const meta = [];
     if (q.type) meta.push(q.type);
@@ -615,73 +783,90 @@ async function openQuestion(id) {
     if (q.diagrams && q.diagrams.length) meta.push(`diagrams: ${q.diagrams.join(", ")}`);
 
     els("qMeta").textContent = meta.join(" • ");
-    els("qText").textContent = q.question_text || "";
-    renderDiagrams(q.diagrams || []);
 
+    // ✅ Render main question + sub-questions immediately (question-only)
+    const qTextEl = els("qText");
 
-const optBox = els("qOptions");
-optBox.innerHTML = "";
-if (q.options) {
-  for (const k of Object.keys(q.options)) {
-    const d = document.createElement("div");
-    d.className = "opt";
-    d.dataset.key = k;
-    d.innerHTML = `<b>${escapeHtml(k)}</b>. ${escapeHtml(q.options[k])}`;
-
-    // visual-only option selection
-     d.onclick = () => {
-  const alreadySelected = d.classList.contains("selected");
-
-         // clear others first
-        optBox.querySelectorAll(".opt").forEach((el) => el.classList.remove("selected"));
-
-         if (alreadySelected) {
-        //   toggle OFF
-        selectedOptionKey = null;
-        return;
+    const renderSubQuestionsOnly = (items) => {
+      if (!items) return "";
+      if (!Array.isArray(items)) {
+        return `<pre style="white-space:pre-wrap;margin:6px 0 0;">${escapeHtml(JSON.stringify(items, null, 2))}</pre>`;
       }
 
-      // toggle ON
-       selectedOptionKey = k;
-     d.classList.add("selected");
-   };
+      const renderNode = (n) => {
+        if (!n || typeof n !== "object") return "";
+        const label = n.label ? `<b>${escapeHtml(String(n.label))}</b> ` : "";
+        const text = n.text ? `${escapeHtml(String(n.text))}` : "";
 
+        const children = Array.isArray(n.children) && n.children.length
+          ? `<div style="margin-top:10px;padding-left:10px;border-left:2px solid #ddd;">
+               ${n.children.map(renderNode).join("")}
+             </div>`
+          : "";
 
-    optBox.appendChild(d);
-  }
-}
+        return `
+          <div style="margin:10px 0; padding:10px; border:1px solid #eee; border-radius:10px;">
+            <div>${label}${text}</div>
+            ${children}
+          </div>
+        `;
+      };
 
-// safe re-sync after render
-updatePrevNextButtons();       els("btnReveal").onclick = () => {
-      const exp = els("qExplain");
-      exp.hidden = false;
+      return items.map(renderNode).join("");
+    };
 
-       exp.innerHTML = `<div><b>Answer:</b> ${escapeHtml(q.answer || "—")}</div>`;
+    const mainQ = escapeHtml(q.question_text || "");
+    const subOnlyHtml = q.sub_questions
+      ? `<div style="margin-top:12px;">
+           <div style="font-weight:700; margin-bottom:6px;">Sub-questions</div>
+           ${renderSubQuestionsOnly(q.sub_questions)}
+         </div>`
+      : "";
 
-      // ✅ auto-scroll so user sees it immediately
-      scrollToExplainBox();
-     };
+    // Use innerHTML because we are composing blocks (escaped)
+    qTextEl.innerHTML = `<div>${mainQ}</div>${subOnlyHtml}`;
 
+    renderDiagrams(q.diagrams || []);
 
-      els("btnExplain").onclick = () => {
-      const exp = els("qExplain");
-      exp.hidden = false;
+    // Options
+    const optBox = els("qOptions");
+    optBox.innerHTML = "";
+    if (q.options) {
+      for (const k of Object.keys(q.options)) {
+        const d = document.createElement("div");
+        d.className = "opt";
+        d.dataset.key = k;
+        d.innerHTML = `<b>${escapeHtml(k)}</b>. ${escapeHtml(q.options[k])}`;
 
-      const pieces = [];
-      if (q.explanation) pieces.push(`<div><b>Explanation:</b><br>${escapeHtml(q.explanation)}</div>`);
-      if (q.solution_steps) pieces.push(`<div><b>Steps:</b><br>${escapeHtml(JSON.stringify(q.solution_steps, null, 2))}</div>`);
-      if (q.sub_questions) pieces.push(`<div><b>Sub-questions:</b><br>${escapeHtml(JSON.stringify(q.sub_questions, null, 2))}</div>`);
+        // visual-only option selection
+        d.onclick = () => {
+          const alreadySelected = d.classList.contains("selected");
 
-      exp.innerHTML = pieces.length ? pieces.join("<hr/>") : `<div>No explanation/steps available.</div>`;
+          // clear others first
+          optBox.querySelectorAll(".opt").forEach((el) => el.classList.remove("selected"));
 
-      // ✅ auto-scroll so user sees it immediately
-      scrollToExplainBox();
-     };
+          if (alreadySelected) {
+            // toggle OFF
+            selectedOptionKey = null;
+            return;
+          }
 
+          // toggle ON
+          selectedOptionKey = k;
+          d.classList.add("selected");
+        };
+
+        optBox.appendChild(d);
+      }
+    }
+
+    // safe re-sync after render
+    updatePrevNextButtons();
   } catch (e) {
     setStatus(`Failed to open question: ${e?.message || e}`, "bad");
   }
 }
+
 
 function closeViewer() {
   els("viewer").hidden = true;
@@ -696,65 +881,111 @@ if (els("qDiagrams")) els("qDiagrams").innerHTML = "";
   els("qExplain").hidden = true;
   els("qExplain").innerHTML = "";
 }
-
 async function checkApi() {
   saveApiBase();
   setStatus("Checking API…", "ok");
+
   const r = await api("/health");
-  if (r?.ok) setStatus(`Connected: ${r.service}`, "ok");
-  else setStatus(`Failed: ${r?.error || "unknown error"}`, "bad");
+
+  if (r?.ok) {
+    setStatus(`Connected: ${r.service}`, "ok");
+    return;
+  }
+
+  if (typeof r === "string") {
+    setStatus("Failed: backend returned HTML/text (check ngrok URL)", "bad");
+    return;
+  }
+
+  if (r?.status) {
+    setStatus(`Failed: HTTP ${r.status}`, "bad");
+    return;
+  }
+
+  setStatus(`Failed: ${r?.error || "network/CORS/cache issue"}`, "bad");
 }
 
+
+
  async function refreshMe() {
-  // 🔒 Always reset state first
+  // 🔒 Always reset state first (logged-out baseline)
   if (!state.token) {
     state.authenticated = false;
-    setPaidChip(false);          // ❌ hide PAID
+    state.isPaid = false;
+    setPaidChip(false); // ❌ hide PAID
+
     const btnLogout = els("btnLogout");
     if (btnLogout) btnLogout.hidden = true;
+
+    setAuthMsg(""); // ✅ clear "Logged in as..." text
+    const ph = els("paymentHistory");
+    if (ph) ph.hidden = true;
+
     updateUpgradeUI();
     updateAdminUI();
     return;
   }
 
-  const wasPaid = !!state.isPaid;   // ✅ capture previous state
+  const wasPaid = !!state.isPaid; // ✅ capture previous state
 
-  const r = await api("/me");
+  let r = null;
+  try {
+    r = await api("/me");
+  } catch (e) {
+    // If api() ever throws (rare), treat as not-authenticated
+    r = null;
+  }
 
   if (r?.identifier) {
     state.authenticated = true;
 
     const nowPaid = !!r.is_paid;
-    state.isPaid = nowPaid;         // ✅ keep state in sync
-    setPaidChip(nowPaid);           // ✅ show PAID only if truly paid
+    state.isPaid = nowPaid;       // ✅ keep state in sync
+    setPaidChip(nowPaid);         // ✅ show PAID only if truly paid
 
     const btnLogout = els("btnLogout");
-    if (btnLogout) btnLogout.hidden = false;
+    if (btnLogout) btnLogout.hidden = false; // ✅ show logout when logged in
 
     setAuthMsg(`Logged in as: ${r.identifier}`);
+
+    // ✅ keep session alive while user is active
+    resetIdleTimer();
+    
 
     // ✅ if user transitioned from unpaid -> paid, clear paywall + reload page 1
     if (!wasPaid && nowPaid) {
       state.paywalled = false;
       state.endReached = false;
       state.pageIndex = 0;
-     const pw = els("paywall");
-     if (pw) pw.hidden = true;
+
+      const pw = els("paywall");
+      if (pw) pw.hidden = true;
 
       loadList(0);
     }
-  } else {
+    loadPaymentHistory();
+  } 
+  else {
+    // Not authenticated (token invalid/expired/server said 401)
     state.authenticated = false;
     state.isPaid = false;
-    setPaidChip(false);          // ❌ hide PAID
+    setPaidChip(false); // ❌ hide PAID
 
     const btnLogout = els("btnLogout");
     if (btnLogout) btnLogout.hidden = true;
+
+    setAuthMsg(""); // ✅ clear auth text
+
+    // Optional cleanup: if token is invalid, clear it so UI doesn't stay "stuck"
+    // (keeps behavior consistent on expired tokens)
+    saveToken("");
   }
 
   updateUpgradeUI();
   updateAdminUI();
+ 
 }
+
 
 
 async function doRegister() {
@@ -792,6 +1023,7 @@ async function doLogin() {
 }
 
  async function doLogout() {
+  stopIdleTimer();
   saveToken("");
 
   state.authenticated = false;
@@ -862,7 +1094,9 @@ async function loadList(targetPageIndex = state.pageIndex) {
   localStorage.setItem("ep_started", "1");
   state.pageIndex = pageIndex;
   state.lastItems = items;
-  state.endReached = items.length < limit;
+ // ✅ Only use endReached heuristic for PAID users.
+// For unpaid users, backend may clamp results (preview cap), but that doesn't mean "end".
+  state.endReached = !!state.isPaid && (items.length < limit);
 
   renderList(items);
   setStatus(`Loaded ${items.length || 0} items.`, "ok");
@@ -1005,6 +1239,38 @@ async function startPaystackPayment() {
 async function checkPaidStatus() {
   await refreshMe();
   setStatus(state.isPaid ? "Paid ✅" : "Not paid yet.", state.isPaid ? "ok" : "bad");
+}
+
+async function loadPaymentHistory() {
+  const box = els("paymentHistory");
+  const list = els("paymentHistoryList");
+  if (!box || !list) return;
+
+  list.innerHTML = "Loading…";
+  box.hidden = false;
+
+  const r = await api("/payments/history");
+
+  if (!r?.ok || !Array.isArray(r.items)) {
+    list.innerHTML = "<div class='status bad'>Unable to load payment history.</div>";
+    return;
+  }
+
+  if (!r.items.length) {
+    list.innerHTML = "<div class='status'>No payments yet.</div>";
+    return;
+  }
+
+  list.innerHTML = r.items.map(p => `
+    <div class="item">
+      <div><b>₦${p.amount}</b> — ${escapeHtml(p.status)}</div>
+      <div class="meta">
+        Ref: ${escapeHtml(p.reference)} •
+        ${escapeHtml(p.provider)} •
+        ${new Date(p.created_at).toLocaleString()}
+      </div>
+    </div>
+  `).join("");
 }
 
 /* =========================
@@ -1155,12 +1421,13 @@ async function init() {
   els("yr").textContent = new Date().getFullYear();
   els("apiBase").value = state.apiBase;
 
+  // ✅ used by Reveal/Explain handlers (wired once)
+  state.currentQuestion = null;
+
   // Dev mode: only when URL has ?dev=1 (so normal local testing can still be "user mode")
-  const params = new URLSearchParams(window.location.search);
-  const devMode = params.has("dev");
+  const devMode = isDev;
   state.devMode = devMode;
   setPaidChip(false);
-
 
   // Status: dev-only (user mode stays clean)
   const statusEl = els("status");
@@ -1192,6 +1459,30 @@ async function init() {
 
     if (statusEl) statusEl.hidden = false;
     if (btnCheck) btnCheck.hidden = false;
+  }
+
+  // Reflect final chosen backend in the input
+  const apiBaseEl = els("apiBase");
+  if (apiBaseEl) {
+    apiBaseEl.value = state.apiBase;
+
+    // ✅ Auto-save API base when you edit the field (no Save button needed)
+    apiBaseEl.addEventListener("change", () => {
+      saveApiBase();
+    });
+    apiBaseEl.addEventListener("blur", () => {
+      saveApiBase();
+    });
+
+    // (optional) Enter key saves too
+    apiBaseEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        saveApiBase();
+        // small UX: in dev mode you can instantly test
+        if (state.devMode && typeof checkApi === "function") checkApi();
+      }
+    });
   }
 
   await initFiltersUI();
@@ -1287,6 +1578,88 @@ async function init() {
   const btnCheckPaid = els("btnCheckPaid");
   if (btnCheckPaid) btnCheckPaid.onclick = checkPaidStatus;
 
+  // ✅ D) Wire Reveal/Explain ONCE here (uses state.currentQuestion)
+  const btnReveal = els("btnReveal");
+  if (btnReveal) {
+    btnReveal.onclick = () => {
+      const q = state.currentQuestion;
+      if (!q) return;
+
+      const exp = els("qExplain");
+      if (!exp) return;
+
+      exp.hidden = false;
+
+      // Prefer main answer; if missing (common in theory), still show something sensible
+      const ans = q.answer ? escapeHtml(String(q.answer)) : "—";
+
+      // If theory has sub-questions, reveal can also show their answers (if present)
+      const subAnswers = (items) => {
+        if (!items || !Array.isArray(items)) return "";
+        const walk = (n) => {
+          if (!n || typeof n !== "object") return "";
+          const label = n.label ? `<b>${escapeHtml(String(n.label))}</b> ` : "";
+          const text = n.text ? `${escapeHtml(String(n.text))}` : "";
+          const a = n.answer ? `<div style="margin-top:6px;"><b>Answer:</b> ${escapeHtml(String(n.answer))}</div>` : "";
+          const children = Array.isArray(n.children) && n.children.length
+            ? `<div style="margin-top:10px;padding-left:10px;border-left:2px solid #ddd;">
+                 ${n.children.map(walk).join("")}
+               </div>`
+            : "";
+          return `
+            <div style="margin:10px 0; padding:10px; border:1px solid #eee; border-radius:10px;">
+              <div>${label}${text}</div>
+              ${a}
+              ${children}
+            </div>
+          `;
+        };
+        return items.map(walk).join("");
+      };
+
+      const pieces = [];
+      pieces.push(`<div><b>Answer:</b> ${ans}</div>`);
+      if (q.sub_questions) {
+        const sa = subAnswers(q.sub_questions);
+        if (sa) pieces.push(`<div style="margin-top:10px;"><b>Sub-question answers:</b>${sa}</div>`);
+      }
+
+      exp.innerHTML = pieces.join("<hr/>");
+      scrollToExplainBox();
+    };
+  }
+
+  const btnExplain = els("btnExplain");
+  if (btnExplain) {
+    btnExplain.onclick = () => {
+      const q = state.currentQuestion;
+      if (!q) return;
+
+      const exp = els("qExplain");
+      if (!exp) return;
+
+      exp.hidden = false;
+
+      const pieces = [];
+
+      if (q.explanation) {
+        pieces.push(`<div><b>Explanation:</b><br>${escapeHtml(q.explanation)}</div>`);
+      }
+
+      if (q.solution_steps) {
+        pieces.push(`<div><b>Steps:</b>${renderSolutionSteps(q.solution_steps)}</div>`);
+      }
+
+      // For theory, this shows full tree (including answer/explanation inside subquestions)
+      if (q.sub_questions) {
+        pieces.push(`<div><b>Sub-questions:</b>${renderSubQuestions(q.sub_questions)}</div>`);
+      }
+
+      exp.innerHTML = pieces.length ? pieces.join("<hr/>") : `<div>No explanation/steps available.</div>`;
+      scrollToExplainBox();
+    };
+  }
+
   // Viewer prev/next question buttons
   const btnPrev = els("btnPrev");
   if (btnPrev) {
@@ -1325,8 +1698,12 @@ async function init() {
   const btnAdminClear = els("btnAdminClear");
   if (btnAdminClear) btnAdminClear.onclick = adminClearKey;
 
+  // ✅ idle timeout (public/shared systems)
+  setupIdleTimeout();
+
   refreshMe();
 }
+
 
 
 init().catch((e)=>console.error(e));
