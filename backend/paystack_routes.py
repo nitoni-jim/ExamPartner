@@ -1,6 +1,4 @@
 
-
-
 # paystack_routes.py (Neon Postgres-ready, cleaned, feature-complete for MVP)
 
 import os
@@ -651,3 +649,4 @@ def payment_history(user: Dict[str, Any] = Depends(require_user), limit: int = 5
             db.close()
         except Exception:
             pass
+
