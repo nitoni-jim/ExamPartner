@@ -229,12 +229,50 @@ def me(user: Optional[Dict[str, Any]] = Depends(get_current_user)):
 
     db = db_conn()
     cur = db.cursor()
-    cur.execute("SELECT is_paid FROM users WHERE identifier = ?", (identifier,))
+    cur.execute(
+        "SELECT is_paid, email FROM users WHERE identifier = ?",
+        (identifier,),
+    )
     row = cur.fetchone()
     if not row:
         raise HTTPException(status_code=401, detail="User not found")
 
-    return {"identifier": identifier, "is_paid": bool(row["is_paid"])}
+    return {
+        "identifier": identifier,
+        "is_paid": bool(row["is_paid"]),
+        "email": row["email"],  # ✅ NEW
+    }
+
+@app.post("/me/email")
+def update_email(
+    payload: Dict[str, str],
+    user: Optional[Dict[str, Any]] = Depends(get_current_user),
+):
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    identifier = user.get("sub")
+    if not identifier:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    email = (payload.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+
+    # very light validation (frontend already checks)
+    if "@" not in email:
+        raise HTTPException(status_code=400, detail="Invalid email")
+
+    db = db_conn()
+    cur = db.cursor()
+
+    cur.execute(
+        "UPDATE users SET email = ? WHERE identifier = ?",
+        (email, identifier),
+    )
+    db.commit()
+
+    return {"ok": True, "email": email}
 
 
 # -----------------------------
