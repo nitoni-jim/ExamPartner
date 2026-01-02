@@ -1,4 +1,6 @@
 
+
+
 # paystack_routes.py (Neon Postgres-ready, cleaned, feature-complete for MVP)
 
 import os
@@ -10,7 +12,7 @@ from typing import Optional, Dict, Any, List
 
 import requests
 from dotenv import load_dotenv
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Depends, Header
 from pydantic import BaseModel
 
 from db import get_db  # uses Postgres if DATABASE_URL is set; else SQLite
@@ -18,6 +20,49 @@ from db import get_db  # uses Postgres if DATABASE_URL is set; else SQLite
 load_dotenv()
 
 router = APIRouter(prefix="/payments", tags=["payments"])
+
+# -----------------------------
+# Auth helpers (mirror app.py, avoids circular imports)
+# -----------------------------
+JWT_SECRET = os.getenv("JWT_SECRET", "dev_secret_change_me")
+
+def _b64url(b: bytes) -> str:
+    import base64
+    return base64.urlsafe_b64encode(b).decode("utf-8").rstrip("=")
+
+def _sign(data: bytes, secret: str) -> str:
+    return _b64url(hmac.new(secret.encode("utf-8"), data, hashlib.sha256).digest())
+
+def read_token(token: str) -> Optional[Dict[str, Any]]:
+    """Same token format as app.py: base64url(json).sig"""
+    import base64
+    try:
+        b64, sig = token.split(".", 1)
+        raw = base64.urlsafe_b64decode(b64 + "==")
+        if _sign(raw, JWT_SECRET) != sig:
+            return None
+        payload = json.loads(raw.decode("utf-8"))
+        # exp is optional in some dev tokens; if present, enforce
+        exp = int(payload.get("exp", 0) or 0)
+        if exp and exp < int(datetime.utcnow().timestamp()):
+            return None
+        return payload
+    except Exception:
+        return None
+
+def get_current_user(authorization: Optional[str] = Header(default=None)) -> Optional[Dict[str, Any]]:
+    if not authorization:
+        return None
+    if not authorization.lower().startswith("bearer "):
+        return None
+    token = authorization.split(" ", 1)[1].strip()
+    return read_token(token)
+
+def require_user(user: Optional[Dict[str, Any]] = Depends(get_current_user)) -> Dict[str, Any]:
+    if not user or not user.get("sub"):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
+
 
 
 # -----------------------------
@@ -527,6 +572,7 @@ def admin_audit(request: Request, limit: int = 20):
 
     return {"ok": True, "limit": limit, "items": items}
 
+
 @router.post("/admin/mark-paid")
 def admin_mark_paid(request: Request, email: str):
     require_admin(request)
@@ -545,3 +591,63 @@ def admin_mark_paid(request: Request, email: str):
 
     audit_admin_action(request, action="admin_mark_paid", reference=identifier, payload={"email": identifier})
     return {"ok": True, "email": identifier}
+
+
+
+@router.get("/history")
+def payment_history(user: Dict[str, Any] = Depends(require_user), limit: int = 50):
+    """Return latest payments for the logged-in user."""
+    lim = max(1, min(200, int(limit or 50)))
+    identifier = (user.get("sub") or "").strip().lower()
+    db = get_db()
+    try:
+        db.row_factory = getattr(__import__("sqlite3"), "Row", None)  # safe no-op for Postgres wrappers
+    except Exception:
+        pass
+
+    try:
+        cur = db.cursor()
+        # Find user id by identifier (email)
+        cur.execute("SELECT id FROM users WHERE lower(identifier) = ?", (identifier,))
+        urow = cur.fetchone()
+        if not urow:
+            return {"ok": True, "items": []}
+        user_id = int(urow["id"]) if isinstance(urow, dict) or hasattr(urow, "__getitem__") else int(urow[0])
+
+        cur.execute(
+            """SELECT provider, reference, amount_kobo, currency, status, created_at
+               FROM payments
+               WHERE user_id = ?
+               ORDER BY created_at DESC
+               LIMIT ?""",
+            (user_id, lim),
+        )
+        rows = cur.fetchall() or []
+
+        items = []
+        for r in rows:
+            # Row may be sqlite3.Row or tuple
+            get = (lambda k: r[k]) if hasattr(r, "__getitem__") and not isinstance(r, tuple) else None
+            provider = get("provider") if get else r[0]
+            reference = get("reference") if get else r[1]
+            amount_kobo = int(get("amount_kobo") if get else r[2] or 0)
+            status = get("status") if get else r[4]
+            created_at = get("created_at") if get else r[5]
+            # return amount in naira for frontend
+            amount = round(amount_kobo / 100.0, 2)
+            items.append(
+                {
+                    "provider": provider or "paystack",
+                    "reference": reference or "",
+                    "amount": amount,
+                    "status": status or "",
+                    "created_at": created_at or "",
+                }
+            )
+
+        return {"ok": True, "items": items}
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
