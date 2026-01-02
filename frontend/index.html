@@ -66,8 +66,6 @@
         </div>
         <div class="col actions" id="devActionsCol" hidden>
           <button id="btnCheck" class="btn" hidden>Check API</button>
-
-          <button id="btnLogout" class="btn ghost" hidden>Logout</button>
         </div>
       </div>
 
@@ -88,7 +86,13 @@
           <div class="row">
             <button id="btnRegister" class="btn">Register</button>
             <button id="btnLogin" class="btn ghost">Login</button>
+            <button id="btnLogout" class="btn ghost" hidden>Logout</button>
           </div>
+          <div id="paymentHistory" hidden style="margin-top:16px;">
+           <h3>Payment History</h3>
+             <div id="paymentHistoryList" class="list"></div>
+           </div>
+
 
           <div id="authMsg" class="hint"></div>
         </div>
@@ -210,7 +214,7 @@
       <div id="qMeta" class="meta"></div>
       <div id="qText" class="qtext"></div>
       <div id="qDiagrams" class="diagrams"></div>
-
+      <div id="qSubQuestions" class="subqs" hidden></div>
       <div id="qOptions" class="options"></div>
 
       <div class="divider"></div>
@@ -234,6 +238,11 @@
   </main>
 
   <script src="https://js.paystack.co/v1/inline.js"></script>
-  <script src="app.js?v=10"></script>
+  <script src="app.js?v=14"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("./sw.js").catch(() => {});
+    }
+  </script>
 </body>
 </html>
