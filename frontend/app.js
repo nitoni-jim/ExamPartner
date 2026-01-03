@@ -150,6 +150,9 @@ const state = {
   paywalled: false,
   lastItems: [],
 
+  hasLoadedQuestions: false, // ✅ NEW: user has attempted to load questions
+
+
   filters: {
     exam: localStorage.getItem("filter_exam") || "",
     year: localStorage.getItem("filter_year") || "",
@@ -200,63 +203,26 @@ function updatePracticeMetaUI() {
   el.textContent = `${exam} • ${subject} • ${year}`;
 }
 
+
 function saveApiBase() {
-  let v = (els("apiBase")?.value || "").trim();
-
-  if (!v) return;
-
-  // remove ALL spaces anywhere
-  v = v.replace(/\s+/g, "");
-
-  // fix common paste mistakes:
-  // "https//" -> "https://"
-  v = v.replace(/^https\/\//i, "https://");
-  v = v.replace(/^http\/\//i, "http://");
-
-  // if someone pastes without scheme, default to https
-  if (!/^https?:\/\//i.test(v)) v = "https://" + v;
-
-  // remove trailing slash
-  v = v.replace(/\/$/, "");
-
-  state.apiBase = v;
-  localStorage.setItem("apiBase", state.apiBase);
-
-  // reflect cleaned value back into the input
-  const el = els("apiBase");
-  if (el) el.value = state.apiBase;
-}
-
-function storageOK(type) {
-  try {
-    const s = window[type];
-    const k = "__ep_test__" + Date.now();
-    s.setItem(k, "1");
-    s.removeItem(k);
-    return true;
-  } catch {
-    return false;
+  const v = els("apiBase").value.trim();
+  if (v) {
+    state.apiBase = v.replace(/\/$/, "");
+    localStorage.setItem("apiBase", state.apiBase);
   }
 }
 
-const HAS_LOCAL = storageOK("localStorage");
-const HAS_SESSION = storageOK("sessionStorage");
-
-
-function saveToken(t) {
+ function saveToken(t) {
   state.token = t || "";
 
-  if (HAS_SESSION) {
-    if (state.token) sessionStorage.setItem("token", state.token);
-    else sessionStorage.removeItem("token");
-  }
-
-  if (HAS_LOCAL) {
-    // cleanup old persistent token
+  if (state.token) {
+    sessionStorage.setItem("token", state.token); // ✅ session only
+    localStorage.removeItem("token");             // cleanup old persistent token
+  } else {
+    sessionStorage.removeItem("token");
     localStorage.removeItem("token");
   }
 }
-
 
 
 // ====== Idle timeout (public/shared systems) ======
@@ -402,29 +368,9 @@ async function api(path, opts = {}) {
 
   const ct = res.headers.get("content-type") || "";
 
-let body = null;
-
-if (ct.includes("application/json")) {
-  body = await res.json().catch(() => null);
-} else {
-  const txt = await res.text().catch(() => null);
-  body = txt;
-
-  // ✅ FIX: parse JSON even if Content-Type is wrong
-  if (typeof txt === "string") {
-    const t = txt.trim();
-    if (
-      (t.startsWith("{") && t.endsWith("}")) ||
-      (t.startsWith("[") && t.endsWith("]"))
-    ) {
-      try {
-        body = JSON.parse(t);
-      } catch {
-        // leave as text
-      }
-    }
-  }
-}
+  let body = null;
+  if (ct.includes("application/json")) body = await res.json().catch(() => null);
+  else body = await res.text().catch(() => null);
 
   if (!res.ok) {
     return { ok: false, status: res.status, error: body?.detail || body || "Request failed" };
@@ -642,9 +588,20 @@ function openFiltersPanel() {
 function setStartGateVisible(visible) {
   const gate = els("startGate");
   if (!gate) return;
+
   gate.hidden = !visible;
-  if (visible) openFiltersPanel();
+
+  if (visible) {
+    // ✅ STEP 4: ensure paywall never appears under the start gate
+    state.paywalled = false;
+    const pw = els("paywall");
+   if(pw) pw.classList.remove("is-open");
+
+
+    openFiltersPanel();
+  }
 }
+
 
 function setListPagerUI({ loading = false } = {}) {
   const prev = els("btnPrevPage");
@@ -881,112 +838,137 @@ if (els("qDiagrams")) els("qDiagrams").innerHTML = "";
   els("qExplain").hidden = true;
   els("qExplain").innerHTML = "";
 }
+
 async function checkApi() {
   saveApiBase();
   setStatus("Checking API…", "ok");
-
   const r = await api("/health");
-
-  if (r?.ok) {
-    setStatus(`Connected: ${r.service}`, "ok");
-    return;
-  }
-
-  if (typeof r === "string") {
-    setStatus("Failed: backend returned HTML/text (check ngrok URL)", "bad");
-    return;
-  }
-
-  if (r?.status) {
-    setStatus(`Failed: HTTP ${r.status}`, "bad");
-    return;
-  }
-
-  setStatus(`Failed: ${r?.error || "network/CORS/cache issue"}`, "bad");
+  if (r?.ok) setStatus(`Connected: ${r.service}`, "ok");
+  else setStatus(`Failed: ${r?.error || "unknown error"}`, "bad");
 }
 
-
-
  async function refreshMe() {
-  // 🔒 Always reset state first (logged-out baseline)
+  // 🔒 Always reset state first
   if (!state.token) {
     state.authenticated = false;
-    state.isPaid = false;
-    setPaidChip(false); // ❌ hide PAID
-
+    setPaidChip(false);          // ❌ hide PAID
     const btnLogout = els("btnLogout");
     if (btnLogout) btnLogout.hidden = true;
-
-    setAuthMsg(""); // ✅ clear "Logged in as..." text
-    const ph = els("paymentHistory");
-    if (ph) ph.hidden = true;
+    const phBox = els("paymentHistory");
+    if (phBox) phBox.hidden = true;
+    const emailRow = els("upgradeEmailRow");
+    if (emailRow) emailRow.hidden = true;
 
     updateUpgradeUI();
     updateAdminUI();
     return;
   }
 
-  const wasPaid = !!state.isPaid; // ✅ capture previous state
+  const wasPaid = !!state.isPaid;   // ✅ capture previous state
 
-  let r = null;
-  try {
-    r = await api("/me");
-  } catch (e) {
-    // If api() ever throws (rare), treat as not-authenticated
-    r = null;
-  }
+  const r = await api("/me");
 
   if (r?.identifier) {
     state.authenticated = true;
 
+    // Store identifier + receipt email (if present)
+    state.meIdentifier = r.identifier;
+    state.userEmail = (r.email || (isEmail(r.identifier) ? r.identifier : "")) || "";
+
+    // Show receipt email input only if needed (phone-number login)
+    const emailRow = els("upgradeEmailRow");
+    const emailInput = els("upgradeEmail");
+    const needsEmail = !isEmail(r.identifier) && !state.userEmail;
+    if (emailRow) emailRow.hidden = !needsEmail;
+    if (emailInput) emailInput.value = state.userEmail || "";
+
     const nowPaid = !!r.is_paid;
-    state.isPaid = nowPaid;       // ✅ keep state in sync
-    setPaidChip(nowPaid);         // ✅ show PAID only if truly paid
+    state.isPaid = nowPaid;         // ✅ keep state in sync
+    setPaidChip(nowPaid);           // ✅ show PAID only if truly paid
 
     const btnLogout = els("btnLogout");
-    if (btnLogout) btnLogout.hidden = false; // ✅ show logout when logged in
+    if (btnLogout) btnLogout.hidden = false;
 
     setAuthMsg(`Logged in as: ${r.identifier}`);
 
+    // Payment history (shows in Upgrade panel)
+    const phBox = els("paymentHistory");
+    if (phBox) phBox.hidden = false;
+    loadPaymentHistory();
+
     // ✅ keep session alive while user is active
     resetIdleTimer();
-    
 
     // ✅ if user transitioned from unpaid -> paid, clear paywall + reload page 1
     if (!wasPaid && nowPaid) {
       state.paywalled = false;
       state.endReached = false;
       state.pageIndex = 0;
+     const pw = els("paywall");
+   if (pw) {
+      pw.removeAttribute("hidden");     // safety: undo any previous hidden
+      pw.classList.remove("is-open");   // hide (animated system)
+  }
 
-      const pw = els("paywall");
-      if (pw) pw.hidden = true;
 
       loadList(0);
     }
-    loadPaymentHistory();
-  } 
-  else {
-    // Not authenticated (token invalid/expired/server said 401)
+  } else {
     state.authenticated = false;
     state.isPaid = false;
-    setPaidChip(false); // ❌ hide PAID
+    setPaidChip(false);          // ❌ hide PAID
 
     const btnLogout = els("btnLogout");
     if (btnLogout) btnLogout.hidden = true;
 
-    setAuthMsg(""); // ✅ clear auth text
-
-    // Optional cleanup: if token is invalid, clear it so UI doesn't stay "stuck"
-    // (keeps behavior consistent on expired tokens)
-    saveToken("");
+    const phBox = els("paymentHistory");
+    if (phBox) phBox.hidden = true;
+    const emailRow = els("upgradeEmailRow");
+    if (emailRow) emailRow.hidden = true;
   }
 
   updateUpgradeUI();
   updateAdminUI();
- 
 }
 
 
+async function loadPaymentHistory() {
+  const listEl = els("paymentHistoryList");
+  if (!listEl) return;
+
+  if (!state.token) {
+    listEl.textContent = "Login to view payment history.";
+    return;
+  }
+
+  const r = await api("/payments/history?limit=20");
+  if (!r || r.ok === false) {
+    listEl.textContent = "Unable to load payment history.";
+    return;
+  }
+
+  const items = Array.isArray(r.items) ? r.items : [];
+  if (!items.length) {
+    listEl.textContent = "No payments yet.";
+    return;
+  }
+
+  listEl.innerHTML = items
+    .map((p) => {
+      const dt = escapeHtml(String(p.created_at || ""));
+      const ref = escapeHtml(String(p.reference || ""));
+      const amt = escapeHtml(String(p.amount || ""));
+      const cur = escapeHtml(String(p.currency || "NGN"));
+      const st = escapeHtml(String(p.status || ""));
+      const prov = escapeHtml(String(p.provider || "paystack"));
+      return `<div style="padding:8px 0;border-bottom:1px solid #eee;">
+        <div><b>${amt} ${cur}</b> • ${st}</div>
+        <div class="mono small">${prov} • ${ref}</div>
+        <div class="small">${dt}</div>
+      </div>`;
+    })
+    .join("");
+}
 
 async function doRegister() {
   saveApiBase();
@@ -1032,6 +1014,9 @@ async function doLogin() {
   state.endReached = false;    // ✅ reset
   state.pageIndex = 0;         // ✅ reset
 
+  state.hasLoadedQuestions = false;
+
+
   setPaidChip(false);
   setAuthMsg("Logged out.");
   const btn = els("btnLogout");
@@ -1050,6 +1035,9 @@ async function doLogin() {
 
 async function loadList(targetPageIndex = state.pageIndex) {
   saveApiBase();
+  state.hasLoadedQuestions = true; // ✅ STEP 2: user attempted to load questions
+  updateUpgradeUI();
+
 
   const mode = els("mode").value;
   const limit = state.pageSize || 20;
@@ -1057,7 +1045,9 @@ async function loadList(targetPageIndex = state.pageIndex) {
   const offset = pageIndex * limit;
 
   // keep current list visible unless successful load
-  els("paywall").hidden = true;
+  const pw = els("paywall");
+ if (pw) pw.classList.remove("is-open");
+
   setStatus("Loading…", "ok");
   state.paywalled = false;
   setListPagerUI({ loading: true });
@@ -1065,20 +1055,30 @@ async function loadList(targetPageIndex = state.pageIndex) {
   const filterQs = buildFilterQuery();
   const r = await api(`/questions/${mode}?limit=${limit}&offset=${offset}${filterQs}`);
 
-  // Paywall: backend usually returns HTTP 402 (api() returns ok:false)
-  if ((r?.ok === false && r?.status === 402) || r?.paywall) {
-    state.paywalled = true;
-    setStatus("Preview limit reached. Please upgrade.", "bad");
-    els("paywall").hidden = false;
-    setListPagerUI({ loading: false });
-    return;
-  }
 
-  if (r?.ok === false) {
-    setStatus(`Error: ${r.error || "Request failed"}`, "bad");
-    setListPagerUI({ loading: false });
-    return;
-  }
+  // Paywall: show ONLY after user has attempted to load questions
+ if (
+  state.hasLoadedQuestions &&
+  ((r?.ok === false && r?.status === 402) || r?.paywall)
+) {
+  state.paywalled = true;
+
+  setStatus("Preview limit reached. Please upgrade.", "bad");
+
+  // ✅ SHOW paywall
+  const pw = els("paywall");
+  pw.removeAttribute("hidden");
+  pw.classList.add("is-open");
+
+
+  // ✅ HIDE passive upgrade hint (no double messaging)
+  const upgradeHint = els("upgradeHint");
+  if (upgradeHint) upgradeHint.hidden = true;
+
+  setListPagerUI({ loading: false });
+  return;
+}
+
 
   const items = r.items || [];
 
@@ -1116,9 +1116,12 @@ function updateUpgradeUI() {
   // ✅ Hide upgrade hint + paywall UI for paid users
   const upgradeHint = els("upgradeHint");
   if (upgradeHint) upgradeHint.hidden = !!state.isPaid;
+   
+   if (upgradeHint) {
+  // ✅ show only AFTER browsing starts, and only for unpaid logged-in users
+  upgradeHint.hidden = !!state.isPaid || !state.authenticated || !state.hasLoadedQuestions;
+}
 
-  const paywall = els("paywall");
-  if (paywall) paywall.hidden = !!state.isPaid;
 
   if (state.busyPay) {
     btnPay.disabled = true;
@@ -1165,11 +1168,27 @@ async function startPaystackPayment() {
     return;
   }
 
-  const email = els("identifier").value.trim().toLowerCase();
-  if (!isEmail(email)) {
-    setStatus("Paystack requires an email. Please login/register with an email to pay.", "bad");
-    setPayMsg("Use an email address to pay with Paystack.");
+  // Identifier can be email OR phone, but Paystack requires an email for receipts.
+  const identifier = (state.meIdentifier || els("identifier").value || "").trim().toLowerCase();
+
+  let payEmail = (state.userEmail || (isEmail(identifier) ? identifier : "")).trim().toLowerCase();
+  if (!payEmail) {
+    const emailInput = els("upgradeEmail");
+    payEmail = (emailInput ? emailInput.value : "").trim().toLowerCase();
+  }
+
+  if (!isEmail(payEmail)) {
+    setStatus("Paystack requires an email for receipts. Enter your email in the Upgrade box.", "bad");
+    setPayMsg("Enter a valid receipt email, then click Pay again.");
+    const emailRow = els("upgradeEmailRow");
+    if (emailRow) emailRow.hidden = false;
     return;
+  }
+
+  // Save receipt email to profile (so payment history + future receipts work)
+  if (!state.userEmail || state.userEmail !== payEmail) {
+    await api("/me/email", { method: "POST", body: JSON.stringify({ email: payEmail }) });
+    state.userEmail = payEmail;
   }
 
   if (!window.PaystackPop || typeof window.PaystackPop.setup !== "function") {
@@ -1181,96 +1200,53 @@ async function startPaystackPayment() {
   setPayBusy(true, "Opening Paystack…");
 
   try {
-    const pk = await getPaystackPublicKeyOrThrow();
-    const amount = PAYSTACK_AMOUNT_NGN * 100;
+    const pk = await getPaystackPublicKey();
+    if (!pk) throw new Error("Could not load Paystack public key");
 
-    const identifier = email;
+    // IMPORTANT: Paystack expects amount in kobo
+    const amount = 1000 * 100;
 
-    const handler = window.PaystackPop.setup({
+    const handler = PaystackPop.setup({
       key: pk,
-      email: email,
-      amount: amount,
-      currency: PAYSTACK_CURRENCY,
-      ref: "EP_" + Date.now(),
-      metadata: { identifier, app: "ExamPartner" },
-
-      callback: function (resp) {
-        (async () => {
-          const reference = resp?.reference;
-          if (!reference) {
-            setPayBusy(false, "");
-            setStatus("Payment returned no reference. Please try again.", "bad");
-            return;
-          }
-
-          setPayBusy(true, "Verifying payment…");
-          const vr = await verifyPayment(reference, email);
-
-          if (!vr?.ok) {
-            setPayBusy(false, "");
-            setStatus(`Payment received but verification failed: ${vr?.error || "unknown"}`, "bad");
-            setPayMsg(`Ref: ${reference} (not verified)`);
-            return;
-          }
-
-          await refreshMe();
-          
-          setPayBusy(false, "");
-          setStatus("Payment verified ✅", "ok");
-          setPayMsg(`Paid ✅ Ref: ${reference}`);
-        })().catch((e) => {
-          setPayBusy(false, "");
-          setStatus(`Pay verify error: ${e?.message || e}`, "bad");
-        });
+      email: payEmail,
+      amount,
+      currency: "NGN",
+      metadata: {
+        custom_fields: [
+          { display_name: "ExamPartner Identifier", variable_name: "identifier", value: identifier },
+        ],
       },
-
+      callback: async function (response) {
+        setPayMsg("Verifying payment…");
+        const vr = await api("/payments/verify", {
+          method: "POST",
+          body: JSON.stringify({ reference: response.reference, email: payEmail }),
+        });
+        if (vr && vr.ok !== false) {
+          setPayMsg("✅ Payment verified. Refreshing…");
+          await refreshMe();
+        } else {
+          setPayMsg("⚠️ Could not verify payment. Use 'Refresh Paid Status' after a moment.");
+        }
+        setPayBusy(false);
+      },
       onClose: function () {
-        setPayBusy(false, "Payment cancelled.");
+        setPayBusy(false);
+        setPayMsg("Payment window closed.");
       },
     });
 
     handler.openIframe();
   } catch (e) {
-    setPayBusy(false, "");
-    setStatus(`Pay error: ${e?.message || e}`, "bad");
+    setPayBusy(false);
+    setStatus(`Pay failed: ${e?.message || e}`, "bad");
+    setPayMsg("Payment failed to start. Check your network and try again.");
   }
 }
 
 async function checkPaidStatus() {
   await refreshMe();
   setStatus(state.isPaid ? "Paid ✅" : "Not paid yet.", state.isPaid ? "ok" : "bad");
-}
-
-async function loadPaymentHistory() {
-  const box = els("paymentHistory");
-  const list = els("paymentHistoryList");
-  if (!box || !list) return;
-
-  list.innerHTML = "Loading…";
-  box.hidden = false;
-
-  const r = await api("/payments/history");
-
-  if (!r?.ok || !Array.isArray(r.items)) {
-    list.innerHTML = "<div class='status bad'>Unable to load payment history.</div>";
-    return;
-  }
-
-  if (!r.items.length) {
-    list.innerHTML = "<div class='status'>No payments yet.</div>";
-    return;
-  }
-
-  list.innerHTML = r.items.map(p => `
-    <div class="item">
-      <div><b>₦${p.amount}</b> — ${escapeHtml(p.status)}</div>
-      <div class="meta">
-        Ref: ${escapeHtml(p.reference)} •
-        ${escapeHtml(p.provider)} •
-        ${new Date(p.created_at).toLocaleString()}
-      </div>
-    </div>
-  `).join("");
 }
 
 /* =========================
@@ -1463,27 +1439,7 @@ async function init() {
 
   // Reflect final chosen backend in the input
   const apiBaseEl = els("apiBase");
-  if (apiBaseEl) {
-    apiBaseEl.value = state.apiBase;
-
-    // ✅ Auto-save API base when you edit the field (no Save button needed)
-    apiBaseEl.addEventListener("change", () => {
-      saveApiBase();
-    });
-    apiBaseEl.addEventListener("blur", () => {
-      saveApiBase();
-    });
-
-    // (optional) Enter key saves too
-    apiBaseEl.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        saveApiBase();
-        // small UX: in dev mode you can instantly test
-        if (state.devMode && typeof checkApi === "function") checkApi();
-      }
-    });
-  }
+  if (apiBaseEl) apiBaseEl.value = state.apiBase;
 
   await initFiltersUI();
 
@@ -1703,7 +1659,6 @@ async function init() {
 
   refreshMe();
 }
-
 
 
 init().catch((e)=>console.error(e));
