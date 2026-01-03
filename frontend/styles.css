@@ -1,4 +1,5 @@
 
+
 :root {
   --bg: #0b1020;
   --card: #111827;
@@ -594,5 +595,59 @@ hr {
   border: 1px dashed rgba(0,0,0,0.25);
   border-radius: 12px;
 }
+
+/* Sub-questions block (Theory) */
+.subqs {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.03);
+}
+
+.subqs .subq-title{
+  font-weight: 800;
+  margin-bottom: 8px;
+  opacity: 0.95;
+}
+
+.subqs .subq-card{
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(0,0,0,0.16);
+}
+
+.subqs .subq-children{
+  margin-top: 10px;
+  padding-left: 10px;
+  border-left: 2px solid rgba(255,255,255,0.12);
+}
+/* Paywall subtle slide + fade */
+.paywall {
+  overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: max-height 220ms ease, opacity 220ms ease, transform 220ms ease;
+  will-change: max-height, opacity, transform;
+}
+
+/* Visible state */
+.paywall.is-open {
+  max-height: 200px; /* enough to fit the content */
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Respect reduced motion settings */
+@media (prefers-reduced-motion: reduce) {
+  .paywall {
+    transition: none;
+  }
+}
+
+
 .gate-title{ font-weight: 700; margin-bottom: 4px; }
 .gate-sub{ opacity: .85; margin-bottom: 10px; }
