@@ -35,6 +35,10 @@
       border-radius: 12px;
       background: rgba(0,0,0,0.02);
     }
+
+    /* ✅ Tiny topbar logout */
+    .topbar-right { display:flex; gap:10px; align-items:center; }
+    .btn.tiny { height: 30px; padding: 0 10px; font-size: 12px; border-radius: 999px; }
   </style>
 </head>
 <body>
@@ -49,6 +53,9 @@
 
     <div class="topbar-right">
       <div class="chip" id="chipPaid" hidden>PAID</div>
+
+      <!-- ✅ Logout lives here so normal users can always see it when logged in -->
+      <button id="btnLogout" class="btn ghost tiny" type="button" hidden>Logout</button>
     </div>
   </header>
 
@@ -71,7 +78,6 @@
 
       <div id="status" class="status" hidden>Not connected.</div>
 
-
       <div class="grid2">
         <div class="panel">
           <h3>Login / Register</h3>
@@ -86,13 +92,7 @@
           <div class="row">
             <button id="btnRegister" class="btn">Register</button>
             <button id="btnLogin" class="btn ghost">Login</button>
-            <button id="btnLogout" class="btn ghost" hidden>Logout</button>
           </div>
-          <div id="paymentHistory" hidden style="margin-top:16px;">
-           <h3>Payment History</h3>
-             <div id="paymentHistoryList" class="list"></div>
-           </div>
-
 
           <div id="authMsg" class="hint"></div>
         </div>
@@ -105,10 +105,14 @@
             <button id="btnAdmin" class="btn ghost" type="button" title="Admin tools" hidden>Admin</button>
           </div>
 
-           <div class="hint" id="upgradeHint">
-              Free preview ends here. Upgrade to access all questions.
-           </div>
+          <div class="hint" id="upgradeHint" hidden>
+            You’re using the free preview. Upgrade to unlock all questions.
 
+          </div>
+
+          <div class="row" id="upgradeEmailRow" hidden>
+            <input id="upgradeEmail" class="input" type="email" placeholder="Receipt email (needed for Paystack)" />
+          </div>
 
           <div class="row">
             <button id="btnPay" class="btn">Pay ₦1,000</button>
@@ -122,6 +126,11 @@
               <input id="adminRef" class="input" type="text" placeholder="Reference e.g. EP_..." />
               <button id="btnAdminReconcile" class="btn" type="button">Reconcile</button>
               <button id="btnAdminClear" class="btn ghost" type="button">Exit Admin</button>
+            </div>
+
+            <div id="paymentHistory" class="admin-box" hidden>
+              <div class="admin-title">Payment History</div>
+              <div id="paymentHistoryList" class="mono small">No payments yet.</div>
             </div>
 
             <!-- ✅ Refund mini UI -->
@@ -165,18 +174,22 @@
         </div>
       </div>
 
-        <div class="pager" id="listPager">
-          <button id="btnPrevPage" class="btn ghost" type="button">◀ Prev Page</button>
-          <div class="pager-meta">
-            <span id="pageLabel">Page 1</span>
-            <span id="pageHint" class="hint"></span>
-          </div>
-          <button id="btnNextPage" class="btn ghost" type="button">Next Page ▶</button>
+      <div class="pager" id="listPager">
+        <button id="btnPrevPage" class="btn ghost" type="button">◀ Prev Page</button>
+        <div class="pager-meta">
+          <span id="pageLabel">Page 1</span>
+          <span id="pageHint" class="hint"></span>
         </div>
+        <button id="btnNextPage" class="btn ghost" type="button">Next Page ▶</button>
+        <div id="paywall" class="paywall">
+           <div class="paywall-title">Free preview limit reached</div>
+           <div class="paywall-text">Please upgrade to continue browsing.</div>
+        </div>
+      </div>
 
-    <details id="filtersPanel" class="filters-panel">
-       <summary>Filters</summary>  
-       <div class="filters-row" style="margin-top:10px;">
+      <details id="filtersPanel" class="filters-panel">
+        <summary>Filters</summary>
+        <div class="filters-row" style="margin-top:10px;">
           <label for="examFilter">Exam</label>
           <select id="examFilter"></select>
 
@@ -187,22 +200,18 @@
           <select id="subjectFilter"></select>
 
           <button id="btnClearFilters" class="btn ghost" type="button">Clear Filters</button>
-       </div>
-    </details>
+        </div>
+      </details>
 
-     <div id="startGate" class="gate" hidden>
-         <div class="gate-title">Choose your exam to start</div>
-         <div class="gate-sub">
-           Select <b>Exam</b>, <b>Year</b>, and <b>Subject</b> in the Filters above — questions will load automatically.
-         </div>
+      <div id="startGate" class="gate" hidden>
+        <div class="gate-title">Choose your exam to start</div>
+        <div class="gate-sub">
+          Select <b>Exam</b>, <b>Year</b>, and <b>Subject</b> in the Filters above — questions will load automatically.
+        </div>
       </div>
-
 
       <div id="list" class="list"></div>
-      <div id="paywall" class="paywall" hidden>
-        <div class="paywall-title">Preview limit reached</div>
-        <div class="paywall-text">Please upgrade to continue browsing.</div>
-      </div>
+      
     </section>
 
     <section id="viewer" class="card" hidden>
@@ -220,14 +229,14 @@
       <div class="divider"></div>
 
       <div id="viewerActions" class="viewer-actions">
-  <button id="btnPrev" class="btn ghost" type="button">◀ Prev</button>
-  <button id="btnNext" class="btn ghost" type="button">Next ▶</button>
+        <button id="btnPrev" class="btn ghost" type="button">◀ Prev</button>
+        <button id="btnNext" class="btn ghost" type="button">Next ▶</button>
 
-  <div class="viewer-actions-spacer"></div>
+        <div class="viewer-actions-spacer"></div>
 
-  <button id="btnReveal" class="btn" type="button">Reveal Answer</button>
-  <button id="btnExplain" class="btn ghost" type="button">Show Explanation / Steps</button>
-</div>
+        <button id="btnReveal" class="btn" type="button">Reveal Answer</button>
+        <button id="btnExplain" class="btn ghost" type="button">Show Explanation / Steps</button>
+      </div>
 
       <div id="qExplain" class="explain" hidden></div>
     </section>
@@ -238,11 +247,6 @@
   </main>
 
   <script src="https://js.paystack.co/v1/inline.js"></script>
-  <script src="app.js?v=14"></script>
-  <script>
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("./sw.js").catch(() => {});
-    }
-  </script>
+  <script src="app.js?v=17"></script>
 </body>
 </html>
