@@ -1,10 +1,10 @@
 
-const CACHE_NAME = "ExamPartner v17";
+const CACHE_NAME = "ExamPartner v20";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
-  "./app.js?v=17",
+  "./app.js?v=20",
   "./manifest.json",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
