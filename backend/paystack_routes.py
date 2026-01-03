@@ -1,13 +1,10 @@
 
-
 # paystack_routes.py (Neon Postgres-ready, cleaned, feature-complete for MVP)
 
 import os
 import hmac
 import json
 import hashlib
-import base64
-import time
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
@@ -19,43 +16,6 @@ from pydantic import BaseModel
 from db import get_db  # uses Postgres if DATABASE_URL is set; else SQLite
 
 load_dotenv()
-# -----------------------------
-# Token helper (same scheme as app.py)
-# -----------------------------
-def _b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
-
-def _sign(data: bytes, secret: str) -> str:
-    return _b64url(hmac.new(secret.encode("utf-8"), data, hashlib.sha256).digest())
-
-def read_token(token: str) -> Optional[Dict[str, Any]]:
-    try:
-        b64, sig = token.split(".", 1)
-        raw = base64.urlsafe_b64decode(b64 + "==")
-        if _sign(raw, JWT_SECRET) != sig:
-            return None
-        payload = json.loads(raw.decode("utf-8"))
-        exp = int(payload.get("exp", 0) or 0)
-        if exp and int(time.time()) > exp:
-            return None
-        return payload
-    except Exception:
-        return None
-
-def require_user(request: Request) -> Dict[str, Any]:
-    auth = (request.headers.get("authorization") or "").strip()
-    if not auth.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    token = auth.split(" ", 1)[1].strip()
-    payload = read_token(token)
-    if not payload or not payload.get("sub"):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return payload
-
-def is_email(v: str) -> bool:
-    v = (v or "").strip().lower()
-    return ("@" in v) and ("." in v.split("@", 1)[-1])
-
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 
@@ -81,9 +41,6 @@ AUTO_DOWNGRADE_ON_REFUND = env_bool("AUTO_DOWNGRADE_ON_REFUND", False)
 
 # Price gate (₦1,000 in kobo)
 MIN_AMOUNT_KOBO = int(env_str("MIN_AMOUNT_KOBO", "100000"))
-
-JWT_SECRET = env_str("JWT_SECRET", "dev_secret_change_me")
-
 
 
 # -----------------------------
@@ -325,17 +282,6 @@ def mark_user_paid_by_identifier(
         # ✅ boolean
         cur.execute("UPDATE users SET is_paid = ? WHERE id = ?", (True, user_id))
 
-        # If identifier looks like an email, store it as receipt email (helps phone-number accounts)
-        if is_email(identifier):
-            try:
-                cur.execute("UPDATE users SET email = COALESCE(email, ?) WHERE id = ?", (identifier, user_id))
-            except Exception:
-                try:
-                    cur.execute("UPDATE users SET email = ? WHERE id = ?", (identifier, user_id))
-                except Exception:
-                    pass
-
-
         cur.execute("SELECT id FROM payments WHERE reference = ?", (ref,))
         prow = cur.fetchone()
         if not prow:
@@ -384,72 +330,6 @@ def paystack_public_key():
     if not PAYSTACK_PUBLIC_KEY:
         raise HTTPException(status_code=500, detail="PAYSTACK_PUBLIC_KEY not configured")
     return {"ok": True, "public_key": PAYSTACK_PUBLIC_KEY}
-
-@router.get("/history")
-def payment_history(request: Request, limit: int = 20):
-    """Logged-in user's payment history (latest first)."""
-    user = require_user(request)
-    identifier = (user.get("sub") or "").strip().lower()
-
-    try:
-        limit = int(limit)
-    except Exception:
-        limit = 20
-    limit = max(1, min(200, limit))
-
-    db = get_db()
-    try:
-        cur = db.cursor()
-        cur.execute("SELECT id FROM users WHERE lower(identifier) = ?", (identifier,))
-        urow = cur.fetchone()
-        if not urow:
-            raise HTTPException(status_code=401, detail="Not authenticated")
-
-        try:
-            user_id = int(urow["id"])
-        except Exception:
-            user_id = int(urow[0])
-
-        cur.execute(
-            """
-            SELECT provider, reference, amount_kobo, currency, status, created_at
-            FROM payments
-            WHERE user_id = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (user_id, limit),
-        )
-        rows = cur.fetchall()
-    finally:
-        db.close()
-
-    items: List[Dict[str, Any]] = []
-    for r in rows:
-        try:
-            provider = r["provider"]
-            reference = r["reference"]
-            amount_kobo = int(r["amount_kobo"] or 0)
-            currency = r["currency"]
-            status = r["status"]
-            created_at = r["created_at"]
-        except Exception:
-            provider, reference, amount_kobo, currency, status, created_at = r
-
-        items.append(
-            {
-                "provider": provider,
-                "reference": reference,
-                "amount": int(amount_kobo // 100),
-                "currency": currency,
-                "status": status,
-                "created_at": created_at,
-            }
-        )
-
-    return {"ok": True, "limit": limit, "items": items}
-
-
 
 
 @router.post("/verify")
