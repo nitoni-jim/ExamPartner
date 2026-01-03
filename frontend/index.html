@@ -94,6 +94,21 @@
             <button id="btnLogin" class="btn ghost">Login</button>
           </div>
 
+          <label class="label" id="payEmailLabel" hidden>Receipt email</label>
+    <input
+         class="input"
+         id="payEmailInput"
+         type="email"
+         placeholder="name@example.com"
+         autocomplete="email"
+         inputmode="email"
+        hidden
+       />
+  <div class="hint" id="payEmailHint" hidden>
+    Paystack requires an email for receipts. 
+  </div>
+
+
           <div id="authMsg" class="hint"></div>
         </div>
 
@@ -109,10 +124,7 @@
             You’re using the free preview. Upgrade to unlock all questions.
 
           </div>
-
-          <div class="row" id="upgradeEmailRow" hidden>
-            <input id="upgradeEmail" class="input" type="email" placeholder="Receipt email (needed for Paystack)" />
-          </div>
+           
 
           <div class="row">
             <button id="btnPay" class="btn">Pay ₦1,000</button>
@@ -247,6 +259,6 @@
   </main>
 
   <script src="https://js.paystack.co/v1/inline.js"></script>
-  <script src="app.js?v=17"></script>
+  <script src="app.js?v=20"></script>
 </body>
 </html>
