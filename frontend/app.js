@@ -1,5 +1,4 @@
 
-
 // ExamPartner MVP client (auth + browse + Paystack upgrade) + filters + admin mini tools
 
 const els = (id) => document.getElementById(id);
@@ -848,84 +847,143 @@ async function checkApi() {
   else setStatus(`Failed: ${r?.error || "unknown error"}`, "bad");
 }
 
+function isValidEmail(s) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim());
+}
+
+
+function updatePayEmailUI() {
+  const label = els("payEmailLabel");   // optional
+  const input = els("payEmailInput");   // required
+  const hint  = els("payEmailHint");    // optional
+
+  // If the input isn't in HTML, we can't show anything
+  if (!input) return;
+
+  // Not logged in → never show
+  if (!state.authenticated || !state.me) {
+    if (label) label.hidden = true;
+    input.hidden = true;
+    if (hint) hint.hidden = true;
+    input.value = "";
+    return;
+  }
+
+  const identifier = (state.me.identifier || "").trim();
+  const storedEmail = (state.me.email || "").trim();
+
+  const needsEmail =
+    !isValidEmail(identifier) &&
+    !isValidEmail(storedEmail);
+
+  if (label) label.hidden = !needsEmail;
+  input.hidden = !needsEmail;
+  if (hint) hint.hidden = !needsEmail;
+
+  if (needsEmail) {
+    // keep whatever user typed; if profile has email, prefill
+    if (isValidEmail(storedEmail) && !input.value) input.value = storedEmail;
+  } else {
+    input.value = "";
+  }
+}
+
  async function refreshMe() {
   // 🔒 Always reset state first
+  state.token = sessionStorage.getItem("token") || "";
+
   if (!state.token) {
     state.authenticated = false;
-    setPaidChip(false);          // ❌ hide PAID
+    state.isPaid = false;
+    setPaidChip(false);
+
     const btnLogout = els("btnLogout");
     if (btnLogout) btnLogout.hidden = true;
+
     const phBox = els("paymentHistory");
     if (phBox) phBox.hidden = true;
-    const emailRow = els("upgradeEmailRow");
-    if (emailRow) emailRow.hidden = true;
 
+    // Hide paywall (animated system)
+    const pw = els("paywall");
+    if (pw) {
+      pw.removeAttribute("hidden");
+      pw.classList.remove("is-open");
+    }
+
+    // Update UI that depends on auth
+    updatePayEmailUI();
     updateUpgradeUI();
     updateAdminUI();
     return;
   }
 
-  const wasPaid = !!state.isPaid;   // ✅ capture previous state
+  const wasPaid = !!state.isPaid;
 
   const r = await api("/me");
 
   if (r?.identifier) {
     state.authenticated = true;
 
-    // Store identifier + receipt email (if present)
-    state.meIdentifier = r.identifier;
-    state.userEmail = (r.email || (isEmail(r.identifier) ? r.identifier : "")) || "";
-
-    // Show receipt email input only if needed (phone-number login)
-    const emailRow = els("upgradeEmailRow");
-    const emailInput = els("upgradeEmail");
-    const needsEmail = !isEmail(r.identifier) && !state.userEmail;
-    if (emailRow) emailRow.hidden = !needsEmail;
-    if (emailInput) emailInput.value = state.userEmail || "";
+    // ✅ canonical profile state (matches your backend /me response)
+    state.me = {
+      identifier: String(r.identifier || "").trim(),
+      email: String(r.email || "").trim(),
+      isPaid: !!r.is_paid,
+    };
 
     const nowPaid = !!r.is_paid;
-    state.isPaid = nowPaid;         // ✅ keep state in sync
-    setPaidChip(nowPaid);           // ✅ show PAID only if truly paid
+    state.isPaid = nowPaid;
+    setPaidChip(nowPaid);
 
     const btnLogout = els("btnLogout");
     if (btnLogout) btnLogout.hidden = false;
 
-    setAuthMsg(`Logged in as: ${r.identifier}`);
+    setAuthMsg(`Logged in as: ${state.me.identifier}`);
 
     // Payment history (shows in Upgrade panel)
     const phBox = els("paymentHistory");
     if (phBox) phBox.hidden = false;
     loadPaymentHistory();
 
-    // ✅ keep session alive while user is active
+    // Keep session alive while user is active
     resetIdleTimer();
 
-    // ✅ if user transitioned from unpaid -> paid, clear paywall + reload page 1
+    // ✅ Update email UI visibility (new payEmailInput system)
+    updatePayEmailUI();
+
+    // ✅ If user transitioned from unpaid -> paid, clear paywall + reload page 1
     if (!wasPaid && nowPaid) {
       state.paywalled = false;
       state.endReached = false;
       state.pageIndex = 0;
-     const pw = els("paywall");
-   if (pw) {
-      pw.removeAttribute("hidden");     // safety: undo any previous hidden
-      pw.classList.remove("is-open");   // hide (animated system)
-  }
 
+      const pw = els("paywall");
+      if (pw) {
+        pw.removeAttribute("hidden");
+        pw.classList.remove("is-open");
+      }
 
       loadList(0);
     }
   } else {
     state.authenticated = false;
     state.isPaid = false;
-    setPaidChip(false);          // ❌ hide PAID
+    setPaidChip(false);
 
     const btnLogout = els("btnLogout");
     if (btnLogout) btnLogout.hidden = true;
 
     const phBox = els("paymentHistory");
     if (phBox) phBox.hidden = true;
-    const emailRow = els("upgradeEmailRow");
-    if (emailRow) emailRow.hidden = true;
+
+    // Hide paywall
+    const pw = els("paywall");
+    if (pw) {
+      pw.removeAttribute("hidden");
+      pw.classList.remove("is-open");
+    }
+
+    updatePayEmailUI();
   }
 
   updateUpgradeUI();
@@ -1162,52 +1220,70 @@ async function verifyPayment(reference, email) {
   });
 }
 
-async function startPaystackPayment() {
-  if (!state.authenticated) {
+
+ async function startPaystackPayment() {
+  updatePayEmailUI();
+
+  if (!state.authenticated || !state.me) {
     setStatus("Please login before paying.", "bad");
     setPayMsg("Login to upgrade.");
     return;
   }
 
-  // Identifier can be email OR phone, but Paystack requires an email for receipts.
-  const identifier = (state.meIdentifier || els("identifier").value || "").trim().toLowerCase();
-
-  let payEmail = (state.userEmail || (isEmail(identifier) ? identifier : "")).trim().toLowerCase();
-  if (!payEmail) {
-    const emailInput = els("upgradeEmail");
-    payEmail = (emailInput ? emailInput.value : "").trim().toLowerCase();
-  }
-
-  if (!isEmail(payEmail)) {
-    setStatus("Paystack requires an email for receipts. Enter your email in the Upgrade box.", "bad");
-    setPayMsg("Enter a valid receipt email, then click Pay again.");
-    const emailRow = els("upgradeEmailRow");
-    if (emailRow) emailRow.hidden = false;
-    return;
-  }
-
-  // Save receipt email to profile (so payment history + future receipts work)
-  if (!state.userEmail || state.userEmail !== payEmail) {
-    await api("/me/email", { method: "POST", body: JSON.stringify({ email: payEmail }) });
-    state.userEmail = payEmail;
-  }
-
   if (!window.PaystackPop || typeof window.PaystackPop.setup !== "function") {
-    setStatus("Paystack script not loaded. Check inline.js in index.html", "bad");
-    setPayMsg("Paystack failed to load. Check your internet connection and reload.");
+    setStatus("Paystack script not loaded. Please reload the page.", "bad");
+    setPayMsg("Paystack failed to load. Check your connection and reload.");
     return;
+  }
+
+  const identifier = String(state.me.identifier || els("identifier")?.value || "")
+    .trim()
+    .toLowerCase();
+
+  let payEmail = "";
+
+  if (isValidEmail(identifier)) {
+    payEmail = identifier;
+  } else if (isValidEmail(state.me.email || "")) {
+    payEmail = String(state.me.email).trim().toLowerCase();
+  } else {
+    // HARD GATE: phone identifier must provide receipt email
+    const input = els("payEmailInput");
+    payEmail = String(input?.value || "").trim().toLowerCase();
+
+    if (!isValidEmail(payEmail)) {
+      updatePayEmailUI();
+      if (input) {
+        input.hidden = false;
+        input.focus();
+      }
+      setStatus("Please enter a valid receipt email to continue.", "bad");
+      setPayMsg("Receipt email is required for phone-number accounts.");
+      return;
+    }
+
+    const up = await api("/me/email", {
+      method: "POST",
+      body: JSON.stringify({ email: payEmail }),
+    });
+
+    if (!up?.ok) {
+      setStatus(`Could not save email: ${up?.error || "unknown"}`, "bad");
+      setPayMsg("Please try again.");
+      return;
+    }
+
+    state.me.email = payEmail;
+    updatePayEmailUI();
   }
 
   setPayBusy(true, "Opening Paystack…");
 
   try {
-    
-        const pk = await getPaystackPublicKeyOrThrow();
-
+    const pk = await getPaystackPublicKeyOrThrow();
     if (!pk) throw new Error("Could not load Paystack public key");
 
-    // IMPORTANT: Paystack expects amount in kobo
-    const amount = 1000 * 100;
+    const amount = 1000 * 100; // kobo
 
     const handler = PaystackPop.setup({
       key: pk,
@@ -1216,36 +1292,56 @@ async function startPaystackPayment() {
       currency: "NGN",
       metadata: {
         custom_fields: [
-          { display_name: "ExamPartner Identifier", variable_name: "identifier", value: identifier },
+          {
+            display_name: "ExamPartner Identifier",
+            variable_name: "identifier",
+            value: identifier,
+          },
         ],
       },
-      callback: async function (response) {
-        setPayMsg("Verifying payment…");
-        const vr = await api("/payments/verify", {
-          method: "POST",
-          body: JSON.stringify({ reference: response.reference, email: payEmail }),
-        });
-        if (vr && vr.ok !== false) {
-          setPayMsg("✅ Payment verified. Refreshing…");
+
+      callback: function (resp) {
+        (async () => {
+          const reference = resp?.reference;
+          if (!reference) {
+            setPayBusy(false, "");
+            setStatus("Payment returned no reference. Please try again.", "bad");
+            return;
+          }
+
+          setPayBusy(true, "Verifying payment…");
+          const vr = await verifyPayment(reference, payEmail);
+
+          if (!vr?.ok) {
+            setPayBusy(false, "");
+            setStatus(`Payment received but verification failed: ${vr?.error || "unknown"}`, "bad");
+            setPayMsg(`Ref: ${reference} (not verified)`);
+            return;
+          }
+
           await refreshMe();
-        } else {
-          setPayMsg("⚠️ Could not verify payment. Use 'Refresh Paid Status' after a moment.");
-        }
-        setPayBusy(false);
+
+          setPayBusy(false, "");
+          setStatus("Payment verified ✅", "ok");
+          setPayMsg(`Paid ✅ Ref: ${reference}`);
+        })().catch((e) => {
+          setPayBusy(false, "");
+          setStatus(`Pay verify error: ${e?.message || e}`, "bad");
+        });
       },
+
       onClose: function () {
-        setPayBusy(false);
-        setPayMsg("Payment window closed.");
+        setPayBusy(false, "Payment cancelled.");
       },
     });
 
     handler.openIframe();
   } catch (e) {
-    setPayBusy(false);
-    setStatus(`Pay failed: ${e?.message || e}`, "bad");
-    setPayMsg("Payment failed to start. Check your network and try again.");
+    setPayBusy(false, "");
+    setStatus(`Pay error: ${e?.message || e}`, "bad");
   }
 }
+
 
 async function checkPaidStatus() {
   await refreshMe();
@@ -1662,6 +1758,5 @@ async function init() {
 
   refreshMe();
 }
-
 
 init().catch((e)=>console.error(e));
