@@ -1,6 +1,5 @@
 
 
-
 // ExamPartner MVP client (auth + browse + Paystack upgrade) + filters + admin mini tools
 
 const els = (id) => document.getElementById(id);
@@ -151,6 +150,9 @@ const state = {
   endReached: false,
   paywalled: false,
   lastItems: [],
+
+  hasLoadedQuestions: false, // ✅ NEW: user has attempted to load questions
+
 
   filters: {
     exam: localStorage.getItem("filter_exam") || "",
@@ -587,9 +589,20 @@ function openFiltersPanel() {
 function setStartGateVisible(visible) {
   const gate = els("startGate");
   if (!gate) return;
+
   gate.hidden = !visible;
-  if (visible) openFiltersPanel();
+
+  if (visible) {
+    // ✅ STEP 4: ensure paywall never appears under the start gate
+    state.paywalled = false;
+    const pw = els("paywall");
+   if(pw) pw.classList.remove("is-open");
+
+
+    openFiltersPanel();
+  }
 }
+
 
 function setListPagerUI({ loading = false } = {}) {
   const prev = els("btnPrevPage");
@@ -893,7 +906,11 @@ async function checkApi() {
       state.endReached = false;
       state.pageIndex = 0;
      const pw = els("paywall");
-     if (pw) pw.hidden = true;
+   if (pw) {
+      pw.removeAttribute("hidden");     // safety: undo any previous hidden
+      pw.classList.remove("is-open");   // hide (animated system)
+  }
+
 
       loadList(0);
     }
@@ -998,6 +1015,9 @@ async function doLogin() {
   state.endReached = false;    // ✅ reset
   state.pageIndex = 0;         // ✅ reset
 
+  state.hasLoadedQuestions = false;
+
+
   setPaidChip(false);
   setAuthMsg("Logged out.");
   const btn = els("btnLogout");
@@ -1016,6 +1036,9 @@ async function doLogin() {
 
 async function loadList(targetPageIndex = state.pageIndex) {
   saveApiBase();
+  state.hasLoadedQuestions = true; // ✅ STEP 2: user attempted to load questions
+  updateUpgradeUI();
+
 
   const mode = els("mode").value;
   const limit = state.pageSize || 20;
@@ -1023,7 +1046,9 @@ async function loadList(targetPageIndex = state.pageIndex) {
   const offset = pageIndex * limit;
 
   // keep current list visible unless successful load
-  els("paywall").hidden = true;
+  const pw = els("paywall");
+ if (pw) pw.classList.remove("is-open");
+
   setStatus("Loading…", "ok");
   state.paywalled = false;
   setListPagerUI({ loading: true });
@@ -1031,20 +1056,30 @@ async function loadList(targetPageIndex = state.pageIndex) {
   const filterQs = buildFilterQuery();
   const r = await api(`/questions/${mode}?limit=${limit}&offset=${offset}${filterQs}`);
 
-  // Paywall: backend usually returns HTTP 402 (api() returns ok:false)
-  if ((r?.ok === false && r?.status === 402) || r?.paywall) {
-    state.paywalled = true;
-    setStatus("Preview limit reached. Please upgrade.", "bad");
-    els("paywall").hidden = false;
-    setListPagerUI({ loading: false });
-    return;
-  }
 
-  if (r?.ok === false) {
-    setStatus(`Error: ${r.error || "Request failed"}`, "bad");
-    setListPagerUI({ loading: false });
-    return;
-  }
+  // Paywall: show ONLY after user has attempted to load questions
+ if (
+  state.hasLoadedQuestions &&
+  ((r?.ok === false && r?.status === 402) || r?.paywall)
+) {
+  state.paywalled = true;
+
+  setStatus("Preview limit reached. Please upgrade.", "bad");
+
+  // ✅ SHOW paywall
+  const pw = els("paywall");
+  pw.removeAttribute("hidden");
+  pw.classList.add("is-open");
+
+
+  // ✅ HIDE passive upgrade hint (no double messaging)
+  const upgradeHint = els("upgradeHint");
+  if (upgradeHint) upgradeHint.hidden = true;
+
+  setListPagerUI({ loading: false });
+  return;
+}
+
 
   const items = r.items || [];
 
@@ -1082,9 +1117,12 @@ function updateUpgradeUI() {
   // ✅ Hide upgrade hint + paywall UI for paid users
   const upgradeHint = els("upgradeHint");
   if (upgradeHint) upgradeHint.hidden = !!state.isPaid;
+   
+   if (upgradeHint) {
+  // ✅ show only AFTER browsing starts, and only for unpaid logged-in users
+  upgradeHint.hidden = !!state.isPaid || !state.authenticated || !state.hasLoadedQuestions;
+}
 
-  const paywall = els("paywall");
-  if (paywall) paywall.hidden = !!state.isPaid;
 
   if (state.busyPay) {
     btnPay.disabled = true;
@@ -1163,7 +1201,9 @@ async function startPaystackPayment() {
   setPayBusy(true, "Opening Paystack…");
 
   try {
-    const pk = await getPaystackPublicKey();
+    
+        const pk = await getPaystackPublicKeyOrThrow();
+
     if (!pk) throw new Error("Could not load Paystack public key");
 
     // IMPORTANT: Paystack expects amount in kobo
