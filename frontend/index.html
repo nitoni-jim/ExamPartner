@@ -52,15 +52,44 @@
     </div>
 
     <div class="topbar-right">
-      <div class="chip" id="chipPaid" hidden>PAID</div>
+      <div class="chip" id="chipPaid" hidden>PAID</div> 
 
       <!-- ✅ Logout lives here so normal users can always see it when logged in -->
       <button id="btnLogout" class="btn ghost tiny" type="button" hidden>Logout</button>
     </div>
   </header>
-
+ 
   <main class="wrap">
-    <section class="card">
+    <section class="card" id="whoFor">
+  <h2 class="h2-tight">Who ExamPartner Is For</h2>
+
+  <div class="grid3" style="margin-top:10px;">
+    <div class="panel">
+      <h3>🎓 Students</h3>
+      <p class="hint">
+        Prepare confidently for NECO, WAEC, and JAMB using exam-standard
+        questions and clear explanations that help you understand and improve.
+      </p>
+    </div>
+
+    <div class="panel">
+      <h3>👨‍👩‍👧 Parents & Guardians</h3>
+      <p class="hint">
+        A structured online exam preparation platform that supports consistent,
+        self-paced study on any device.
+      </p>
+    </div>
+
+    <div class="panel">
+      <h3>👩‍🏫 Teachers & Tutors</h3>
+      <p class="hint">
+        Useful for revision, assignments, and extra lessons aligned with Nigerian
+        examination standards.
+      </p>
+    </div>
+  </div>
+</section>
+  
       <div class="row space">
         <h2>Account</h2>
       </div>
@@ -124,12 +153,42 @@
             You’re using the free preview. Upgrade to unlock all questions.
 
           </div>
-           
+          <div class="hint" style="margin-top:6px;">
+          Parents and guardians can safely make payments on behalf of students using Paystack.
+          </div>
+
+           <!-- 🔖 Plan meta: Founding badge + expiry -->
+         <div id="planMeta" class="plan-meta" hidden>
+            <span id="foundingBadge" class="badge" hidden>Founding Student</span>
+            <span id="activeUntil" class="hint"></span>
+         </div>
+
 
           <div class="row">
-            <button id="btnPay" class="btn">Pay ₦1,000</button>
-            <button id="btnCheckPaid" class="btn ghost">Refresh Paid Status</button>
+            <div class="access" id="foundingOffer" hidden>
+              <strong>Founding Students – Limited Offer</strong><br>
+                Full access for 30 days • ₦1,000<br>
+               <span class="hint">Core plan: ₦10,000 for 1 year • AI Tutor features later as Pro</span>
+             </div>
+
+
+            <button id="btnPay" type="button" class="btn" hidden> Pay ₦1,000</button>
+            <button id="btnCheckPaid" class="btn ghost" hidden>Refresh Paid Status</button>
+            
           </div>
+
+          <div class="row" style="margin-top:8px;">
+            <button id="btnPayCore" type="button" class="btn ghost" hidden>Pay ₦10,000 (Core — 1 year)</button>
+          </div>
+              
+          <button id="btnToggleHistory" class="btn ghost small" hidden type="button">
+            View payment history
+          </button>
+
+          <div id="paymentHistory" class="admin-box" hidden>
+              <div class="admin-title">Payment History</div>
+              <div id="paymentHistoryList" class="mono small">No payments yet.</div>
+            </div>
 
           <!-- ✅ Admin tools (hidden unless admin key is set in sessionStorage) -->
           <div id="adminTools" class="admin-box" hidden>
@@ -140,10 +199,7 @@
               <button id="btnAdminClear" class="btn ghost" type="button">Exit Admin</button>
             </div>
 
-            <div id="paymentHistory" class="admin-box" hidden>
-              <div class="admin-title">Payment History</div>
-              <div id="paymentHistoryList" class="mono small">No payments yet.</div>
-            </div>
+            
 
             <!-- ✅ Refund mini UI -->
             <div class="admin-row">
@@ -171,7 +227,9 @@
       <div class="row space">
         <div>
           <h2 class="h2-tight">📘 Practice Questions</h2>
-          <div id="practiceMeta" class="hint">NECO • Mathematics • 2023</div>
+          <div id="practiceMeta" class="hint">NECO / WAEC / JAMB • Past Questions • Explanations</div>
+         
+
         </div>
 
         <div class="row" style="gap:10px; flex-wrap:wrap; align-items:center;">
@@ -194,8 +252,8 @@
         </div>
         <button id="btnNextPage" class="btn ghost" type="button">Next Page ▶</button>
         <div id="paywall" class="paywall">
-           <div class="paywall-title">Free preview limit reached</div>
-           <div class="paywall-text">Please upgrade to continue browsing.</div>
+           <div class="paywall-title">Preview limit reached</div>
+           <div class="paywall-text">Upgrade to continue accessing all available questions and explanations.</div>
         </div>
       </div>
 
@@ -211,15 +269,20 @@
           <label for="subjectFilter">Subject</label>
           <select id="subjectFilter"></select>
 
-          <button id="btnClearFilters" class="btn ghost" type="button">Clear Filters</button>
+          <button id="btnClearFilters" class="btn ghost" type="button">Reset</button>
         </div>
       </details>
 
+      <div class="hint" style="margin-top:6px;">
+       Questions are curated and aligned with Nigerian examination standards.
+      </div>
+
+
       <div id="startGate" class="gate" hidden>
-        <div class="gate-title">Choose your exam to start</div>
+        <div class="gate-title">Start your practice</div>
         <div class="gate-sub">
-          Select <b>Exam</b>, <b>Year</b>, and <b>Subject</b> in the Filters above — questions will load automatically.
-        </div>
+            Choose an <b>Exam</b>, <b>Year</b>, and <b>Subject</b> in <b>Filters</b>. Your questions will load automatically.
+         </div>
       </div>
 
       <div id="list" class="list"></div>
@@ -234,7 +297,10 @@
 
       <div id="qMeta" class="meta"></div>
       <div id="qText" class="qtext"></div>
+        <!-- ✅ NEW: tables render here -->
+      <div id="qTables" class="tables"></div>
       <div id="qDiagrams" class="diagrams"></div>
+      
       <div id="qSubQuestions" class="subqs" hidden></div>
       <div id="qOptions" class="options"></div>
 
@@ -253,9 +319,9 @@
       <div id="qExplain" class="explain" hidden></div>
     </section>
 
-    <footer class="footer">
-      <div>© <span id="yr"></span> ExamPartner MVP • Built to ship fast.</div>
-    </footer>
+   <footer class="footer">
+      <div>© <span id="yr"></span> ExamPartner • NECO / WAEC / JAMB prep.</div>
+  </footer>
   </main>
 
   <script src="https://js.paystack.co/v1/inline.js"></script>
