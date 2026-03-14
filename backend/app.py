@@ -415,6 +415,9 @@ def _row_to_question(row) -> Dict[str, Any]:
         "sub_questions": _jloads(row.get("sub_questions_json")),
         "solution_steps": _jloads(row.get("solution_steps_json")),
         "diagrams": _jloads(row.get("diagrams_json")) or [],
+        "answer_diagrams": _jloads(row.get("answer_diagrams_json")) or [],
+        "explanation_diagrams": _jloads(row.get("explanation_diagrams_json")) or [],
+        "tables": _jloads(row.get("tables_json")) or {},
     }
 
 
@@ -497,7 +500,7 @@ def list_objective(
         f"""
         SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
                options_json, answer, explanation, sub_questions_json,
-               solution_steps_json, diagrams_json
+               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json
         FROM questions
         WHERE {where_sql}
         ORDER BY COALESCE(sort_key, 999999999), id
@@ -536,7 +539,7 @@ def list_theory(
         f"""
         SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
                options_json, answer, explanation, sub_questions_json,
-               solution_steps_json, diagrams_json
+               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json
         FROM questions
         WHERE {where_sql}
         ORDER BY COALESCE(sort_key, 999999999), id
@@ -558,7 +561,7 @@ def get_question(qid: str, user: Optional[Dict[str, Any]] = Depends(get_current_
         """
         SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
                options_json, answer, explanation, sub_questions_json,
-               solution_steps_json, diagrams_json
+               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json
         FROM questions
         WHERE id = ?
         """,
