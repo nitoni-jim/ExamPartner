@@ -576,7 +576,27 @@ hr {
   background: rgba(255,255,255,0.10);
 }
 
+.tables { margin: 10px 0; }
 
+.qtable-wrap { margin: 10px 0; overflow-x: auto; }
+.qtable-title { font-weight: 700; margin: 6px 0; }
+
+.qtable {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 420px; /* helps on mobile with horizontal scroll */
+}
+
+.qtable th, .qtable td {
+  border: 1px solid rgba(0,0,0,0.12);
+  padding: 8px 10px;
+  vertical-align: top;
+}
+
+.qtable th {
+  background: rgba(0,0,0,0.04);
+  text-align: left;
+}
 
 /* ====== Minimal additions: Gate + List pager ====== */
 .pager{
@@ -647,7 +667,102 @@ hr {
     transition: none;
   }
 }
+/* =========================
+   Plan meta (Founding badge + expiry)
+   ========================= */
+
+.plan-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 6px 0;
+  flex-wrap: wrap;
+}
+
+.badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(96, 165, 250, 0.42);
+  background: rgba(96, 165, 250, 0.14);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
 
 
 .gate-title{ font-weight: 700; margin-bottom: 4px; }
 .gate-sub{ opacity: .85; margin-bottom: 10px; }
+/* =========================
+   Sub-question Rendering v2
+   ========================= */
+
+.subqs {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.03);
+}
+
+.subq-block {
+  margin-bottom: 14px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(0,0,0,0.18);
+}
+
+.subq-text {
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.subq-diagrams {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.subq-diagrams img {
+  max-width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.12);
+}
+
+.answer {
+  border-color: rgba(52, 211, 153, 0.35);
+  background: rgba(52, 211, 153, 0.08);
+}
+
+.explain {
+  border-color: rgba(96, 165, 250, 0.35);
+  background: rgba(96, 165, 250, 0.08);
+}
+
+.answer img,
+.explain img {
+  margin-top: 10px;
+  max-width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.12);
+}
+
+.inline-diagram {
+  display: block;
+  margin: 12px 0;
+  max-width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.12);
+}
+
+.subq-children {
+  margin-top: 12px;
+  padding-left: 12px;
+  border-left: 2px solid rgba(255,255,255,0.15);
+}
+
+
+.diagrams {
+  margin: 10px 0;
+}
