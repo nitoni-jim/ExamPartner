@@ -1,4 +1,6 @@
 
+
+
 // ExamPartner MVP client (auth + browse + Paystack upgrade) + filters + admin mini tools
 
 const els = (id) => document.getElementById(id);
@@ -7,6 +9,18 @@ const FILTERS_PANEL_OPEN = "ep_filters_open";
 const FILTER_CACHE_KEY = "ep_filter_cache_v1";
 const FILTER_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
+function diagramSrc(name) {
+  return `${apiBaseNoSlash()}/static/diagrams/${encodeURIComponent(name)}`;
+}
+
+function createDiagramImage(name, extraClass = "") {
+  const img = document.createElement("img");
+  img.loading = "lazy";
+  img.alt = name;
+  img.className = `diagram-img ${extraClass}`.trim();
+  img.src = `${apiBaseNoSlash()}/static/diagrams/${encodeURIComponent(name)}`;
+  return img;
+}
 
 function setViewerOpen(isOpen) {
   document.body.classList.toggle("viewer-open", !!isOpen);
@@ -80,21 +94,191 @@ function clearOptionSelection() {
   optBox.querySelectorAll(".opt").forEach((el) => el.classList.remove("selected"));
 }
 
-function renderDiagrams(diagrams) {
-  const box = els("qDiagrams");
-  if (!box) return;
-  box.innerHTML = "";
-  if (!diagrams || !diagrams.length) return;
+function diagramSrc(name) {
+  return `${apiBaseNoSlash()}/static/diagrams/${encodeURIComponent(name)}`;
+}
+
+ function renderDiagramsInto(containerEl, diagrams, opts = {}) {
+  if (!containerEl) return;
+
+  const {
+    variant = "block",   // "block" | "inline"
+    append = false,      // if true, do NOT clear container first
+    extraClass = "",     // extra styling hook if you want more
+    title = ""           // optional heading like "Diagrams" / "Answer Diagram"
+  } = opts;
+
+  if (!append) containerEl.innerHTML = "";
+  if (!Array.isArray(diagrams) || diagrams.length === 0) return;
+
+  // Optional title for grouping (useful for answer/explanation)
+  if (title) {
+    const h = document.createElement("div");
+    h.className = "diag-title";
+    h.textContent = title;
+    containerEl.appendChild(h);
+  }
+
+  const classForVariant = variant === "inline" ? "inline-diagram" : "";
+  const finalExtra = [classForVariant, extraClass].filter(Boolean).join(" ");
 
   for (const name of diagrams) {
-    const img = document.createElement("img");
-    img.loading = "lazy";
-    img.alt = name;
-    img.className = "diagram-img";
-    img.src = `${apiBaseNoSlash()}/static/diagrams/${encodeURIComponent(name)}`;
-    box.appendChild(img);
+    containerEl.appendChild(createDiagramImage(name, finalExtra));
   }
 }
+
+// Backwards-compatible: renders MAIN question diagrams into #qDiagrams
+function renderDiagrams(diagrams) {
+  renderDiagramsInto(els("qDiagrams"), diagrams, { variant: "block" });
+}
+
+// HTML form (for inline blocks like sub-questions / explanations)
+function renderDiagramsHtml(diagrams) {
+  if (!Array.isArray(diagrams) || diagrams.length === 0) return "";
+
+  const imgs = diagrams
+    .map((name) => {
+      const src = diagramSrc(name);
+      return `<img 
+                class="diagram-img inline-diagram" 
+                loading="lazy" 
+                alt="${escapeHtml(name)}" 
+                src="${src}">
+              `;
+    })
+    .join("");
+
+  return `<div class="subq-diagrams">${imgs}</div>`;
+}
+
+// Escape + preserve line breaks + allow explicit diagram placeholders:
+// Use: [[diagram:FILE.png]] anywhere in question_text / explanation / steps text
+
+function renderTextWithDiagrams(rawText, ctx = {}) {
+  const safe = escapeHtml(String(rawText || ""));
+  const withBreaks = safe.replace(/\n/g, "<br>");
+
+  const tables = ctx.tables || state.currentQuestion?.tables || {};
+  const mode = ctx.mode || "question"; // "question" | "reveal" | "explain"
+
+  // 1) Inject TABLE placeholders: [[table:T1]] or [[table:T1:answer]]
+  let out = withBreaks.replace(/\[\[table:([^\]:\]]+)(?::(answer))?\]\]/gi, (_m, key, answerFlag) => {
+    const k = String(key || "").trim();
+    if (!k) return "";
+
+    const tableObj = tables?.[k];
+    if (!tableObj) return `<div class="status">[Missing table: ${escapeHtml(k)}]</div>`;
+
+    const tableMode = answerFlag ? "reveal" : mode;
+    return renderTableHtml(tableObj, { title: "", mode: tableMode });
+  });
+
+  // 2) Inject DIAGRAM placeholders: [[diagram:FILE.png]]
+  out = out.replace(/\[\[diagram:([^\]]+)\]\]/gi, (_m, name) => {
+    const file = String(name || "").trim();
+    if (!file) return "";
+
+    const alt = escapeHtml(file);
+    const src = diagramSrc(file);
+    return `<div class="diagrams"><img loading="lazy" alt="${alt}" class="diagram-img inline-diagram" src="${src}"></div>`;
+  });
+
+  return out;
+}
+
+function normalizeColumns(cols) {
+  if (!Array.isArray(cols)) return [];
+  return cols.map((x) => String(x ?? "").trim()).filter(Boolean);
+}
+
+function cellToText(v) {
+  if (v === null || v === undefined) return "";
+  // numbers, booleans, strings are okay
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  // objects/arrays -> JSON
+  try { return JSON.stringify(v); } catch { return String(v); }
+}
+
+// Renders ONE table object to HTML string (safe: we escape cells)
+function renderTableHtml(tableObj, { title = "", mode = "question" } = {}) {
+  if (!tableObj || typeof tableObj !== "object") return "";
+
+  const columns = normalizeColumns(tableObj.columns || tableObj.headers);
+  const hasColumns = columns.length > 0;
+
+  // choose which rows to show
+  // - question mode: show rows
+  // - reveal/explain: if answer_rows exists, show that; else show rows
+  const baseRows = Array.isArray(tableObj.rows) ? tableObj.rows : [];
+  const ansRows = Array.isArray(tableObj.answer_rows) ? tableObj.answer_rows : [];
+  const rowsToUse = (mode !== "question" && ansRows.length) ? ansRows : baseRows;
+
+  if (!hasColumns && rowsToUse.length === 0) return "";
+
+  // if no columns provided, infer columns from first row object keys
+  let finalCols = columns;
+  if (!finalCols.length && rowsToUse.length) {
+    const r0 = rowsToUse[0];
+    if (r0 && typeof r0 === "object" && !Array.isArray(r0)) {
+      finalCols = Object.keys(r0);
+    }
+  }
+
+  const ths = finalCols.map((c) => `<th>${escapeHtml(c)}</th>`).join("");
+
+  const trs = rowsToUse.map((r) => {
+    // row can be array OR object
+    if (Array.isArray(r)) {
+      const tds = finalCols.length
+        ? finalCols.map((_c, idx) => `<td>${escapeHtml(cellToText(r[idx]))}</td>`).join("")
+        : r.map((cell) => `<td>${escapeHtml(cellToText(cell))}</td>`).join("");
+      return `<tr>${tds}</tr>`;
+    }
+    if (r && typeof r === "object") {
+      const tds = finalCols.map((c) => `<td>${escapeHtml(cellToText(r[c]))}</td>`).join("");
+      return `<tr>${tds}</tr>`;
+    }
+    // fallback
+    return `<tr><td>${escapeHtml(cellToText(r))}</td></tr>`;
+  }).join("");
+
+  const titleHtml = title ? `<div class="qtable-title">${escapeHtml(title)}</div>` : "";
+  return `
+    <div class="qtable-wrap">
+      ${titleHtml}
+      <table class="qtable">
+        <thead><tr>${ths}</tr></thead>
+        <tbody>${trs}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+// Renders many tables into a container (DOM)
+function renderTablesInto(containerEl, tablesObj, refs = null, mode = "question") {
+  if (!containerEl) return;
+  containerEl.innerHTML = "";
+
+  if (!tablesObj || typeof tablesObj !== "object") return;
+
+  const keys = Array.isArray(refs) && refs.length
+    ? refs.map(String)
+    : Object.keys(tablesObj);
+
+  if (!keys.length) return;
+
+  for (const k of keys) {
+    const t = tablesObj[k];
+    const html = renderTableHtml(t, { title: k, mode });
+    if (html) {
+      const holder = document.createElement("div");
+      holder.innerHTML = html;
+      containerEl.appendChild(holder);
+    }
+  }
+}
+
 function scrollToExplainBox() {
   const exp = els("qExplain");
   if (!exp) return;
@@ -109,6 +293,7 @@ function scrollToExplainBox() {
 // ====== CONFIG ======
 const PAYSTACK_AMOUNT_NGN = 1000; // ₦1,000
 const PAYSTACK_CURRENCY = "NGN";
+const PAYSTACK_CORE_AMOUNT_NGN = 10000; // ₦10,000 (Core annual)
 // ====================
 
 // ---- Filter presets ----
@@ -142,6 +327,10 @@ const state = {
   authenticated: false,
   freeLimit: 10,
   busyPay: false,
+
+  
+ historyOpen: false,
+ historyLoadedOnce : false,
 
   // list paging (offset is internal)
   pageSize: 20,
@@ -197,11 +386,19 @@ function updatePracticeMetaUI() {
   const el = els("practiceMeta");
   if (!el) return;
 
+  // If nothing is selected yet, keep the brand umbrella message
+  const hasAny = !!(state.filters.exam || state.filters.year || state.filters.subject);
+  if (!hasAny) {
+    el.textContent = "NECO / WAEC / JAMB • Past Questions • Explanations";
+    return;
+  }
+
   const exam = state.filters.exam || "All Exams";
   const subject = state.filters.subject || "All Subjects";
   const year = state.filters.year || "All Years";
   el.textContent = `${exam} • ${subject} • ${year}`;
 }
+
 
 
 function saveApiBase() {
@@ -292,11 +489,12 @@ function isEmail(v) {
 function renderSolutionSteps(steps) {
   if (!steps) return "";
   // steps can be string, array, or object
-  if (typeof steps === "string") return `<div>${escapeHtml(steps)}</div>`;
+  if (typeof steps === "string") return `<div>${renderTextWithDiagrams(steps)}</div>`;
   if (Array.isArray(steps)) {
     const items = steps
       .map((s) => {
-        if (typeof s === "string") return `<li>${escapeHtml(s)}</li>`;
+        if (typeof s === "string") return `<li>${renderTextWithDiagrams(s)}</li>`;
+        // objects: show JSON safely
         return `<li>${escapeHtml(JSON.stringify(s))}</li>`;
       })
       .join("");
@@ -305,9 +503,15 @@ function renderSolutionSteps(steps) {
   return `<pre style="white-space:pre-wrap;margin:6px 0 0;">${escapeHtml(JSON.stringify(steps, null, 2))}</pre>`;
 }
 
-function renderSubQuestions(items, opts = {}) {
-  const showAnswers = opts.showAnswers !== false;        // default true
-  const showExplanations = opts.showExplanations !== false; // default true
+ function renderSubQuestions(items, opts = {}) {
+  const showAnswers = opts.showAnswers !== false;              // default true
+  const showExplanations = opts.showExplanations !== false;    // default true
+  const showDiagrams = opts.showDiagrams !== false;            // default true
+
+  // ✅ NEW (tables context + mode)
+  // mode: "question" | "reveal" | "explain"
+  const tables = opts.tables || (state && state.currentQuestion ? state.currentQuestion.tables : {}) || {};
+  const mode = opts.mode || "question";
 
   if (!items) return "";
   if (!Array.isArray(items)) {
@@ -318,33 +522,142 @@ function renderSubQuestions(items, opts = {}) {
     if (!n || typeof n !== "object") return "";
 
     const label = n.label ? `<b>${escapeHtml(String(n.label))}</b> ` : "";
-    const text = n.text ? `${escapeHtml(String(n.text))}` : "";
 
+    // ✅ NEW: renderTextWithDiagrams now receives { tables, mode }
+    const text = n.text
+      ? `${renderTextWithDiagrams(String(n.text), { tables, mode })}`
+      : "";
+
+    // Subquestion diagrams (question-phase diagrams)
+    const qDiagrams = (showDiagrams && Array.isArray(n.diagrams) && n.diagrams.length)
+      ? renderDiagramsHtml(n.diagrams)
+      : "";
+
+    // ✅ NEW: answer uses reveal mode (so [[table:T1:answer]] can work if you use it)
     const answer = (showAnswers && n.answer)
-      ? `<div style="margin-top:6px;"><b>Answer:</b> ${escapeHtml(String(n.answer))}</div>`
+      ? `<div style="margin-top:8px;"><b>Answer:</b> ${renderTextWithDiagrams(String(n.answer), { tables, mode: "reveal" })}</div>`
       : "";
 
+    // Answer diagrams (Reveal)
+    const aDiagrams = (showAnswers && showDiagrams && Array.isArray(n.answer_diagrams) && n.answer_diagrams.length)
+      ? renderDiagramsHtml(n.answer_diagrams)
+      : "";
+
+    // ✅ NEW: explanation uses explain mode (so [[table:T1]] placeholders render as explanation context if needed)
     const explanation = (showExplanations && n.explanation)
-      ? `<div style="margin-top:6px;"><b>Explanation:</b><br>${escapeHtml(String(n.explanation))}</div>`
+      ? `<div style="margin-top:8px;"><b>Explanation:</b><div style="margin-top:6px;">${renderTextWithDiagrams(String(n.explanation), { tables, mode: "explain" })}</div></div>`
       : "";
 
+    // Explanation diagrams (Explain)
+    const eDiagrams = (showExplanations && showDiagrams && Array.isArray(n.explanation_diagrams) && n.explanation_diagrams.length)
+      ? renderDiagramsHtml(n.explanation_diagrams)
+      : "";
+
+    // Children (nested)
     const children = Array.isArray(n.children) && n.children.length
-      ? `<div style="margin-top:10px;padding-left:10px;border-left:2px solid #ddd;">
+      ? `<div style="margin-top:12px;padding-left:10px;border-left:2px solid rgba(0,0,0,0.08);">
            ${n.children.map(renderNode).join("")}
          </div>`
       : "";
 
     return `
-      <div style="margin:10px 0; padding:10px; border:1px solid #eee; border-radius:10px;">
+      <div style="margin:10px 0; padding:10px; border:1px solid rgba(0,0,0,0.08); border-radius:12px;">
         <div>${label}${text}</div>
+        ${qDiagrams}
         ${answer}
+        ${aDiagrams}
         ${explanation}
+        ${eDiagrams}
         ${children}
       </div>
     `;
   };
 
   return items.map(renderNode).join("");
+}
+
+
+// ---- Viewer section builders (new flow) ----
+function renderQuestion(q) {
+  // Question text
+  const qTextEl = els("qText");
+  if (qTextEl) qTextEl.innerHTML = `<div>${renderTextWithDiagrams(q.question_text || "")}</div>`;
+    // ✅ NEW: render referenced tables under question (when not using placeholders)
+  renderTablesInto(els("qTables"), q.tables || {}, q.table_refs || null, "question");
+
+  // Main question diagrams (separate field)
+   renderDiagramsInto(els("qDiagrams"), q.diagrams || [], { variant: "block" });
+
+  // Sub-questions (question-only view; answers hidden until reveal/explain)
+  const subBox = els("qSubQuestions");
+  if (subBox) {
+    if (q.sub_questions && Array.isArray(q.sub_questions) && q.sub_questions.length) {
+      subBox.hidden = false;
+      subBox.innerHTML = `
+        <div style="font-weight:700; margin:12px 0 6px;">Sub-questions</div>
+        ${renderSubQuestions(q.sub_questions, { showAnswers: false, showExplanations: false, showDiagrams: true })}
+      `;
+    } else {
+      subBox.hidden = true;
+      subBox.innerHTML = "";
+    }
+  }
+
+  // Reset explanation box
+  const exp = els("qExplain");
+  if (exp) {
+    exp.hidden = true;
+    exp.innerHTML = "";
+  }
+}
+
+function renderAnswerBlock(q) {
+  const parts = [];
+
+  const mainAns = q.answer ? renderTextWithDiagrams(String(q.answer), { tables: q.tables, mode: "reveal" }) : "—";
+  parts.push(`<div><b>Answer:</b> ${mainAns}</div>`);
+
+  // Optional answer diagrams
+  if (Array.isArray(q.answer_diagrams) && q.answer_diagrams.length) {
+    parts.push(renderDiagramsHtml(q.answer_diagrams));
+  }
+
+  // Sub-question answers (if present)
+  if (q.sub_questions) {
+    const html = renderSubQuestions(q.sub_questions, { showAnswers: true, showExplanations: false, showDiagrams: true });
+    if (html) parts.push(`<div style="margin-top:12px;"><b>Sub-question answers:</b>${html}</div>`);
+  }
+
+  return parts.join("<hr/>");
+}
+
+function renderExplainBlock(q) {
+  const parts = [];
+
+  if (q.explanation) {
+    parts.push(
+  `<div><b>Explanation:</b>
+     <div style="margin-top:6px;">
+       ${renderTextWithDiagrams(String(q.explanation), { tables: q.tables, mode: "explain" })}
+     </div>
+   </div>`
+);
+  }
+
+  if (Array.isArray(q.explanation_diagrams) && q.explanation_diagrams.length) {
+    parts.push(renderDiagramsHtml(q.explanation_diagrams));
+  }
+
+  if (q.solution_steps) {
+    parts.push(`<div><b>Steps:</b>${renderSolutionSteps(q.solution_steps)}</div>`);
+  }
+
+  // For theory, this shows full tree (including answer/explanation + diagrams inside subquestions)
+  if (q.sub_questions) {
+    parts.push(`<div><b>Sub-questions:</b>${renderSubQuestions(q.sub_questions, { showAnswers: true, showExplanations: true, showDiagrams: true })}</div>`);
+  }
+
+  return parts.length ? parts.join("<hr/>") : `<div>No explanation/steps available.</div>`;
 }
 
 
@@ -592,14 +905,21 @@ function setStartGateVisible(visible) {
   gate.hidden = !visible;
 
   if (visible) {
-    // ✅ STEP 4: ensure paywall never appears under the start gate
-    state.paywalled = false;
-    const pw = els("paywall");
-   if(pw) pw.classList.remove("is-open");
+  // Ensure paywall never appears under the start gate
+  state.paywalled = false;
+  const pw = els("paywall");
+  if (pw) pw.classList.remove("is-open");
 
+  // Open filters panel
+  openFiltersPanel();
 
-    openFiltersPanel();
-  }
+  // 🎯 Step 4E: auto-focus Exam filter for first-time users
+  requestAnimationFrame(() => {
+    const examSel = els("examFilter");
+    if (examSel) examSel.focus();
+  });
+}
+
 }
 
 
@@ -741,49 +1061,9 @@ async function openQuestion(id) {
 
     els("qMeta").textContent = meta.join(" • ");
 
-    // ✅ Render main question + sub-questions immediately (question-only)
-    const qTextEl = els("qText");
-
-    const renderSubQuestionsOnly = (items) => {
-      if (!items) return "";
-      if (!Array.isArray(items)) {
-        return `<pre style="white-space:pre-wrap;margin:6px 0 0;">${escapeHtml(JSON.stringify(items, null, 2))}</pre>`;
-      }
-
-      const renderNode = (n) => {
-        if (!n || typeof n !== "object") return "";
-        const label = n.label ? `<b>${escapeHtml(String(n.label))}</b> ` : "";
-        const text = n.text ? `${escapeHtml(String(n.text))}` : "";
-
-        const children = Array.isArray(n.children) && n.children.length
-          ? `<div style="margin-top:10px;padding-left:10px;border-left:2px solid #ddd;">
-               ${n.children.map(renderNode).join("")}
-             </div>`
-          : "";
-
-        return `
-          <div style="margin:10px 0; padding:10px; border:1px solid #eee; border-radius:10px;">
-            <div>${label}${text}</div>
-            ${children}
-          </div>
-        `;
-      };
-
-      return items.map(renderNode).join("");
-    };
-
-    const mainQ = escapeHtml(q.question_text || "");
-    const subOnlyHtml = q.sub_questions
-      ? `<div style="margin-top:12px;">
-           <div style="font-weight:700; margin-bottom:6px;">Sub-questions</div>
-           ${renderSubQuestionsOnly(q.sub_questions)}
-         </div>`
-      : "";
-
-    // Use innerHTML because we are composing blocks (escaped)
-    qTextEl.innerHTML = `<div>${mainQ}</div>${subOnlyHtml}`;
-
-    renderDiagrams(q.diagrams || []);
+    
+// ✅ Render question in the new flow (question-only first)
+renderQuestion(q);
 
     // Options
     const optBox = els("qOptions");
@@ -888,20 +1168,30 @@ function updatePayEmailUI() {
   }
 }
 
- async function refreshMe() {
-  // 🔒 Always reset state first
+  async function refreshMe() {
+  // 🔒 Always re-hydrate token first
   state.token = sessionStorage.getItem("token") || "";
 
-  if (!state.token) {
+  // Helper: fully reset auth-dependent UI/state
+  function resetAuthUI() {
     state.authenticated = false;
     state.isPaid = false;
+    state.justPaidAttempt = false;
+
     setPaidChip(false);
 
     const btnLogout = els("btnLogout");
     if (btnLogout) btnLogout.hidden = true;
 
+    // Payment history toggle + box
+    const btnHist = els("btnToggleHistory");
+    if (btnHist) btnHist.hidden = true;
+
     const phBox = els("paymentHistory");
     if (phBox) phBox.hidden = true;
+
+    state.historyOpen = false;
+    state.historyLoadedOnce = false;
 
     // Hide paywall (animated system)
     const pw = els("paywall");
@@ -910,8 +1200,11 @@ function updatePayEmailUI() {
       pw.classList.remove("is-open");
     }
 
-    // Update UI that depends on auth
     updatePayEmailUI();
+  }
+
+  if (!state.token) {
+    resetAuthUI();
     updateUpgradeUI();
     updateAdminUI();
     return;
@@ -925,33 +1218,49 @@ function updatePayEmailUI() {
     state.authenticated = true;
 
     // ✅ canonical profile state (matches your backend /me response)
-    state.me = {
-      identifier: String(r.identifier || "").trim(),
-      email: String(r.email || "").trim(),
-      isPaid: !!r.is_paid,
-    };
+     state.me = {
+        identifier: String(r.identifier || "").trim(),
+        email: String(r.email || "").trim(),
+        isPaid: !!r.is_paid,
+        isPaidActive: (r.is_paid_active !== undefined) ? !!r.is_paid_active : !!r.is_paid,
+        plan: String(r.plan || "free"),
+        isFounding: !!r.is_founding,
+        paidUntil: r.paid_until ? String(r.paid_until) : "",
+     };
 
-    const nowPaid = !!r.is_paid;
-    state.isPaid = nowPaid;
-    setPaidChip(nowPaid);
+     const nowPaid = !!state.me.isPaidActive;   // ✅ use active status (paid_until > now)
+     state.isPaid = nowPaid;
+     if (state.isPaid) state.justPaidAttempt = false;
+
+
 
     const btnLogout = els("btnLogout");
     if (btnLogout) btnLogout.hidden = false;
 
     setAuthMsg(`Logged in as: ${state.me.identifier}`);
 
-    // Payment history (shows in Upgrade panel)
-    const phBox = els("paymentHistory");
-    if (phBox) phBox.hidden = false;
-    loadPaymentHistory();
-
-    // Keep session alive while user is active
-    resetIdleTimer();
-
-    // ✅ Update email UI visibility (new payEmailInput system)
+    // ✅ Update email UI visibility (payEmailInput system)
     updatePayEmailUI();
 
-    // ✅ If user transitioned from unpaid -> paid, clear paywall + reload page 1
+    // Payment history toggle (Upgrade panel)
+    const btnHist = els("btnToggleHistory");
+    if (btnHist) {
+      btnHist.hidden = false;
+      btnHist.textContent = state.historyOpen
+        ? "Hide payment history"
+        : "View payment history";
+    }
+
+    const phBox = els("paymentHistory");
+    if (phBox) phBox.hidden = !state.historyOpen;
+
+    // Load only if already open
+    if (state.historyOpen) loadPaymentHistory().catch(() => {});
+
+    // ✅ keep session alive while user is active
+    resetIdleTimer();
+
+    // ✅ if user transitioned from unpaid -> paid, clear paywall + reload page 1
     if (!wasPaid && nowPaid) {
       state.paywalled = false;
       state.endReached = false;
@@ -966,27 +1275,13 @@ function updatePayEmailUI() {
       loadList(0);
     }
   } else {
-    state.authenticated = false;
-    state.isPaid = false;
-    setPaidChip(false);
-
-    const btnLogout = els("btnLogout");
-    if (btnLogout) btnLogout.hidden = true;
-
-    const phBox = els("paymentHistory");
-    if (phBox) phBox.hidden = true;
-
-    // Hide paywall
-    const pw = els("paywall");
-    if (pw) {
-      pw.removeAttribute("hidden");
-      pw.classList.remove("is-open");
-    }
-
-    updatePayEmailUI();
+    // Token exists but /me failed (expired/invalid)
+    resetAuthUI();
   }
-
+  
+   await refreshFoundingStatus();
   updateUpgradeUI();
+  updatePlanMetaUI();
   updateAdminUI();
 }
 
@@ -1163,39 +1458,149 @@ async function loadList(targetPageIndex = state.pageIndex) {
 
   setListPagerUI({ loading: false });
 }
+function fmtDate(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  } catch {
+    return "";
+  }
+}
 
-function updateUpgradeUI() {
+function daysLeft(iso) {
+  try {
+    const ms = new Date(iso).getTime() - Date.now();
+    return Math.ceil(ms / (1000 * 60 * 60 * 24));
+  } catch {
+    return null;
+  }
+}
+
+function updatePlanMetaUI() {
+  const box = els("planMeta");
+  const badge = els("foundingBadge");
+  const until = els("activeUntil");
+  if (!box || !badge || !until) return;
+
+  if (!state.authenticated) {
+    box.hidden = true;
+    return;
+  }
+
+  const isFounding = !!(state.me && state.me.isFounding);
+  const paidUntil = (state.me && state.me.paidUntil) ? state.me.paidUntil : "";
+
+  box.hidden = false;
+  badge.hidden = !isFounding;
+
+  if (!!state.isPaid && paidUntil) {
+    const dleft = daysLeft(paidUntil);
+    const dtext = (dleft !== null && dleft >= 0) ? ` (${dleft} day${dleft === 1 ? "" : "s"} left)` : "";
+    until.textContent = `Active until ${fmtDate(paidUntil)}${dtext}`;
+  } else {
+    until.textContent = "";
+  }
+}
+
+ function updateUpgradeUI() {
   const btnPay = els("btnPay");
+  const btnPayCore = els("btnPayCore");
   const btnCheckPaid = els("btnCheckPaid");
   if (!btnPay || !btnCheckPaid) return;
 
-  // ✅ Hide paid-refresh once user is already paid
-  btnCheckPaid.hidden = !!state.isPaid;
+  const foundingOffer = els("foundingOffer");
 
-  // ✅ Hide upgrade hint + paywall UI for paid users
+  const isActive = !!state.isPaid;
+  const isFounding = !!(state.me && state.me.isFounding);
+  const plan = (state.me && state.me.plan) ? state.me.plan : "free";
+  const isCoreActive = isActive && plan === "core";
+
+  // -----------------------------
+  // ✅ Founding cap: hide ₦1,000 when cap is hit (except existing founders)
+  // If you haven't wired state.foundingStatus yet, foundingOpen defaults to true.
+  // -----------------------------
+  const foundingOpen =
+    (state.foundingStatus && typeof state.foundingStatus.open === "boolean")
+      ? state.foundingStatus.open
+      : true;
+
+  const allowFoundingButton = state.authenticated && (foundingOpen || isFounding);
+
+  // Show/hide ₦1,000 button
+  btnPay.hidden = !allowFoundingButton;
+
+  // Hide/show the Founding offer copy together with the ₦1,000 button
+  if (foundingOffer) foundingOffer.hidden = btnPay.hidden;
+
+  // ✅ Core button visibility rule
+  // Show only when logged in AND Core not already active
+  if (btnPayCore) {
+    btnPayCore.hidden = !state.authenticated || isCoreActive;
+  }
+
+  // ✅ Upgrade hint: show only AFTER browsing starts, and only for unpaid logged-in users
   const upgradeHint = els("upgradeHint");
-  if (upgradeHint) upgradeHint.hidden = !!state.isPaid;
-   
-   if (upgradeHint) {
-  // ✅ show only AFTER browsing starts, and only for unpaid logged-in users
-  upgradeHint.hidden = !!state.isPaid || !state.authenticated || !state.hasLoadedQuestions;
-}
+  if (upgradeHint) {
+    upgradeHint.hidden = isActive || !state.authenticated || !state.hasLoadedQuestions;
+  }
 
-
+  // ✅ Busy-pay lock (while popup is opening / active)
   if (state.busyPay) {
     btnPay.disabled = true;
+    if (btnPayCore) btnPayCore.disabled = true;
     btnCheckPaid.disabled = true;
     return;
   }
 
-  btnPay.disabled = !state.authenticated || state.isPaid;
+  // Allow founders to renew ₦1,000 even if currently active
+  const canRenewFounding = isFounding; // keep it simple for MVP
+
+  // Disable Pay ₦1,000 when:
+  // - not logged in, OR
+  // - user is active Core, OR
+  // - user is active but NOT a founder (optional)
+  btnPay.disabled = !state.authenticated || isCoreActive || (isActive && !canRenewFounding);
+
+  // ✅ IMPORTANT FIX:
+  // Re-enable Core button after busyPay ends (unless Core is already active / not logged in)
+  if (btnPayCore) {
+    btnPayCore.disabled = !state.authenticated || isCoreActive;
+  }
+
+  // -----------------------------
+  // ✅ Refresh Paid Status button: show only when it’s useful
+  // - logged in
+  // - unpaid
+  // - and either paywall reached OR user just attempted payment
+  // -----------------------------
+  const showRefresh =
+    state.authenticated &&
+    !isActive &&
+    (state.paywalled || !!state.justPaidAttempt);
+
+  btnCheckPaid.hidden = !showRefresh;
   btnCheckPaid.disabled = !state.authenticated;
 
+  // Status message
   if (!state.authenticated) setPayMsg("Login to upgrade.");
-  else if (state.isPaid) setPayMsg("You are already paid ✅");
+  else if (!foundingOpen && !isFounding) setPayMsg("Founding is closed. Please use Core.");
+  else if (isCoreActive) setPayMsg("Core is active ✅ No renewal needed now.");
+  else if (isActive && canRenewFounding) setPayMsg("Founding access is active ✅ You can renew ₦1,000 to extend 30 days.");
+  else if (isActive) setPayMsg("You are already paid ✅");
   else setPayMsg("");
 }
 
+
+
+async function refreshFoundingStatus() {
+  try {
+    const r = await api("/founding/status");
+    if (r && typeof r.open === "boolean") state.foundingStatus = r;
+  } catch (_) {
+    // fail-open so you don't accidentally hide Founding if the endpoint blips
+    state.foundingStatus = { open: true };
+  }
+}
 
 
 async function getPaystackPublicKeyOrThrow() {
@@ -1221,7 +1626,7 @@ async function verifyPayment(reference, email) {
 }
 
 
- async function startPaystackPayment() {
+ async function startPaystackPayment(amountNgn = PAYSTACK_AMOUNT_NGN) {
   updatePayEmailUI();
 
   if (!state.authenticated || !state.me) {
@@ -1229,6 +1634,10 @@ async function verifyPayment(reference, email) {
     setPayMsg("Login to upgrade.");
     return;
   }
+
+  // ✅ mark that user has attempted payment (helps show Refresh Paid Status when useful)
+  state.justPaidAttempt = true;
+  updateUpgradeUI();
 
   if (!window.PaystackPop || typeof window.PaystackPop.setup !== "function") {
     setStatus("Paystack script not loaded. Please reload the page.", "bad");
@@ -1283,7 +1692,7 @@ async function verifyPayment(reference, email) {
     const pk = await getPaystackPublicKeyOrThrow();
     if (!pk) throw new Error("Could not load Paystack public key");
 
-    const amount = 1000 * 100; // kobo
+    const amount = Number(amountNgn || 0) * 100; // kobo
 
     const handler = PaystackPop.setup({
       key: pk,
@@ -1306,6 +1715,8 @@ async function verifyPayment(reference, email) {
           if (!reference) {
             setPayBusy(false, "");
             setStatus("Payment returned no reference. Please try again.", "bad");
+            // keep justPaidAttempt = true so Refresh can show
+            updateUpgradeUI();
             return;
           }
 
@@ -1316,22 +1727,29 @@ async function verifyPayment(reference, email) {
             setPayBusy(false, "");
             setStatus(`Payment received but verification failed: ${vr?.error || "unknown"}`, "bad");
             setPayMsg(`Ref: ${reference} (not verified)`);
+            // keep justPaidAttempt = true so Refresh can show
+            updateUpgradeUI();
             return;
           }
 
-          await refreshMe();
+          await refreshMe(); // refreshMe will clear justPaidAttempt if user is now paid
 
           setPayBusy(false, "");
           setStatus("Payment verified ✅", "ok");
           setPayMsg(`Paid ✅ Ref: ${reference}`);
+          updateUpgradeUI();
         })().catch((e) => {
           setPayBusy(false, "");
           setStatus(`Pay verify error: ${e?.message || e}`, "bad");
+          // keep justPaidAttempt = true so Refresh can show
+          updateUpgradeUI();
         });
       },
 
       onClose: function () {
         setPayBusy(false, "Payment cancelled.");
+        // keep justPaidAttempt = true so Refresh can show
+        updateUpgradeUI();
       },
     });
 
@@ -1339,8 +1757,11 @@ async function verifyPayment(reference, email) {
   } catch (e) {
     setPayBusy(false, "");
     setStatus(`Pay error: ${e?.message || e}`, "bad");
+    // keep justPaidAttempt = true so Refresh can show
+    updateUpgradeUI();
   }
 }
+
 
 
 async function checkPaidStatus() {
@@ -1491,6 +1912,28 @@ function adminClearAuditBox() {
   box.hidden = true;
 }
 
+function setupPaymentHistoryToggle() {
+  const btn = els("btnToggleHistory");
+  const box = els("paymentHistory");
+  if (!btn || !box) return;
+
+  btn.onclick = async () => {
+    state.historyOpen = !state.historyOpen;
+
+    box.hidden = !state.historyOpen;
+    btn.textContent = state.historyOpen
+      ? "Hide payment history"
+      : "View payment history";
+
+    // Lazy-load once
+    if (state.historyOpen && !state.historyLoadedOnce) {
+      state.historyLoadedOnce = true;
+      await loadPaymentHistory().catch(() => {});
+    }
+  };
+}
+
+
 // ====== Init ======
 async function init() {
   els("yr").textContent = new Date().getFullYear();
@@ -1564,6 +2007,8 @@ async function init() {
     });
   }
 
+  setupPaymentHistoryToggle();
+
   updatePracticeMetaUI();
   updateAdminUI();
   setListPagerUI({ loading: false });
@@ -1628,13 +2073,17 @@ async function init() {
   };
 
   const btnPay = els("btnPay");
-  if (btnPay) btnPay.onclick = startPaystackPayment;
+  if (btnPay) btnPay.onclick = () => startPaystackPayment(PAYSTACK_AMOUNT_NGN);
+
+  const btnPayCore = els("btnPayCore");
+  if (btnPayCore) btnPayCore.onclick = () => startPaystackPayment(PAYSTACK_CORE_AMOUNT_NGN);
 
   const btnCheckPaid = els("btnCheckPaid");
   if (btnCheckPaid) btnCheckPaid.onclick = checkPaidStatus;
 
   // ✅ D) Wire Reveal/Explain ONCE here (uses state.currentQuestion)
-  const btnReveal = els("btnReveal");
+  
+const btnReveal = els("btnReveal");
   if (btnReveal) {
     btnReveal.onclick = () => {
       const q = state.currentQuestion;
@@ -1644,47 +2093,13 @@ async function init() {
       if (!exp) return;
 
       exp.hidden = false;
-
-      // Prefer main answer; if missing (common in theory), still show something sensible
-      const ans = q.answer ? escapeHtml(String(q.answer)) : "—";
-
-      // If theory has sub-questions, reveal can also show their answers (if present)
-      const subAnswers = (items) => {
-        if (!items || !Array.isArray(items)) return "";
-        const walk = (n) => {
-          if (!n || typeof n !== "object") return "";
-          const label = n.label ? `<b>${escapeHtml(String(n.label))}</b> ` : "";
-          const text = n.text ? `${escapeHtml(String(n.text))}` : "";
-          const a = n.answer ? `<div style="margin-top:6px;"><b>Answer:</b> ${escapeHtml(String(n.answer))}</div>` : "";
-          const children = Array.isArray(n.children) && n.children.length
-            ? `<div style="margin-top:10px;padding-left:10px;border-left:2px solid #ddd;">
-                 ${n.children.map(walk).join("")}
-               </div>`
-            : "";
-          return `
-            <div style="margin:10px 0; padding:10px; border:1px solid #eee; border-radius:10px;">
-              <div>${label}${text}</div>
-              ${a}
-              ${children}
-            </div>
-          `;
-        };
-        return items.map(walk).join("");
-      };
-
-      const pieces = [];
-      pieces.push(`<div><b>Answer:</b> ${ans}</div>`);
-      if (q.sub_questions) {
-        const sa = subAnswers(q.sub_questions);
-        if (sa) pieces.push(`<div style="margin-top:10px;"><b>Sub-question answers:</b>${sa}</div>`);
-      }
-
-      exp.innerHTML = pieces.join("<hr/>");
+      exp.innerHTML = renderAnswerBlock(q);
       scrollToExplainBox();
     };
   }
 
   const btnExplain = els("btnExplain");
+
   if (btnExplain) {
     btnExplain.onclick = () => {
       const q = state.currentQuestion;
@@ -1694,23 +2109,7 @@ async function init() {
       if (!exp) return;
 
       exp.hidden = false;
-
-      const pieces = [];
-
-      if (q.explanation) {
-        pieces.push(`<div><b>Explanation:</b><br>${escapeHtml(q.explanation)}</div>`);
-      }
-
-      if (q.solution_steps) {
-        pieces.push(`<div><b>Steps:</b>${renderSolutionSteps(q.solution_steps)}</div>`);
-      }
-
-      // For theory, this shows full tree (including answer/explanation inside subquestions)
-      if (q.sub_questions) {
-        pieces.push(`<div><b>Sub-questions:</b>${renderSubQuestions(q.sub_questions)}</div>`);
-      }
-
-      exp.innerHTML = pieces.length ? pieces.join("<hr/>") : `<div>No explanation/steps available.</div>`;
+      exp.innerHTML = renderExplainBlock(q);
       scrollToExplainBox();
     };
   }
@@ -1753,10 +2152,13 @@ async function init() {
   const btnAdminClear = els("btnAdminClear");
   if (btnAdminClear) btnAdminClear.onclick = adminClearKey;
 
-  // ✅ idle timeout (public/shared systems)
   setupIdleTimeout();
 
-  refreshMe();
+  // ✅ load founding cap + me before first render of upgrade UI
+  await refreshFoundingStatus();
+  await refreshMe();
+  updateUpgradeUI(); // ensures btnPay hidden reflects cap immediately
+
 }
 
 init().catch((e)=>console.error(e));
