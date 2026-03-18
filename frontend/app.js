@@ -160,12 +160,13 @@ function renderDiagramsHtml(diagrams) {
 
 // Escape + preserve line breaks + allow explicit diagram placeholders:
 // Use: [[diagram:FILE.png]] anywhere in question_text / explanation / steps text
-
+// ====== Rendering helpers ======
 function renderTextWithDiagrams(rawText, ctx = {}) {
   const safe = escapeHtml(String(rawText || ""));
   const withBreaks = safe.replace(/\n/g, "<br>");
 
-  const tables = ctx.tables || state.currentQuestion?.tables || {};
+  const question = ctx.question || null;
+  const tables = ctx.tables || question?.tables || {};
   const mode = ctx.mode || "question"; // "question" | "reveal" | "explain"
 
   // 1) Inject TABLE placeholders: [[table:T1]] or [[table:T1:answer]]
@@ -509,14 +510,14 @@ function isEmail(v) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v || "");
 }
 
-function renderSolutionSteps(steps) {
+function renderSolutionSteps(steps, question = null) {
   if (!steps) return "";
   // steps can be string, array, or object
-  if (typeof steps === "string") return `<div>${renderTextWithDiagrams(steps)}</div>`;
+  if (typeof steps === "string") return `<div>${renderTextWithDiagrams(steps, { question, mode: "explain" })}</div>`;
   if (Array.isArray(steps)) {
     const items = steps
       .map((s) => {
-        if (typeof s === "string") return `<li>${renderTextWithDiagrams(s)}</li>`;
+        if (typeof s === "string") return `<li>${renderTextWithDiagrams(s, { question, mode: "explain" })}</li>`;
         // objects: show JSON safely
         return `<li>${escapeHtml(JSON.stringify(s))}</li>`;
       })
@@ -526,9 +527,9 @@ function renderSolutionSteps(steps) {
   return `<pre style="white-space:pre-wrap;margin:6px 0 0;">${escapeHtml(JSON.stringify(steps, null, 2))}</pre>`;
 }
 
-  function renderExplanation(explanationArray) {
+function renderExplanation(explanationArray, question = null) {
   if (!Array.isArray(explanationArray)) {
-    return renderTextWithDiagrams(String(explanationArray || ""), { mode: "explain" });
+    return renderTextWithDiagrams(String(explanationArray || ""), { question, mode: "explain" });
   }
 
   return `<div style="margin:6px 0 0; line-height:1.6;">
@@ -544,14 +545,13 @@ function renderSolutionSteps(steps) {
   </div>`;
 }
 
- function renderSubQuestions(items, opts = {}) {
+function renderSubQuestions(question, items, opts = {}) {
   const showAnswers = opts.showAnswers !== false;              // default true
   const showExplanations = opts.showExplanations !== false;    // default true
   const showDiagrams = opts.showDiagrams !== false;            // default true
 
-  // ✅ NEW (tables context + mode)
   // mode: "question" | "reveal" | "explain"
-  const tables = opts.tables || (state && state.currentQuestion ? state.currentQuestion.tables : {}) || {};
+  const tables = opts.tables || question?.tables || {};
   const mode = opts.mode || "question";
 
   if (!items) return "";
@@ -564,20 +564,18 @@ function renderSolutionSteps(steps) {
 
     const label = n.label ? `<b>${escapeHtml(String(n.label))}</b> ` : "";
 
-    // ✅ NEW: renderTextWithDiagrams now receives { tables, mode }
-      const subqText = n.question_text || n.text || "";
-     const text = subqText
-     ? `${renderTextWithDiagrams(String(subqText), { tables, mode })}`
-     : "";
+    const subqText = n.question_text || n.text || "";
+    const text = subqText
+      ? `${renderTextWithDiagrams(String(subqText), { question, tables, mode })}`
+      : "";
 
     // Subquestion diagrams (question-phase diagrams)
     const qDiagrams = (showDiagrams && Array.isArray(n.diagrams) && n.diagrams.length)
       ? renderDiagramsHtml(n.diagrams)
       : "";
 
-    // ✅ NEW: answer uses reveal mode (so [[table:T1:answer]] can work if you use it)
     const answer = (showAnswers && n.answer)
-      ? `<div style="margin-top:8px;"><b>Answer:</b> ${renderTextWithDiagrams(String(n.answer), { tables, mode: "reveal" })}</div>`
+      ? `<div style="margin-top:8px;"><b>Answer:</b> ${renderTextWithDiagrams(String(n.answer), { question, tables, mode: "reveal" })}</div>`
       : "";
 
     // Answer diagrams (Reveal)
@@ -585,12 +583,11 @@ function renderSolutionSteps(steps) {
       ? renderDiagramsHtml(n.answer_diagrams)
       : "";
 
-    // ✅ NEW: explanation uses explain mode (so [[table:T1]] placeholders render as explanation context if needed)
-      const explanation = (showExplanations && n.explanation)
+    const explanation = (showExplanations && n.explanation)
       ? `<div style="margin-top:8px;">
           <b>Explanation:</b>
          <div style="margin-top:6px;">
-         ${renderExplanation(n.explanation)}
+         ${renderExplanation(n.explanation, question)}
          </div>
         </div>`
       : "";
@@ -624,14 +621,14 @@ function renderSolutionSteps(steps) {
 }
 
 
-// ---- Viewer section builders (new flow) ----
-function renderQuestion(q) {
+// ---- Viewer rendering section ----
+function renderQuestion(question) {
   // Question text
   const qTextEl = els("qText");
-  const hasInlineTableRef = /\[\[table:[A-Za-z0-9_]+\]\]/.test(q.question_text || "");
+  const hasInlineTableRef = /\[\[table:[A-Za-z0-9_]+\]\]/.test(question.question_text || "");
 
   if (qTextEl) {
-    qTextEl.innerHTML = `<div>${renderTextWithDiagrams(q.question_text || "", { tables: q.tables || {}, mode: "question" })}</div>`;
+    qTextEl.innerHTML = `<div>${renderTextWithDiagrams(question.question_text || "", { question, tables: question.tables || {}, mode: "question" })}</div>`;
   }
 
   // Render question tables only when they are NOT already embedded inline
@@ -642,21 +639,21 @@ function renderQuestion(q) {
       qTablesEl.hidden = true;
     } else {
       qTablesEl.hidden = false;
-      renderTablesInto(qTablesEl, q.tables || {}, q.table_refs || null, "question");
+      renderTablesInto(qTablesEl, question.tables || {}, question.table_refs || null, "question");
     }
   }
 
   // Main question diagrams (separate field)
-  renderDiagramsInto(els("qDiagrams"), q.diagrams || [], { variant: "block" });
+  renderDiagramsInto(els("qDiagrams"), question.diagrams || [], { variant: "block" });
 
   // Sub-questions (question-only view; answers hidden until reveal/explain)
   const subBox = els("qSubQuestions");
   if (subBox) {
-    if (q.sub_questions && Array.isArray(q.sub_questions) && q.sub_questions.length) {
+    if (question.sub_questions && Array.isArray(question.sub_questions) && question.sub_questions.length) {
       subBox.hidden = false;
       subBox.innerHTML = `
         <div style="font-weight:700; margin:12px 0 6px;">Sub-questions</div>
-        ${renderSubQuestions(q.sub_questions, { showAnswers: false, showExplanations: false, showDiagrams: true })}
+        ${renderSubQuestions(question, question.sub_questions, { showAnswers: false, showExplanations: false, showDiagrams: true })}
       `;
     } else {
       subBox.hidden = true;
@@ -672,39 +669,38 @@ function renderQuestion(q) {
   }
 }
 
-function renderAnswerBlock(q) {
+function renderAnswerBlock(question) {
   const parts = [];
 
-  const mainAns = q.answer ? renderTextWithDiagrams(String(q.answer), { tables: q.tables, mode: "reveal" }) : "—";
+  const mainAns = question.answer ? renderTextWithDiagrams(String(question.answer), { question, tables: question.tables, mode: "reveal" }) : "—";
   parts.push(`<div><b>Answer:</b> ${mainAns}</div>`);
 
   // Optional answer diagrams
-  if (Array.isArray(q.answer_diagrams) && q.answer_diagrams.length) {
-    parts.push(renderDiagramsHtml(q.answer_diagrams));
+  if (Array.isArray(question.answer_diagrams) && question.answer_diagrams.length) {
+    parts.push(renderDiagramsHtml(question.answer_diagrams));
   }
 
   // Sub-question answers (if present)
-  if (q.sub_questions) {
-    const html = renderSubQuestions(q.sub_questions, { showAnswers: true, showExplanations: false, showDiagrams: true });
+  if (question.sub_questions) {
+    const html = renderSubQuestions(question, question.sub_questions, { showAnswers: true, showExplanations: false, showDiagrams: true, mode: "reveal" });
     if (html) parts.push(`<div style="margin-top:12px;"><b>Sub-question answers:</b>${html}</div>`);
   }
 
   return parts.join("<hr/>");
 }
 
-function renderExplainBlock(q) {
+function renderExplainBlock(question) {
   const parts = [];
 
-  if (q.explanation) {
+  if (question.explanation) {
     let explanationHtml = "";
 
-    if (Array.isArray(q.explanation)) {
-      // ✅ Objective → array → use renderExplanation
-      explanationHtml = renderExplanation(q.explanation);
+    if (Array.isArray(question.explanation)) {
+      explanationHtml = renderExplanation(question.explanation, question);
     } else {
-      // ✅ Theory → string → normal rendering
-      explanationHtml = renderTextWithDiagrams(String(q.explanation), {
-        tables: q.tables,
+      explanationHtml = renderTextWithDiagrams(String(question.explanation), {
+        question,
+        tables: question.tables,
         mode: "explain"
       });
     }
@@ -718,17 +714,16 @@ function renderExplainBlock(q) {
     );
    }
 
-  if (Array.isArray(q.explanation_diagrams) && q.explanation_diagrams.length) {
-    parts.push(renderDiagramsHtml(q.explanation_diagrams));
+  if (Array.isArray(question.explanation_diagrams) && question.explanation_diagrams.length) {
+    parts.push(renderDiagramsHtml(question.explanation_diagrams));
   }
 
-  if (q.solution_steps) {
-    parts.push(`<div><b>Steps:</b>${renderSolutionSteps(q.solution_steps)}</div>`);
+  if (question.solution_steps) {
+    parts.push(`<div><b>Steps:</b>${renderSolutionSteps(question.solution_steps, question)}</div>`);
   }
 
-  // For theory, this shows full tree (including answer/explanation + diagrams inside subquestions)
-  if (q.sub_questions) {
-    parts.push(`<div><b>Sub-questions:</b>${renderSubQuestions(q.sub_questions, { showAnswers: true, showExplanations: true, showDiagrams: true })}</div>`);
+  if (question.sub_questions) {
+    parts.push(`<div><b>Sub-questions:</b>${renderSubQuestions(question, question.sub_questions, { showAnswers: true, showExplanations: true, showDiagrams: true, mode: "explain" })}</div>`);
   }
 
   return parts.length ? parts.join("<hr/>") : `<div>No explanation/steps available.</div>`;
