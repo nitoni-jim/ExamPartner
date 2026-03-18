@@ -1,6 +1,5 @@
 
 
-
 // ExamPartner MVP client (auth + browse + Paystack upgrade) + filters + admin mini tools
 
 const els = (id) => document.getElementById(id);
@@ -10,7 +9,18 @@ const FILTER_CACHE_KEY = "ep_filter_cache_v1";
 const FILTER_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 function diagramSrc(name) {
-  return `${apiBaseNoSlash()}/static/diagrams/${encodeURIComponent(name)}`;
+  const raw = String(name || "").trim();
+  if (!raw) return "";
+
+  const parts = raw.split("_");
+  if (parts.length >= 2) {
+    const exam = parts[0];
+    const year = parts[1];
+    return `${apiBaseNoSlash()}/static/diagrams/${encodeURIComponent(exam)}/${encodeURIComponent(year)}/${encodeURIComponent(raw)}`;
+  }
+
+  // fallback for old files
+  return `${apiBaseNoSlash()}/static/diagrams/${encodeURIComponent(raw)}`;
 }
 
 function createDiagramImage(name, extraClass = "") {
@@ -18,7 +28,7 @@ function createDiagramImage(name, extraClass = "") {
   img.loading = "lazy";
   img.alt = name;
   img.className = `diagram-img ${extraClass}`.trim();
-  img.src = `${apiBaseNoSlash()}/static/diagrams/${encodeURIComponent(name)}`;
+  img.src = diagramSrc(name);
   return img;
 }
 
@@ -94,9 +104,6 @@ function clearOptionSelection() {
   optBox.querySelectorAll(".opt").forEach((el) => el.classList.remove("selected"));
 }
 
-function diagramSrc(name) {
-  return `${apiBaseNoSlash()}/static/diagrams/${encodeURIComponent(name)}`;
-}
 
  function renderDiagramsInto(containerEl, diagrams, opts = {}) {
   if (!containerEl) return;
@@ -476,6 +483,22 @@ function escapeHtml(s) {
   }[c]));
 }
 
+function cleanPreviewText(s) {
+  s = String(s || "");
+
+  // Remove table placeholders
+  s = s.replace(/\[\[table:[^\]]+\]\]/gi, "");
+
+  // Remove diagram placeholders
+  s = s.replace(/\[\[diagram:[^\]]+\]\]/gi, "");
+
+  // Collapse extra blank lines/spaces
+  s = s.replace(/\n\s*\n+/g, "\n");
+  s = s.replace(/[ \t]+/g, " ");
+
+  return s.trim();
+}
+
 function trimText(s, n = 140) {
   s = (s || "").trim();
   if (s.length <= n) return s;
@@ -503,6 +526,24 @@ function renderSolutionSteps(steps) {
   return `<pre style="white-space:pre-wrap;margin:6px 0 0;">${escapeHtml(JSON.stringify(steps, null, 2))}</pre>`;
 }
 
+  function renderExplanation(explanationArray) {
+  if (!Array.isArray(explanationArray)) {
+    return renderTextWithDiagrams(String(explanationArray || ""), { mode: "explain" });
+  }
+
+  return `<div style="margin:6px 0 0; line-height:1.6;">
+    ${explanationArray.map(item => {
+      if (item.startsWith("Option")) {
+        return `<p style="margin:6px 0;"><strong>${escapeHtml(item)}</strong></p>`;
+      } else if (item.startsWith("Memory hook")) {
+        return `<p style="margin:6px 0;"><em>${escapeHtml(item)}</em></p>`;
+      } else {
+        return `<p style="margin:6px 0;">${escapeHtml(item)}</p>`;
+      }
+    }).join("")}
+  </div>`;
+}
+
  function renderSubQuestions(items, opts = {}) {
   const showAnswers = opts.showAnswers !== false;              // default true
   const showExplanations = opts.showExplanations !== false;    // default true
@@ -524,9 +565,10 @@ function renderSolutionSteps(steps) {
     const label = n.label ? `<b>${escapeHtml(String(n.label))}</b> ` : "";
 
     // ✅ NEW: renderTextWithDiagrams now receives { tables, mode }
-    const text = n.text
-      ? `${renderTextWithDiagrams(String(n.text), { tables, mode })}`
-      : "";
+      const subqText = n.question_text || n.text || "";
+     const text = subqText
+     ? `${renderTextWithDiagrams(String(subqText), { tables, mode })}`
+     : "";
 
     // Subquestion diagrams (question-phase diagrams)
     const qDiagrams = (showDiagrams && Array.isArray(n.diagrams) && n.diagrams.length)
@@ -544,8 +586,13 @@ function renderSolutionSteps(steps) {
       : "";
 
     // ✅ NEW: explanation uses explain mode (so [[table:T1]] placeholders render as explanation context if needed)
-    const explanation = (showExplanations && n.explanation)
-      ? `<div style="margin-top:8px;"><b>Explanation:</b><div style="margin-top:6px;">${renderTextWithDiagrams(String(n.explanation), { tables, mode: "explain" })}</div></div>`
+      const explanation = (showExplanations && n.explanation)
+      ? `<div style="margin-top:8px;">
+          <b>Explanation:</b>
+         <div style="margin-top:6px;">
+         ${renderExplanation(n.explanation)}
+         </div>
+        </div>`
       : "";
 
     // Explanation diagrams (Explain)
@@ -581,12 +628,26 @@ function renderSolutionSteps(steps) {
 function renderQuestion(q) {
   // Question text
   const qTextEl = els("qText");
-  if (qTextEl) qTextEl.innerHTML = `<div>${renderTextWithDiagrams(q.question_text || "")}</div>`;
-    // ✅ NEW: render referenced tables under question (when not using placeholders)
-  renderTablesInto(els("qTables"), q.tables || {}, q.table_refs || null, "question");
+  const hasInlineTableRef = /\[\[table:[A-Za-z0-9_]+\]\]/.test(q.question_text || "");
+
+  if (qTextEl) {
+    qTextEl.innerHTML = `<div>${renderTextWithDiagrams(q.question_text || "", { tables: q.tables || {}, mode: "question" })}</div>`;
+  }
+
+  // Render question tables only when they are NOT already embedded inline
+  const qTablesEl = els("qTables");
+  if (qTablesEl) {
+    if (hasInlineTableRef) {
+      qTablesEl.innerHTML = "";
+      qTablesEl.hidden = true;
+    } else {
+      qTablesEl.hidden = false;
+      renderTablesInto(qTablesEl, q.tables || {}, q.table_refs || null, "question");
+    }
+  }
 
   // Main question diagrams (separate field)
-   renderDiagramsInto(els("qDiagrams"), q.diagrams || [], { variant: "block" });
+  renderDiagramsInto(els("qDiagrams"), q.diagrams || [], { variant: "block" });
 
   // Sub-questions (question-only view; answers hidden until reveal/explain)
   const subBox = els("qSubQuestions");
@@ -635,14 +696,27 @@ function renderExplainBlock(q) {
   const parts = [];
 
   if (q.explanation) {
+    let explanationHtml = "";
+
+    if (Array.isArray(q.explanation)) {
+      // ✅ Objective → array → use renderExplanation
+      explanationHtml = renderExplanation(q.explanation);
+    } else {
+      // ✅ Theory → string → normal rendering
+      explanationHtml = renderTextWithDiagrams(String(q.explanation), {
+        tables: q.tables,
+        mode: "explain"
+      });
+    }
+
     parts.push(
-  `<div><b>Explanation:</b>
-     <div style="margin-top:6px;">
-       ${renderTextWithDiagrams(String(q.explanation), { tables: q.tables, mode: "explain" })}
-     </div>
-   </div>`
-);
-  }
+      `<div><b>Explanation:</b>
+         <div style="margin-top:6px;">
+           ${explanationHtml}
+         </div>
+       </div>`
+    );
+   }
 
   if (Array.isArray(q.explanation_diagrams) && q.explanation_diagrams.length) {
     parts.push(renderDiagramsHtml(q.explanation_diagrams));
@@ -992,7 +1066,7 @@ if (!items || !items.length) {
          ${q.type ? `<span class="pill">${escapeHtml(q.type)}</span>` : ""}
        </div>
 
-    <div class="qtext">${escapeHtml(trimText(q.question_text, 140))}</div>
+      <div class="qtext">${escapeHtml(trimText(cleanPreviewText(q.question_text), 140))}</div>
 
   <div class="meta">${escapeHtml(meta.join(" • "))}</div>
 `;
