@@ -1,4 +1,3 @@
-
 import os
 import json
 import time
@@ -358,9 +357,11 @@ def filters(
     where_y: List[str] = []
     params_y: List[Any] = []
     if qtype:
-        where_y.append("qtype = ?"); params_y.append(qtype)
+        where_y.append("qtype = ?")
+        params_y.append(qtype)
     if exam:
-        where_y.append("exam = ?"); params_y.append(exam)
+        where_y.append("exam = ?")
+        params_y.append(exam)
     where_y_sql = ("WHERE " + " AND ".join(where_y)) if where_y else ""
     cur.execute(
         f"""SELECT DISTINCT year FROM questions
@@ -393,11 +394,22 @@ def filters(
 # -----------------------------
 # QUESTIONS
 # -----------------------------
+
 def _jloads(x: Optional[str]):
-    return json.loads(x) if x else None
+    try:
+        return json.loads(x) if x else None
+    except Exception:
+        return None
+
+
+def _normalize_explanation(qtype: Optional[str], raw_explanation: Optional[str]):
+    if qtype == "objective":
+        return _jloads(raw_explanation) if raw_explanation else []
+    return raw_explanation or ""
 
 
 def _row_to_question(row) -> Dict[str, Any]:
+    qtype = row["qtype"]
     return {
         "id": row["id"],
         "exam": row.get("exam"),
@@ -405,13 +417,13 @@ def _row_to_question(row) -> Dict[str, Any]:
         "subject": row.get("subject"),
         "paper": row.get("paper"),
         "section": row.get("section"),
-        "type": row["qtype"],
+        "type": qtype,
         "page": row.get("page"),
         "marks": row.get("marks"),
         "question_text": row["question_text"],
         "options": _jloads(row.get("options_json")),
         "answer": row.get("answer"),
-        "explanation": row.get("explanation"),
+        "explanation": _normalize_explanation(qtype, row.get("explanation")),
         "sub_questions": _jloads(row.get("sub_questions_json")),
         "solution_steps": _jloads(row.get("solution_steps_json")),
         "diagrams": _jloads(row.get("diagrams_json")) or [],
@@ -512,6 +524,7 @@ def list_objective(
     db.close()
 
     return {"items": [_row_to_question(r) for r in rows], "limit": limit, "offset": offset}
+
 
 @app.get("/questions/theory")
 def list_theory(
