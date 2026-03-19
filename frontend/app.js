@@ -812,27 +812,23 @@ async function fetchFilters({ qtype = null, exam = null, year = null } = {}) {
 
   const qs = params.toString();
   const path = `/filters${qs ? `?${qs}` : ""}`;
-
-  try {
-    const r = await api(path, { method: "GET" });
-
-    // Expect { ok: true, exams, years, subjects }
-    if (r?.ok && Array.isArray(r.exams)) {
-      saveFilterCache(r);
-      return r;
-    }
-  } catch (e) {
-    console.warn("Filters API failed:", e);
-  }
-
-  // 🔁 fallback: last known good DB-driven filters only
-  const cached = loadFilterCache();
- if (cached) {
-  console.warn("Using cached filters");
-  return cached;
+  return api(path, { method: "GET" });
 }
-return null;
 
+async function fetchQuestionPage({ mode, limit, offset, exam, year, subject } = {}) {
+  const params = new URLSearchParams();
+  if (limit !== null && limit !== undefined && limit !== "") params.set("limit", String(limit));
+  if (offset !== null && offset !== undefined && offset !== "") params.set("offset", String(offset));
+  if (exam) params.set("exam", exam);
+  if (year) params.set("year", year);
+  if (subject) params.set("subject", subject);
+
+  const qs = params.toString();
+  return api(`/questions/${mode}?${qs}`);
+}
+
+async function fetchQuestion(id) {
+  return api(`/question/${encodeURIComponent(id)}`);
 }
 
 
@@ -849,11 +845,29 @@ async function refreshFilterOptions({ exam, year, qtype, keepSelection = true } 
   const mode = els("mode")?.value || "objective";
   const qtypeParam = qtype || mode || null;
 
-  const data = await fetchFilters({
-    qtype: qtypeParam,
-    exam: exam ?? prev.exam ?? null,
-    year: year ?? (prev.year ? parseInt(prev.year, 10) : null),
-  });
+  let data = null;
+  try {
+    const response = await fetchFilters({
+      qtype: qtypeParam,
+      exam: exam ?? prev.exam ?? null,
+      year: year ?? (prev.year ? parseInt(prev.year, 10) : null),
+    });
+
+    if (response?.ok && Array.isArray(response.exams) && Array.isArray(response.years) && Array.isArray(response.subjects)) {
+      saveFilterCache(response);
+      data = response;
+    }
+  } catch (e) {
+    console.warn("Filters API failed:", e);
+  }
+
+  if (!data) {
+    const cached = loadFilterCache();
+    if (cached) {
+      console.warn("Using cached filters");
+      data = cached;
+    }
+  }
 
   // ✅ Production behavior: no hardcoded fallbacks
   if (!data || !Array.isArray(data.exams) || !Array.isArray(data.years) || !Array.isArray(data.subjects)) {
@@ -937,16 +951,6 @@ async function initFiltersUI() {
       if (isFirstTimeUser()) setStartGateVisible(true);
     };
   }
-}
-
-
-function buildFilterQuery() {
-  const params = new URLSearchParams();
-  if (state.filters.exam) params.set("exam", state.filters.exam);
-  if (state.filters.year) params.set("year", state.filters.year);
-  if (state.filters.subject) params.set("subject", state.filters.subject);
-  const qs = params.toString();
-  return qs ? `&${qs}` : "";
 }
 
 
@@ -1103,7 +1107,7 @@ async function openQuestion(id) {
       ensureActiveCardVisibleInList(id);
     });
 
-    const q = await api(`/question/${encodeURIComponent(id)}`);
+    const q = await fetchQuestion(id);
 
     // ✅ Keep current question in state so Reveal/Explain (wired once in init) can use it
     state.currentQuestion = q;
@@ -1475,8 +1479,14 @@ async function loadList(targetPageIndex = state.pageIndex) {
   state.paywalled = false;
   setListPagerUI({ loading: true });
 
-  const filterQs = buildFilterQuery();
-  const r = await api(`/questions/${mode}?limit=${limit}&offset=${offset}${filterQs}`);
+  const r = await fetchQuestionPage({
+    mode,
+    limit,
+    offset,
+    exam: state.filters.exam,
+    year: state.filters.year,
+    subject: state.filters.subject,
+  });
 
 
   // Paywall: show ONLY after user has attempted to load questions
