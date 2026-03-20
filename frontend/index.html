@@ -1,4 +1,3 @@
-
 <!doctype html>
 <html lang="en">
 <head>
@@ -52,44 +51,65 @@
     </div>
 
     <div class="topbar-right">
-      <div class="chip" id="chipPaid" hidden>PAID</div> 
+      <div class="chip" id="chipPaid" hidden>PAID</div>
 
       <!-- ✅ Logout lives here so normal users can always see it when logged in -->
       <button id="btnLogout" class="btn ghost tiny" type="button" hidden>Logout</button>
     </div>
   </header>
- 
+
   <main class="wrap">
     <section class="card" id="whoFor">
-  <h2 class="h2-tight">Who ExamPartner Is For</h2>
+      <h2 class="h2-tight">Who ExamPartner Is For</h2>
 
-  <div class="grid3" style="margin-top:10px;">
-    <div class="panel">
-      <h3>🎓 Students</h3>
-      <p class="hint">
-        Prepare confidently for NECO, WAEC, and JAMB using exam-standard
-        questions and clear explanations that help you understand and improve.
-      </p>
-    </div>
+      <div class="grid3" style="margin-top:10px;">
+        <div class="panel">
+          <h3>🎓 Students</h3>
+          <p class="hint">
+            Prepare confidently for NECO, WAEC, and JAMB using exam-standard
+            questions and clear explanations that help you understand and improve.
+          </p>
+        </div>
 
-    <div class="panel">
-      <h3>👨‍👩‍👧 Parents & Guardians</h3>
-      <p class="hint">
-        A structured online exam preparation platform that supports consistent,
-        self-paced study on any device.
-      </p>
-    </div>
+        <div class="panel">
+          <h3>👨‍👩‍👧 Parents &amp; Guardians</h3>
+          <p class="hint">
+            A structured online exam preparation platform that supports consistent,
+            self-paced study on any device.
+          </p>
+        </div>
 
-    <div class="panel">
-      <h3>👩‍🏫 Teachers & Tutors</h3>
-      <p class="hint">
-        Useful for revision, assignments, and extra lessons aligned with Nigerian
-        examination standards.
-      </p>
-    </div>
-  </div>
-</section>
-  
+        <div class="panel">
+          <h3>👩‍🏫 Teachers &amp; Tutors</h3>
+          <p class="hint">
+            Useful for revision, assignments, and extra lessons aligned with Nigerian
+            examination standards.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="dashboardSection">
+      <div class="row space">
+        <div>
+          <h2 class="h2-tight">Dashboard</h2>
+          <div class="hint">Account, access, and upcoming learner workspace features.</div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="panel">
+          <h3>Overview</h3>
+          <p class="hint">This dashboard container prepares the next sprint stage for learner summaries, saved activity, and quick actions.</p>
+        </div>
+        <div class="panel">
+          <h3>Coming Soon</h3>
+          <p class="hint">Progress cards, recent sessions, subscription insights, and personalized recommendations will appear here.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="accountSection">
       <div class="row space">
         <h2>Account</h2>
       </div>
@@ -124,19 +144,18 @@
           </div>
 
           <label class="label" id="payEmailLabel" hidden>Receipt email</label>
-    <input
-         class="input"
-         id="payEmailInput"
-         type="email"
-         placeholder="name@example.com"
-         autocomplete="email"
-         inputmode="email"
-        hidden
-       />
-  <div class="hint" id="payEmailHint" hidden>
-    Paystack requires an email for receipts. 
-  </div>
-
+          <input
+            class="input"
+            id="payEmailInput"
+            type="email"
+            placeholder="name@example.com"
+            autocomplete="email"
+            inputmode="email"
+            hidden
+          />
+          <div class="hint" id="payEmailHint" hidden>
+            Paystack requires an email for receipts.
+          </div>
 
           <div id="authMsg" class="hint"></div>
         </div>
@@ -151,55 +170,48 @@
 
           <div class="hint" id="upgradeHint" hidden>
             You’re using the free preview. Upgrade to unlock all questions.
-
           </div>
           <div class="hint" style="margin-top:6px;">
-          Parents and guardians can safely make payments on behalf of students using Paystack.
+            Parents and guardians can safely make payments on behalf of students using Paystack.
           </div>
 
-           <!-- 🔖 Plan meta: Founding badge + expiry -->
-         <div id="planMeta" class="plan-meta" hidden>
+          <!-- 🔖 Plan meta: Founding badge + expiry -->
+          <div id="planMeta" class="plan-meta" hidden>
             <span id="foundingBadge" class="badge" hidden>Founding Student</span>
             <span id="activeUntil" class="hint"></span>
-         </div>
-
+          </div>
 
           <div class="row">
             <div class="access" id="foundingOffer" hidden>
               <strong>Founding Students – Limited Offer</strong><br>
-                Full access for 30 days • ₦1,000<br>
-               <span class="hint">Core plan: ₦10,000 for 1 year • AI Tutor features later as Pro</span>
-             </div>
-
+              Full access for 30 days • ₦1,000<br>
+              <span class="hint">Core plan: ₦10,000 for 1 year • AI Tutor features later as Pro</span>
+            </div>
 
             <button id="btnPay" type="button" class="btn" hidden> Pay ₦1,000</button>
             <button id="btnCheckPaid" class="btn ghost" hidden>Refresh Paid Status</button>
-            
           </div>
 
           <div class="row" style="margin-top:8px;">
             <button id="btnPayCore" type="button" class="btn ghost" hidden>Pay ₦10,000 (Core — 1 year)</button>
           </div>
-              
+
           <button id="btnToggleHistory" class="btn ghost small" hidden type="button">
             View payment history
           </button>
 
           <div id="paymentHistory" class="admin-box" hidden>
-              <div class="admin-title">Payment History</div>
-              <div id="paymentHistoryList" class="mono small">No payments yet.</div>
-            </div>
+            <div class="admin-title">Payment History</div>
+            <div id="paymentHistoryList" class="mono small">No payments yet.</div>
+          </div>
 
           <!-- ✅ Admin tools (hidden unless admin key is set in sessionStorage) -->
           <div id="adminTools" class="admin-box" hidden>
-
             <div class="admin-row">
               <input id="adminRef" class="input" type="text" placeholder="Reference e.g. EP_..." />
               <button id="btnAdminReconcile" class="btn" type="button">Reconcile</button>
               <button id="btnAdminClear" class="btn ghost" type="button">Exit Admin</button>
             </div>
-
-            
 
             <!-- ✅ Refund mini UI -->
             <div class="admin-row">
@@ -223,13 +235,11 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="card" id="practiceSection">
       <div class="row space">
         <div>
           <h2 class="h2-tight">📘 Practice Questions</h2>
           <div id="practiceMeta" class="hint">NECO / WAEC / JAMB • Past Questions • Explanations</div>
-         
-
         </div>
 
         <div class="row" style="gap:10px; flex-wrap:wrap; align-items:center;">
@@ -252,8 +262,8 @@
         </div>
         <button id="btnNextPage" class="btn ghost" type="button">Next Page ▶</button>
         <div id="paywall" class="paywall">
-           <div class="paywall-title">Preview limit reached</div>
-           <div class="paywall-text">Upgrade to continue accessing all available questions and explanations.</div>
+          <div class="paywall-title">Preview limit reached</div>
+          <div class="paywall-text">Upgrade to continue accessing all available questions and explanations.</div>
         </div>
       </div>
 
@@ -274,19 +284,37 @@
       </details>
 
       <div class="hint" style="margin-top:6px;">
-       Questions are curated and aligned with Nigerian examination standards.
+        Questions are curated and aligned with Nigerian examination standards.
       </div>
-
 
       <div id="startGate" class="gate" hidden>
         <div class="gate-title">Start your practice</div>
         <div class="gate-sub">
-            Choose an <b>Exam</b>, <b>Year</b>, and <b>Subject</b> in <b>Filters</b>. Your questions will load automatically.
-         </div>
+          Choose an <b>Exam</b>, <b>Year</b>, and <b>Subject</b> in <b>Filters</b>. Your questions will load automatically.
+        </div>
       </div>
 
       <div id="list" class="list"></div>
-      
+    </section>
+
+    <section class="card" id="cbtSection" hidden>
+      <div class="row space">
+        <div>
+          <h2 class="h2-tight">JAMB CBT Flow</h2>
+          <div class="hint">Hidden sprint container for timed exam sessions, instructions, and CBT navigation.</div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="panel">
+          <h3>CBT Session Setup</h3>
+          <p class="hint">Reserve this area for exam rules, timing controls, subject combinations, and start-session actions.</p>
+        </div>
+        <div class="panel">
+          <h3>Candidate Workspace</h3>
+          <p class="hint">Question palette, timer, submission checkpoints, and exam progress summaries can be mounted here later.</p>
+        </div>
+      </div>
     </section>
 
     <section id="viewer" class="card" hidden>
@@ -297,10 +325,10 @@
 
       <div id="qMeta" class="meta"></div>
       <div id="qText" class="qtext"></div>
-        <!-- ✅ NEW: tables render here -->
+      <!-- ✅ NEW: tables render here -->
       <div id="qTables" class="tables"></div>
       <div id="qDiagrams" class="diagrams"></div>
-      
+
       <div id="qSubQuestions" class="subqs" hidden></div>
       <div id="qOptions" class="options"></div>
 
@@ -319,9 +347,59 @@
       <div id="qExplain" class="explain" hidden></div>
     </section>
 
-   <footer class="footer">
+    <section class="card" id="resultSection" hidden>
+      <div class="row space">
+        <div>
+          <h2 class="h2-tight">Results</h2>
+          <div class="hint">Hidden sprint container for score summaries, breakdowns, and performance insights.</div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="panel">
+          <h3>Result Summary</h3>
+          <p class="hint">Future score cards, completion metrics, and pass/fail summaries can be rendered in this result section.</p>
+        </div>
+        <div class="panel">
+          <h3>Performance Breakdown</h3>
+          <p class="hint">Use this area for subject analysis, corrections, explanations review, and next-step recommendations.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="feedbackSection" hidden>
+      <div class="row space">
+        <div>
+          <h2 class="h2-tight">Feedback</h2>
+          <div class="hint">Hidden sprint container for collecting platform feedback and support follow-ups.</div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="panel">
+          <h3>Platform Feedback Queue</h3>
+          <p class="hint">Reserve this section for feature ideas, bug reports, and user experience feedback workflows.</p>
+        </div>
+        <div class="panel">
+          <h3>Response Tracking</h3>
+          <p class="hint">Future sprint work can connect acknowledgement states, follow-up notes, and feedback status updates here.</p>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer">
       <div>© <span id="yr"></span> ExamPartner • NECO / WAEC / JAMB prep.</div>
-  </footer>
+      <div class="row" style="gap:12px; flex-wrap:wrap; margin-top:8px;">
+        <div class="panel" style="margin:0;">
+          <strong>Contact Us</strong>
+          <div class="hint">Direct support and contact placeholder for learner help, payment assistance, and account enquiries.</div>
+        </div>
+        <div class="panel" style="margin:0;">
+          <strong>Send Feedback</strong>
+          <div class="hint">Separate platform feedback placeholder for product ideas, improvement suggestions, and issue reports.</div>
+        </div>
+      </div>
+    </footer>
   </main>
 
   <script src="https://js.paystack.co/v1/inline.js"></script>
