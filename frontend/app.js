@@ -1241,99 +1241,90 @@ function updatePayEmailUI() {
   }
 }
 
-  async function refreshMe() {
-  // 🔒 Always re-hydrate token first
-  state.token = sessionStorage.getItem("token") || "";
+function resetSessionProfileState() {
+  state.authenticated = false;
+  state.isPaid = false;
+  state.justPaidAttempt = false;
+  state.me = null;
 
-  // Helper: fully reset auth-dependent UI/state
-  function resetAuthUI() {
-    state.authenticated = false;
-    state.isPaid = false;
-    state.justPaidAttempt = false;
+  setPaidChip(false);
 
-    setPaidChip(false);
+  const btnLogout = els("btnLogout");
+  if (btnLogout) btnLogout.hidden = true;
 
-    const btnLogout = els("btnLogout");
-    if (btnLogout) btnLogout.hidden = true;
+  const btnHist = els("btnToggleHistory");
+  if (btnHist) btnHist.hidden = true;
 
-    // Payment history toggle + box
-    const btnHist = els("btnToggleHistory");
-    if (btnHist) btnHist.hidden = true;
+  const phBox = els("paymentHistory");
+  if (phBox) phBox.hidden = true;
 
-    const phBox = els("paymentHistory");
-    if (phBox) phBox.hidden = true;
+  state.historyOpen = false;
+  state.historyLoadedOnce = false;
 
-    state.historyOpen = false;
-    state.historyLoadedOnce = false;
-
-    // Hide paywall (animated system)
-    const pw = els("paywall");
-    if (pw) {
-      pw.removeAttribute("hidden");
-      pw.classList.remove("is-open");
-    }
-
-    updatePayEmailUI();
+  const pw = els("paywall");
+  if (pw) {
+    pw.removeAttribute("hidden");
+    pw.classList.remove("is-open");
   }
 
+  updatePayEmailUI();
+}
+
+function applyProfile(profile) {
+  state.authenticated = true;
+  state.me = {
+    identifier: String(profile.identifier || "").trim(),
+    email: String(profile.email || "").trim(),
+    isPaid: !!profile.is_paid,
+    isPaidActive: (profile.is_paid_active !== undefined) ? !!profile.is_paid_active : !!profile.is_paid,
+    plan: String(profile.plan || "free"),
+    isFounding: !!profile.is_founding,
+    paidUntil: profile.paid_until ? String(profile.paid_until) : "",
+  };
+
+  const nowPaid = !!state.me.isPaidActive;
+  state.isPaid = nowPaid;
+  if (state.isPaid) state.justPaidAttempt = false;
+
+  const btnLogout = els("btnLogout");
+  if (btnLogout) btnLogout.hidden = false;
+
+  setAuthMsg(`Logged in as: ${state.me.identifier}`);
+  updatePayEmailUI();
+
+  const btnHist = els("btnToggleHistory");
+  if (btnHist) {
+    btnHist.hidden = false;
+    btnHist.textContent = state.historyOpen
+      ? "Hide payment history"
+      : "View payment history";
+  }
+
+  const phBox = els("paymentHistory");
+  if (phBox) phBox.hidden = !state.historyOpen;
+
+  if (state.historyOpen) loadPaymentHistory().catch(() => {});
+
+  resetIdleTimer();
+  return { nowPaid };
+}
+
+async function loadProfile() {
+  state.token = sessionStorage.getItem("token") || "";
+
   if (!state.token) {
-    resetAuthUI();
+    resetSessionProfileState();
     updateUpgradeUI();
     updateAdminUI();
-    return;
+    return null;
   }
 
   const wasPaid = !!state.isPaid;
-
   const r = await api("/me");
 
   if (r?.identifier) {
-    state.authenticated = true;
+    const { nowPaid } = applyProfile(r);
 
-    // ✅ canonical profile state (matches your backend /me response)
-     state.me = {
-        identifier: String(r.identifier || "").trim(),
-        email: String(r.email || "").trim(),
-        isPaid: !!r.is_paid,
-        isPaidActive: (r.is_paid_active !== undefined) ? !!r.is_paid_active : !!r.is_paid,
-        plan: String(r.plan || "free"),
-        isFounding: !!r.is_founding,
-        paidUntil: r.paid_until ? String(r.paid_until) : "",
-     };
-
-     const nowPaid = !!state.me.isPaidActive;   // ✅ use active status (paid_until > now)
-     state.isPaid = nowPaid;
-     if (state.isPaid) state.justPaidAttempt = false;
-
-
-
-    const btnLogout = els("btnLogout");
-    if (btnLogout) btnLogout.hidden = false;
-
-    setAuthMsg(`Logged in as: ${state.me.identifier}`);
-
-    // ✅ Update email UI visibility (payEmailInput system)
-    updatePayEmailUI();
-
-    // Payment history toggle (Upgrade panel)
-    const btnHist = els("btnToggleHistory");
-    if (btnHist) {
-      btnHist.hidden = false;
-      btnHist.textContent = state.historyOpen
-        ? "Hide payment history"
-        : "View payment history";
-    }
-
-    const phBox = els("paymentHistory");
-    if (phBox) phBox.hidden = !state.historyOpen;
-
-    // Load only if already open
-    if (state.historyOpen) loadPaymentHistory().catch(() => {});
-
-    // ✅ keep session alive while user is active
-    resetIdleTimer();
-
-    // ✅ if user transitioned from unpaid -> paid, clear paywall + reload page 1
     if (!wasPaid && nowPaid) {
       state.paywalled = false;
       state.endReached = false;
@@ -1348,14 +1339,71 @@ function updatePayEmailUI() {
       loadList(0);
     }
   } else {
-    // Token exists but /me failed (expired/invalid)
-    resetAuthUI();
+    resetSessionProfileState();
   }
-  
-   await refreshFoundingStatus();
+
+  await refreshFoundingStatus();
   updateUpgradeUI();
   updatePlanMetaUI();
   updateAdminUI();
+  return state.me || null;
+}
+
+async function register(identifier, password) {
+  saveApiBase();
+  const r = await api("/auth/register", {
+    method: "POST",
+    body: JSON.stringify({ identifier, password })
+  });
+
+  if (r?.token) {
+    saveToken(r.token);
+    await loadProfile();
+  }
+
+  return r;
+}
+
+async function login(identifier, password) {
+  saveApiBase();
+  const r = await api("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ identifier, password })
+  });
+
+  if (r?.token) {
+    saveToken(r.token);
+    await loadProfile();
+  }
+
+  return r;
+}
+
+async function logout() {
+  stopIdleTimer();
+  saveToken("");
+
+  state.authenticated = false;
+  state.isPaid = false;
+  state.paywalled = false;
+  state.endReached = false;
+  state.pageIndex = 0;
+  state.hasLoadedQuestions = false;
+
+  resetSessionProfileState();
+  setAuthMsg("Logged out.");
+
+  const list = els("list");
+  if (list) list.innerHTML = "";
+  closeViewer?.();
+
+  adminClearKey();
+  updateUpgradeUI();
+  updateAdminUI();
+}
+
+async function refreshMe() {
+  return loadProfile();
 }
 
 
@@ -1398,65 +1446,35 @@ async function loadPaymentHistory() {
 }
 
 async function doRegister() {
-  saveApiBase();
   const identifier = els("identifier").value.trim();
   const password = els("password").value;
 
   setAuthMsg("Registering…");
-  const r = await api("/auth/register", { method: "POST", body: JSON.stringify({ identifier, password }) });
+  const r = await register(identifier, password);
 
   if (r?.token) {
-    saveToken(r.token);
     setAuthMsg("Registered ✅");
-    await refreshMe();
   } else {
     setAuthMsg(`Register failed: ${r?.error || "unknown error"}`);
   }
 }
 
 async function doLogin() {
-  saveApiBase();
   const identifier = els("identifier").value.trim();
   const password = els("password").value;
 
   setAuthMsg("Logging in…");
-  const r = await api("/auth/login", { method: "POST", body: JSON.stringify({ identifier, password }) });
+  const r = await login(identifier, password);
 
   if (r?.token) {
-    saveToken(r.token);
     setAuthMsg("Logged in ✅");
-    await refreshMe();
   } else {
     setAuthMsg(`Login failed: ${r?.error || "unknown error"}`);
   }
 }
 
  async function doLogout() {
-  stopIdleTimer();
-  saveToken("");
-
-  state.authenticated = false;
-  state.isPaid = false;        // ✅ important
-  state.paywalled = false;     // ✅ reset
-  state.endReached = false;    // ✅ reset
-  state.pageIndex = 0;         // ✅ reset
-
-  state.hasLoadedQuestions = false;
-
-
-  setPaidChip(false);
-  setAuthMsg("Logged out.");
-  const btn = els("btnLogout");
-  if (btn) btn.hidden = true;
-
-  // Clear UI so next user doesn't see previous content
-  const list = els("list");
-  if (list) list.innerHTML = "";
-  closeViewer?.();
-
-  adminClearKey();
-  updateUpgradeUI();
-  updateAdminUI();
+  await logout();
 }
 
 
