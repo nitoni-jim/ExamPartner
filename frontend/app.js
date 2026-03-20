@@ -1204,17 +1204,59 @@ function isValidEmail(s) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim());
 }
 
+function computeAccessUiState(profile) {
+  const resolvedProfile = profile || state.me || null;
+  const authenticated = !!state.authenticated;
+  const isActive = !!state.isPaid;
+  const isFounding = !!(resolvedProfile && resolvedProfile.isFounding);
+  const plan = (resolvedProfile && resolvedProfile.plan) ? resolvedProfile.plan : "free";
+  const isCoreActive = isActive && plan === "core";
+  const foundingOpen =
+    (state.foundingStatus && typeof state.foundingStatus.open === "boolean")
+      ? state.foundingStatus.open
+      : true;
+  const allowFoundingButton = authenticated && (foundingOpen || isFounding);
+  const canRenewFounding = isFounding;
+  const showUpgradeHint = !isActive && authenticated && !!state.hasLoadedQuestions;
+  const showRefresh =
+    authenticated &&
+    !isActive &&
+    (state.paywalled || !!state.justPaidAttempt);
+
+  let payMessage = "";
+  if (!authenticated) payMessage = "Login to upgrade.";
+  else if (!foundingOpen && !isFounding) payMessage = "Founding is closed. Please use Core.";
+  else if (isCoreActive) payMessage = "Core is active ✅ No renewal needed now.";
+  else if (isActive && canRenewFounding) payMessage = "Founding access is active ✅ You can renew ₦1,000 to extend 30 days.";
+  else if (isActive) payMessage = "You are already paid ✅";
+
+  return {
+    authenticated,
+    profile: resolvedProfile,
+    isActive,
+    isFounding,
+    plan,
+    isCoreActive,
+    foundingOpen,
+    allowFoundingButton,
+    canRenewFounding,
+    showUpgradeHint,
+    showRefresh,
+    payMessage,
+  };
+}
 
 function updatePayEmailUI() {
   const label = els("payEmailLabel");   // optional
   const input = els("payEmailInput");   // required
   const hint  = els("payEmailHint");    // optional
+  const access = computeAccessUiState();
 
   // If the input isn't in HTML, we can't show anything
   if (!input) return;
 
   // Not logged in → never show
-  if (!state.authenticated || !state.me) {
+  if (!access.authenticated || !access.profile) {
     if (label) label.hidden = true;
     input.hidden = true;
     if (hint) hint.hidden = true;
@@ -1222,8 +1264,8 @@ function updatePayEmailUI() {
     return;
   }
 
-  const identifier = (state.me.identifier || "").trim();
-  const storedEmail = (state.me.email || "").trim();
+  const identifier = (access.profile.identifier || "").trim();
+  const storedEmail = (access.profile.email || "").trim();
 
   const needsEmail =
     !isValidEmail(identifier) &&
@@ -1401,11 +1443,6 @@ async function logout() {
   updateUpgradeUI();
   updateAdminUI();
 }
-
-async function refreshMe() {
-  return loadProfile();
-}
-
 
 async function loadPaymentHistory() {
   const listEl = els("paymentHistoryList");
@@ -1606,25 +1643,10 @@ function updatePlanMetaUI() {
   if (!btnPay || !btnCheckPaid) return;
 
   const foundingOffer = els("foundingOffer");
-
-  const isActive = !!state.isPaid;
-  const isFounding = !!(state.me && state.me.isFounding);
-  const plan = (state.me && state.me.plan) ? state.me.plan : "free";
-  const isCoreActive = isActive && plan === "core";
-
-  // -----------------------------
-  // ✅ Founding cap: hide ₦1,000 when cap is hit (except existing founders)
-  // If you haven't wired state.foundingStatus yet, foundingOpen defaults to true.
-  // -----------------------------
-  const foundingOpen =
-    (state.foundingStatus && typeof state.foundingStatus.open === "boolean")
-      ? state.foundingStatus.open
-      : true;
-
-  const allowFoundingButton = state.authenticated && (foundingOpen || isFounding);
+  const access = computeAccessUiState();
 
   // Show/hide ₦1,000 button
-  btnPay.hidden = !allowFoundingButton;
+  btnPay.hidden = !access.allowFoundingButton;
 
   // Hide/show the Founding offer copy together with the ₦1,000 button
   if (foundingOffer) foundingOffer.hidden = btnPay.hidden;
@@ -1632,13 +1654,13 @@ function updatePlanMetaUI() {
   // ✅ Core button visibility rule
   // Show only when logged in AND Core not already active
   if (btnPayCore) {
-    btnPayCore.hidden = !state.authenticated || isCoreActive;
+    btnPayCore.hidden = !access.authenticated || access.isCoreActive;
   }
 
   // ✅ Upgrade hint: show only AFTER browsing starts, and only for unpaid logged-in users
   const upgradeHint = els("upgradeHint");
   if (upgradeHint) {
-    upgradeHint.hidden = isActive || !state.authenticated || !state.hasLoadedQuestions;
+    upgradeHint.hidden = !access.showUpgradeHint;
   }
 
   // ✅ Busy-pay lock (while popup is opening / active)
@@ -1649,42 +1671,22 @@ function updatePlanMetaUI() {
     return;
   }
 
-  // Allow founders to renew ₦1,000 even if currently active
-  const canRenewFounding = isFounding; // keep it simple for MVP
-
   // Disable Pay ₦1,000 when:
   // - not logged in, OR
   // - user is active Core, OR
   // - user is active but NOT a founder (optional)
-  btnPay.disabled = !state.authenticated || isCoreActive || (isActive && !canRenewFounding);
+  btnPay.disabled = !access.authenticated || access.isCoreActive || (access.isActive && !access.canRenewFounding);
 
   // ✅ IMPORTANT FIX:
   // Re-enable Core button after busyPay ends (unless Core is already active / not logged in)
   if (btnPayCore) {
-    btnPayCore.disabled = !state.authenticated || isCoreActive;
+    btnPayCore.disabled = !access.authenticated || access.isCoreActive;
   }
 
-  // -----------------------------
-  // ✅ Refresh Paid Status button: show only when it’s useful
-  // - logged in
-  // - unpaid
-  // - and either paywall reached OR user just attempted payment
-  // -----------------------------
-  const showRefresh =
-    state.authenticated &&
-    !isActive &&
-    (state.paywalled || !!state.justPaidAttempt);
+  btnCheckPaid.hidden = !access.showRefresh;
+  btnCheckPaid.disabled = !access.authenticated;
 
-  btnCheckPaid.hidden = !showRefresh;
-  btnCheckPaid.disabled = !state.authenticated;
-
-  // Status message
-  if (!state.authenticated) setPayMsg("Login to upgrade.");
-  else if (!foundingOpen && !isFounding) setPayMsg("Founding is closed. Please use Core.");
-  else if (isCoreActive) setPayMsg("Core is active ✅ No renewal needed now.");
-  else if (isActive && canRenewFounding) setPayMsg("Founding access is active ✅ You can renew ₦1,000 to extend 30 days.");
-  else if (isActive) setPayMsg("You are already paid ✅");
-  else setPayMsg("");
+  setPayMsg(access.payMessage);
 }
 
 
@@ -1722,11 +1724,11 @@ async function verifyPayment(reference, email) {
   });
 }
 
-
- async function startPaystackPayment(amountNgn = PAYSTACK_AMOUNT_NGN) {
+async function startPayment(amountNgn = PAYSTACK_AMOUNT_NGN) {
   updatePayEmailUI();
 
-  if (!state.authenticated || !state.me) {
+  const access = computeAccessUiState();
+  if (!access.authenticated || !access.profile) {
     setStatus("Please login before paying.", "bad");
     setPayMsg("Login to upgrade.");
     return;
@@ -1742,7 +1744,7 @@ async function verifyPayment(reference, email) {
     return;
   }
 
-  const identifier = String(state.me.identifier || els("identifier")?.value || "")
+  const identifier = String(access.profile.identifier || els("identifier")?.value || "")
     .trim()
     .toLowerCase();
 
@@ -1750,8 +1752,8 @@ async function verifyPayment(reference, email) {
 
   if (isValidEmail(identifier)) {
     payEmail = identifier;
-  } else if (isValidEmail(state.me.email || "")) {
-    payEmail = String(state.me.email).trim().toLowerCase();
+  } else if (isValidEmail(access.profile.email || "")) {
+    payEmail = String(access.profile.email).trim().toLowerCase();
   } else {
     // HARD GATE: phone identifier must provide receipt email
     const input = els("payEmailInput");
@@ -1859,11 +1861,17 @@ async function verifyPayment(reference, email) {
   }
 }
 
-
-
 async function checkPaidStatus() {
   await refreshMe();
   setStatus(state.isPaid ? "Paid ✅" : "Not paid yet.", state.isPaid ? "ok" : "bad");
+}
+
+async function startPaystackPayment(amountNgn = PAYSTACK_AMOUNT_NGN) {
+  return startPayment(amountNgn);
+}
+
+async function refreshMe() {
+  return loadProfile();
 }
 
 /* =========================
