@@ -38,6 +38,102 @@
     /* ✅ Tiny topbar logout */
     .topbar-right { display:flex; gap:10px; align-items:center; }
     .btn.tiny { height: 30px; padding: 0 10px; font-size: 12px; border-radius: 999px; }
+
+    .footer-link-btn {
+      appearance: none;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: 0;
+      color: inherit;
+      padding: 0;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .support-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: rgba(11, 16, 32, 0.82);
+      backdrop-filter: blur(6px);
+    }
+
+    .support-modal-card {
+      width: min(100%, 520px);
+      max-height: min(100vh - 40px, 720px);
+      overflow: auto;
+      background: rgba(17, 24, 39, 0.98);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 24px 60px rgba(0,0,0,0.35);
+    }
+
+    .support-modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .support-detail-list {
+      display: grid;
+      gap: 12px;
+      margin: 16px 0;
+    }
+
+    .support-detail {
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 14px;
+      padding: 12px;
+      background: rgba(3, 7, 18, 0.4);
+    }
+
+    .support-detail-label {
+      display: block;
+      font-size: 12px;
+      opacity: 0.75;
+      margin-bottom: 6px;
+    }
+
+    .support-detail-value {
+      color: #93c5fd;
+      font-weight: 700;
+      text-decoration: none;
+      word-break: break-word;
+    }
+
+    .support-feedback-form {
+      display: grid;
+      gap: 12px;
+    }
+
+    .support-feedback-form textarea,
+    .support-feedback-form select {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(0,0,0,0.24);
+      color: #e5e7eb;
+      padding: 10px 12px;
+      font: inherit;
+    }
+
+    .support-feedback-form textarea {
+      min-height: 132px;
+      resize: vertical;
+    }
+
+    .support-feedback-status {
+      min-height: 20px;
+      font-size: 12px;
+      opacity: 0.85;
+    }
   </style>
 </head>
 <body>
@@ -403,18 +499,76 @@
       <div>© <span id="yr"></span> ExamPartner • NECO / WAEC / JAMB prep.</div>
       <div class="row" style="gap:12px; flex-wrap:wrap; margin-top:8px;">
         <div class="panel" style="margin:0;">
-          <strong>Contact Us</strong>
-          <div class="hint">Direct support and contact placeholder for learner help, payment assistance, and account enquiries.</div>
+          <button id="btnFooterContact" class="footer-link-btn" type="button" aria-haspopup="dialog" aria-controls="contactUsModal">
+            <strong>Contact Us</strong>
+            <div class="hint">Get direct ExamPartner support details for learner help, payment assistance, and account enquiries.</div>
+          </button>
         </div>
         <div class="panel" style="margin:0;">
-          <strong>Send Feedback</strong>
-          <div class="hint">Separate platform feedback placeholder for product ideas, improvement suggestions, and issue reports.</div>
+          <button id="btnFooterFeedback" class="footer-link-btn" type="button" aria-haspopup="dialog" aria-controls="feedbackModal">
+            <strong>Send Feedback</strong>
+            <div class="hint">Share product ideas, issue reports, and platform improvement suggestions separately from support contact.</div>
+          </button>
         </div>
       </div>
     </footer>
   </main>
 
+  <div id="contactUsModal" class="support-modal" hidden aria-hidden="true">
+    <div class="support-modal-card" role="dialog" aria-modal="true" aria-labelledby="contactUsTitle">
+      <div class="support-modal-header">
+        <div>
+          <h2 id="contactUsTitle" class="h2-tight">Contact Us</h2>
+          <div class="hint">Direct support information only. Feedback stays in the separate Send Feedback flow.</div>
+        </div>
+        <button id="btnCloseContactModal" class="btn ghost tiny" type="button" aria-label="Close Contact Us">Close</button>
+      </div>
+
+      <div class="support-detail-list">
+        <div class="support-detail">
+          <span class="support-detail-label">Official support email</span>
+          <a id="contactSupportEmail" class="support-detail-value" href="#">—</a>
+        </div>
+        <div class="support-detail">
+          <span class="support-detail-label">Official phone number</span>
+          <a id="contactSupportPhone" class="support-detail-value" href="#">—</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="feedbackModal" class="support-modal" hidden aria-hidden="true">
+    <div class="support-modal-card" role="dialog" aria-modal="true" aria-labelledby="feedbackModalTitle">
+      <div class="support-modal-header">
+        <div>
+          <h2 id="feedbackModalTitle" class="h2-tight">Send Feedback</h2>
+          <div class="hint">Simple platform feedback form for category-based product input. Backend endpoint wiring can plug into this next.</div>
+        </div>
+        <button id="btnCloseFeedbackModal" class="btn ghost tiny" type="button" aria-label="Close Send Feedback">Close</button>
+      </div>
+
+      <form id="feedbackForm" class="support-feedback-form">
+        <div>
+          <label for="feedbackCategory">Category</label>
+          <select id="feedbackCategory" name="category" required>
+            <option value="">Select a category</option>
+          </select>
+        </div>
+
+        <div>
+          <label for="feedbackMessage">Message</label>
+          <textarea id="feedbackMessage" name="message" placeholder="Tell us what is working, what is broken, or what ExamPartner should improve next." required></textarea>
+        </div>
+
+        <div class="row" style="justify-content:space-between; align-items:center;">
+          <div id="feedbackStatus" class="support-feedback-status" aria-live="polite"></div>
+          <button id="btnSubmitFeedback" class="btn" type="submit">Submit</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <script src="https://js.paystack.co/v1/inline.js"></script>
-  <script src="app.js?v=20"></script>
+  <script src="app.js?v=21"></script>
 </body>
 </html>

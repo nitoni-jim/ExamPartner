@@ -8,6 +8,20 @@ const FILTERS_PANEL_OPEN = "ep_filters_open";
 const FILTER_CACHE_KEY = "ep_filter_cache_v1";
 const FILTER_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
+const SUPPORT_CONTACT = Object.freeze({
+  email: "support@exampartner.com",
+  phoneDisplay: "+234 800 000 0000",
+  phoneHref: "+2348000000000",
+});
+
+const FEEDBACK_CATEGORIES = Object.freeze([
+  "Bug Report",
+  "Feature Request",
+  "Content Issue",
+  "User Experience",
+  "General Feedback",
+]);
+
 function diagramSrc(name) {
   const raw = String(name || "").trim();
   if (!raw) return "";
@@ -377,6 +391,182 @@ function setPayMsg(msg) {
 function setDashboardMsg(msg) {
   const el = els("dashboardMsg");
   if (el) el.textContent = msg || "";
+}
+
+function setFeedbackStatus(msg, kind = "") {
+  const el = els("feedbackStatus");
+  if (!el) return;
+
+  el.textContent = msg || "";
+  el.style.color = kind === "bad"
+    ? "rgba(251, 113, 133, 0.95)"
+    : kind === "ok"
+      ? "rgba(52, 211, 153, 0.95)"
+      : "";
+}
+
+function getSupportModalElements(kind) {
+  if (kind === "contact") {
+    return {
+      modal: els("contactUsModal"),
+      close: els("btnCloseContactModal"),
+      opener: els("btnFooterContact"),
+    };
+  }
+
+  if (kind === "feedback") {
+    return {
+      modal: els("feedbackModal"),
+      close: els("btnCloseFeedbackModal"),
+      opener: els("btnFooterFeedback"),
+    };
+  }
+
+  return { modal: null, close: null, opener: null };
+}
+
+function closeSupportModal(kind, { restoreFocus = true } = {}) {
+  const { modal, opener } = getSupportModalElements(kind);
+  if (!modal) return;
+
+  modal.hidden = true;
+  modal.setAttribute("aria-hidden", "true");
+
+  if (restoreFocus && opener) opener.focus();
+}
+
+function openSupportModal(kind) {
+  const { modal, close } = getSupportModalElements(kind);
+  if (!modal) return;
+
+  modal.hidden = false;
+  modal.setAttribute("aria-hidden", "false");
+
+  requestAnimationFrame(() => {
+    if (close) close.focus();
+  });
+}
+
+function populateContactUi() {
+  const emailEl = els("contactSupportEmail");
+  const phoneEl = els("contactSupportPhone");
+
+  if (emailEl) {
+    emailEl.textContent = SUPPORT_CONTACT.email;
+    emailEl.href = `mailto:${SUPPORT_CONTACT.email}`;
+  }
+
+  if (phoneEl) {
+    phoneEl.textContent = SUPPORT_CONTACT.phoneDisplay;
+    phoneEl.href = `tel:${SUPPORT_CONTACT.phoneHref}`;
+  }
+}
+
+function populateFeedbackCategories() {
+  const categoryEl = els("feedbackCategory");
+  if (!categoryEl) return;
+
+  categoryEl.innerHTML = '<option value="">Select a category</option>';
+
+  for (const category of FEEDBACK_CATEGORIES) {
+    const opt = document.createElement("option");
+    opt.value = category;
+    opt.textContent = category;
+    categoryEl.appendChild(opt);
+  }
+}
+
+function getFeedbackDraft() {
+  return {
+    category: String(els("feedbackCategory")?.value || "").trim(),
+    message: String(els("feedbackMessage")?.value || "").trim(),
+  };
+}
+
+async function submitPlatformFeedback(payload) {
+  state.lastFeedbackSubmission = {
+    ...payload,
+    submittedAt: new Date().toISOString(),
+  };
+
+  console.info("Platform feedback draft ready for backend wiring.", state.lastFeedbackSubmission);
+
+  return { ok: true, pendingBackend: true };
+}
+
+async function handleFeedbackSubmit(event) {
+  if (event) event.preventDefault();
+
+  const payload = getFeedbackDraft();
+  if (!payload.category) {
+    setFeedbackStatus("Choose a feedback category.", "bad");
+    els("feedbackCategory")?.focus();
+    return;
+  }
+
+  if (!payload.message) {
+    setFeedbackStatus("Enter your feedback message.", "bad");
+    els("feedbackMessage")?.focus();
+    return;
+  }
+
+  const submitBtn = els("btnSubmitFeedback");
+  if (submitBtn) submitBtn.disabled = true;
+
+  setFeedbackStatus("Preparing feedback submission…");
+
+  try {
+    const result = await submitPlatformFeedback(payload);
+    if (!result?.ok) throw new Error(result?.error || "Feedback submission failed.");
+
+    setFeedbackStatus("Feedback captured. Backend connection can be added next.", "ok");
+    const form = els("feedbackForm");
+    if (form) form.reset();
+  } catch (error) {
+    setFeedbackStatus(error?.message || "Unable to capture feedback.", "bad");
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
+}
+
+function setupSupportUi() {
+  populateContactUi();
+  populateFeedbackCategories();
+
+  const btnFooterContact = els("btnFooterContact");
+  if (btnFooterContact) btnFooterContact.onclick = () => openSupportModal("contact");
+
+  const btnFooterFeedback = els("btnFooterFeedback");
+  if (btnFooterFeedback) btnFooterFeedback.onclick = () => {
+    setFeedbackStatus("");
+    openSupportModal("feedback");
+  };
+
+  const btnCloseContactModal = els("btnCloseContactModal");
+  if (btnCloseContactModal) btnCloseContactModal.onclick = () => closeSupportModal("contact");
+
+  const btnCloseFeedbackModal = els("btnCloseFeedbackModal");
+  if (btnCloseFeedbackModal) btnCloseFeedbackModal.onclick = () => closeSupportModal("feedback");
+
+  const feedbackForm = els("feedbackForm");
+  if (feedbackForm) feedbackForm.onsubmit = handleFeedbackSubmit;
+
+  ["contactUsModal", "feedbackModal"].forEach((id) => {
+    const modal = els(id);
+    if (!modal) return;
+
+    modal.addEventListener("click", (event) => {
+      if (event.target !== modal) return;
+      closeSupportModal(id === "contactUsModal" ? "contact" : "feedback");
+    });
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+
+    if (!els("feedbackModal")?.hidden) closeSupportModal("feedback");
+    if (!els("contactUsModal")?.hidden) closeSupportModal("contact");
+  });
 }
 
 function setPaidChip(paid) {
@@ -2101,6 +2291,7 @@ async function init() {
 
   // ✅ used by Reveal/Explain handlers (wired once)
   state.currentQuestion = null;
+  state.lastFeedbackSubmission = null;
 
   // Dev mode: only when URL has ?dev=1 (so normal local testing can still be "user mode")
   const devMode = isDev;
@@ -2168,6 +2359,7 @@ async function init() {
   }
 
   setupPaymentHistoryToggle();
+  setupSupportUi();
 
   updatePracticeMetaUI();
   updateAdminUI();
