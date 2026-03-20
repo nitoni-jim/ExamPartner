@@ -374,6 +374,11 @@ function setPayMsg(msg) {
   els("payMsg").textContent = msg || "";
 }
 
+function setDashboardMsg(msg) {
+  const el = els("dashboardMsg");
+  if (el) el.textContent = msg || "";
+}
+
 function setPaidChip(paid) {
   state.isPaid = !!paid;
   const chip = els("chipPaid");
@@ -1290,6 +1295,7 @@ function resetSessionProfileState() {
   state.me = null;
 
   setPaidChip(false);
+  setDashboardMsg("");
 
   const btnLogout = els("btnLogout");
   if (btnLogout) btnLogout.hidden = true;
@@ -1332,6 +1338,7 @@ function applyProfile(profile) {
   if (btnLogout) btnLogout.hidden = false;
 
   setAuthMsg(`Logged in as: ${state.me.identifier}`);
+  setDashboardMsg("Dashboard ready. JAMB CBT will appear here when it ships.");
   updatePayEmailUI();
 
   const btnHist = els("btnToggleHistory");
@@ -1348,6 +1355,12 @@ function applyProfile(profile) {
   if (state.historyOpen) loadPaymentHistory().catch(() => {});
 
   resetIdleTimer();
+
+  const dashboardSection = els("dashboardSection");
+  if (dashboardSection) {
+    dashboardSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   return { nowPaid };
 }
 
@@ -1434,6 +1447,7 @@ async function logout() {
 
   resetSessionProfileState();
   setAuthMsg("Logged out.");
+  updateDashboardUI();
 
   const list = els("list");
   if (list) list.innerHTML = "";
@@ -1595,6 +1609,7 @@ async function loadList(targetPageIndex = state.pageIndex) {
 function fmtDate(iso) {
   try {
     const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
     return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
   } catch {
     return "";
@@ -1610,6 +1625,52 @@ function daysLeft(iso) {
   }
 }
 
+function formatPlanLabel(plan) {
+  const normalized = String(plan || "free").trim().toLowerCase();
+  if (normalized === "founding") return "Founding";
+  if (normalized === "core") return "Core";
+  return "Free";
+}
+
+function getActiveUntilText(profile = state.me) {
+  const paidUntil = profile?.paidUntil || "";
+  if (!!state.isPaid && paidUntil) {
+    const formatted = fmtDate(paidUntil);
+    const dleft = daysLeft(paidUntil);
+    const dtext = (dleft !== null && dleft >= 0) ? ` (${dleft} day${dleft === 1 ? "" : "s"} left)` : "";
+    return formatted ? `Active until ${formatted}${dtext}` : `Active until ${paidUntil}`;
+  }
+  return "Free preview";
+}
+
+function updateDashboardUI() {
+  const section = els("dashboardSection");
+  const identifierEl = els("dashboardIdentifier");
+  const planEl = els("dashboardPlan");
+  const untilEl = els("dashboardPaidUntil");
+  const logoutBtn = els("btnDashboardLogout");
+  const cbtBtn = els("btnDashboardStartCbt");
+
+  if (!section || !identifierEl || !planEl || !untilEl) return;
+
+  const isLoggedIn = !!state.authenticated && !!state.me;
+  section.hidden = !isLoggedIn;
+
+  if (logoutBtn) logoutBtn.hidden = !isLoggedIn;
+  if (cbtBtn) cbtBtn.hidden = !isLoggedIn;
+
+  if (!isLoggedIn) {
+    identifierEl.textContent = "—";
+    planEl.textContent = "Free";
+    untilEl.textContent = "Free preview";
+    return;
+  }
+
+  identifierEl.textContent = state.me.identifier || state.me.email || "—";
+  planEl.textContent = formatPlanLabel(state.me.plan);
+  untilEl.textContent = getActiveUntilText(state.me);
+}
+
 function updatePlanMetaUI() {
   const box = els("planMeta");
   const badge = els("foundingBadge");
@@ -1618,22 +1679,16 @@ function updatePlanMetaUI() {
 
   if (!state.authenticated) {
     box.hidden = true;
+    updateDashboardUI();
     return;
   }
 
   const isFounding = !!(state.me && state.me.isFounding);
-  const paidUntil = (state.me && state.me.paidUntil) ? state.me.paidUntil : "";
 
   box.hidden = false;
   badge.hidden = !isFounding;
-
-  if (!!state.isPaid && paidUntil) {
-    const dleft = daysLeft(paidUntil);
-    const dtext = (dleft !== null && dleft >= 0) ? ` (${dleft} day${dleft === 1 ? "" : "s"} left)` : "";
-    until.textContent = `Active until ${fmtDate(paidUntil)}${dtext}`;
-  } else {
-    until.textContent = "";
-  }
+  until.textContent = getActiveUntilText(state.me) === "Free preview" ? "" : getActiveUntilText(state.me);
+  updateDashboardUI();
 }
 
  function updateUpgradeUI() {
@@ -2142,6 +2197,16 @@ async function init() {
 
   const btnLogout = els("btnLogout");
   if (btnLogout) btnLogout.onclick = doLogout;
+
+  const btnDashboardLogout = els("btnDashboardLogout");
+  if (btnDashboardLogout) btnDashboardLogout.onclick = doLogout;
+
+  const btnDashboardStartCbt = els("btnDashboardStartCbt");
+  if (btnDashboardStartCbt) btnDashboardStartCbt.onclick = () => {
+    const msg = "JAMB CBT is not available yet. Please keep using Practice for now.";
+    setDashboardMsg(msg);
+    setStatus(msg, "ok");
+  };
 
   const btnClose = els("btnClose");
   if (btnClose) btnClose.onclick = closeViewer;
