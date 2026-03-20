@@ -89,22 +89,34 @@
       </div>
     </section>
 
-    <section class="card" id="dashboardSection">
+    <section class="card" id="dashboardSection" hidden>
       <div class="row space">
         <div>
           <h2 class="h2-tight">Dashboard</h2>
-          <div class="hint">Account, access, and upcoming learner workspace features.</div>
+          <div class="hint">Your logged-in control center for account access and the upcoming JAMB CBT sprint.</div>
         </div>
       </div>
 
       <div class="grid2">
         <div class="panel">
           <h3>Overview</h3>
-          <p class="hint">This dashboard container prepares the next sprint stage for learner summaries, saved activity, and quick actions.</p>
+          <div class="hint">Signed in as</div>
+          <div id="dashboardIdentifier" class="mono">—</div>
+
+          <div class="hint" style="margin-top:12px;">Current plan</div>
+          <div id="dashboardPlan">Free</div>
+
+          <div class="hint" style="margin-top:12px;">Access validity</div>
+          <div id="dashboardPaidUntil">Free preview</div>
         </div>
         <div class="panel">
-          <h3>Coming Soon</h3>
-          <p class="hint">Progress cards, recent sessions, subscription insights, and personalized recommendations will appear here.</p>
+          <h3>Quick actions</h3>
+          <p class="hint">Use this dashboard as your learner landing point after login. Practice remains available below.</p>
+          <div class="row">
+            <button id="btnDashboardStartCbt" class="btn" type="button">Start JAMB CBT</button>
+            <button id="btnDashboardLogout" class="btn ghost" type="button">Logout</button>
+          </div>
+          <div id="dashboardMsg" class="hint" style="margin-top:10px;"></div>
         </div>
       </div>
     </section>
