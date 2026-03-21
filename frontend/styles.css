@@ -310,6 +310,45 @@ body.viewer-open .item:not(.active-question) {
 }
 .viewer-actions-spacer { flex: 1; }
 
+.question-feedback-panel {
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 14px;
+  background: rgba(3, 7, 18, 0.5);
+}
+
+.question-feedback-header {
+  margin-bottom: 12px;
+}
+
+.question-feedback-form {
+  display: grid;
+  gap: 12px;
+}
+
+.question-feedback-form textarea,
+.question-feedback-form select {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(0,0,0,0.24);
+  color: var(--text);
+  padding: 10px 12px;
+  font: inherit;
+}
+
+.question-feedback-form textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.question-feedback-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 #viewer { padding-bottom: 14px; }
 /* =========================
    A2: Collapsible Filters

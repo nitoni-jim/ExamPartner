@@ -22,6 +22,15 @@ const FEEDBACK_CATEGORIES = Object.freeze([
   "General Feedback",
 ]);
 
+const QUESTION_FEEDBACK_CATEGORIES = Object.freeze([
+  "wrong answer",
+  "typo",
+  "unclear wording",
+  "missing diagram",
+  "explanation issue",
+  "other",
+]);
+
 function diagramSrc(name) {
   const raw = String(name || "").trim();
   if (!raw) return "";
@@ -393,8 +402,7 @@ function setDashboardMsg(msg) {
   if (el) el.textContent = msg || "";
 }
 
-function setFeedbackStatus(msg, kind = "") {
-  const el = els("feedbackStatus");
+function setStatusText(el, msg, kind = "") {
   if (!el) return;
 
   el.textContent = msg || "";
@@ -403,6 +411,14 @@ function setFeedbackStatus(msg, kind = "") {
     : kind === "ok"
       ? "rgba(52, 211, 153, 0.95)"
       : "";
+}
+
+function setFeedbackStatus(msg, kind = "") {
+  setStatusText(els("feedbackStatus"), msg, kind);
+}
+
+function setQuestionFeedbackStatus(msg, kind = "") {
+  setStatusText(els("questionFeedbackStatus"), msg, kind);
 }
 
 function getSupportModalElements(kind) {
@@ -462,18 +478,25 @@ function populateContactUi() {
   }
 }
 
-function populateFeedbackCategories() {
-  const categoryEl = els("feedbackCategory");
-  if (!categoryEl) return;
+function populateSelectOptions(el, values, placeholder = "Select an option") {
+  if (!el) return;
 
-  categoryEl.innerHTML = '<option value="">Select a category</option>';
+  el.innerHTML = `<option value="">${escapeHtml(placeholder)}</option>`;
 
-  for (const category of FEEDBACK_CATEGORIES) {
+  for (const value of values) {
     const opt = document.createElement("option");
-    opt.value = category;
-    opt.textContent = category;
-    categoryEl.appendChild(opt);
+    opt.value = value;
+    opt.textContent = value;
+    el.appendChild(opt);
   }
+}
+
+function populateFeedbackCategories() {
+  populateSelectOptions(els("feedbackCategory"), FEEDBACK_CATEGORIES, "Select a category");
+}
+
+function populateQuestionFeedbackCategories() {
+  populateSelectOptions(els("questionFeedbackCategory"), QUESTION_FEEDBACK_CATEGORIES, "Select a category");
 }
 
 function getFeedbackDraft() {
@@ -482,6 +505,96 @@ function getFeedbackDraft() {
     message: String(els("feedbackMessage")?.value || "").trim(),
     source_area: "footer",
   };
+}
+
+function getQuestionFeedbackDraft() {
+  return {
+    question_id: String(state.currentQuestion?.id || activeQuestionId || "").trim(),
+    category: String(els("questionFeedbackCategory")?.value || "").trim(),
+    message: String(els("questionFeedbackMessage")?.value || "").trim(),
+    source_area: "practice",
+  };
+}
+
+function setQuestionFeedbackPanelOpen(isOpen, { resetStatus = false, focusMessage = false } = {}) {
+  const panel = els("questionFeedbackPanel");
+  const btn = els("btnReportQuestion");
+  if (!panel || !btn) return;
+
+  panel.hidden = !isOpen;
+  btn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+
+  if (resetStatus) setQuestionFeedbackStatus("");
+
+  if (isOpen && focusMessage) {
+    requestAnimationFrame(() => {
+      els("questionFeedbackCategory")?.focus();
+    });
+  }
+}
+
+function resetQuestionFeedbackForm({ keepStatus = false } = {}) {
+  const form = els("questionFeedbackForm");
+  if (form) form.reset();
+  if (!keepStatus) setQuestionFeedbackStatus("");
+}
+
+async function submitQuestionFeedback(payload) {
+  const normalizedPayload = {
+    question_id: String(payload?.question_id || "").trim(),
+    category: String(payload?.category || "").trim(),
+    message: String(payload?.message || "").trim(),
+    source_area: "practice",
+  };
+
+  const response = await api("/feedback/question", {
+    method: "POST",
+    body: JSON.stringify(normalizedPayload),
+  });
+
+  if (response?.ok === false) return response;
+
+  return { ok: true, id: response?.id || "" };
+}
+
+async function handleQuestionFeedbackSubmit(event) {
+  if (event) event.preventDefault();
+
+  const payload = getQuestionFeedbackDraft();
+
+  if (!payload.question_id) {
+    setQuestionFeedbackStatus("Open a question before submitting a report.", "bad");
+    return;
+  }
+
+  if (!payload.category) {
+    setQuestionFeedbackStatus("Choose a report category.", "bad");
+    els("questionFeedbackCategory")?.focus();
+    return;
+  }
+
+  if (!payload.message) {
+    setQuestionFeedbackStatus("Enter a short message about the issue.", "bad");
+    els("questionFeedbackMessage")?.focus();
+    return;
+  }
+
+  const submitBtn = els("btnSubmitQuestionFeedback");
+  if (submitBtn) submitBtn.disabled = true;
+
+  setQuestionFeedbackStatus("Submitting report…");
+
+  try {
+    const result = await submitQuestionFeedback(payload);
+    if (!result?.ok) throw new Error(result?.error || "Question report failed.");
+
+    resetQuestionFeedbackForm({ keepStatus: true });
+    setQuestionFeedbackStatus("Thanks — this question report was submitted successfully.", "ok");
+  } catch (error) {
+    setQuestionFeedbackStatus(error?.message || "Unable to submit this report right now.", "bad");
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
 }
 
 async function submitPlatformFeedback(payload) {
@@ -550,6 +663,7 @@ async function handleFeedbackSubmit(event) {
 function setupSupportUi() {
   populateContactUi();
   populateFeedbackCategories();
+  populateQuestionFeedbackCategories();
 
   const btnFooterContact = els("btnFooterContact");
   if (btnFooterContact) btnFooterContact.onclick = () => openSupportModal("contact");
@@ -1347,9 +1461,10 @@ async function openQuestion(id) {
 
     els("qMeta").textContent = meta.join(" • ");
 
-    
-// ✅ Render question in the new flow (question-only first)
-renderQuestion(q);
+    // ✅ Render question in the new flow (question-only first)
+    renderQuestion(q);
+    resetQuestionFeedbackForm();
+    setQuestionFeedbackPanelOpen(false);
 
     // Options
     const optBox = els("qOptions");
@@ -1403,6 +1518,8 @@ if (els("qDiagrams")) els("qDiagrams").innerHTML = "";
   els("qOptions").innerHTML = "";
   els("qExplain").hidden = true;
   els("qExplain").innerHTML = "";
+  resetQuestionFeedbackForm();
+  setQuestionFeedbackPanelOpen(false);
 }
 
 async function checkApi() {
@@ -2460,6 +2577,26 @@ async function init() {
 
   const btnCheckPaid = els("btnCheckPaid");
   if (btnCheckPaid) btnCheckPaid.onclick = checkPaidStatus;
+
+  const btnReportQuestion = els("btnReportQuestion");
+  if (btnReportQuestion) {
+    btnReportQuestion.onclick = () => {
+      const willOpen = els("questionFeedbackPanel")?.hidden !== false;
+      if (willOpen) setQuestionFeedbackStatus("");
+      setQuestionFeedbackPanelOpen(willOpen, { focusMessage: willOpen });
+    };
+  }
+
+  const btnCancelQuestionFeedback = els("btnCancelQuestionFeedback");
+  if (btnCancelQuestionFeedback) {
+    btnCancelQuestionFeedback.onclick = () => {
+      resetQuestionFeedbackForm();
+      setQuestionFeedbackPanelOpen(false);
+    };
+  }
+
+  const questionFeedbackForm = els("questionFeedbackForm");
+  if (questionFeedbackForm) questionFeedbackForm.onsubmit = handleQuestionFeedbackSubmit;
 
   // ✅ D) Wire Reveal/Explain ONCE here (uses state.currentQuestion)
   
