@@ -1,7 +1,43 @@
-
 import os
 import sqlite3
-from typing import Optional, Any
+from typing import Any, Optional
+
+QUESTIONS_COLUMNS = [
+    ("id", "TEXT PRIMARY KEY"),
+    ("exam", "TEXT"),
+    ("year", "INTEGER"),
+    ("subject", "TEXT"),
+    ("paper", "TEXT"),
+    ("section", "TEXT"),
+    ("qtype", "TEXT NOT NULL"),
+    ("sort_key", "INTEGER"),
+    ("page", "INTEGER"),
+    ("marks", "INTEGER"),
+    ("question_text", "TEXT NOT NULL"),
+    ("options_json", "TEXT"),
+    ("answer", "TEXT"),
+    ("explanation", "TEXT"),
+    ("sub_questions_json", "TEXT"),
+    ("solution_steps_json", "TEXT"),
+    ("diagrams_json", "TEXT"),
+    ("answer_diagrams_json", "TEXT"),
+    ("explanation_diagrams_json", "TEXT"),
+    ("tables_json", "TEXT"),
+    ("section_instruction", "TEXT"),
+    ("topic", "TEXT"),
+    ("subtopic", "TEXT"),
+    ("difficulty", "TEXT"),
+    ("learning_objective", "TEXT"),
+    ("examiner_tip", "TEXT"),
+    ("keywords_json", "TEXT"),
+    ("tags_json", "TEXT"),
+    ("examiner_points_json", "TEXT"),
+    ("concepts_json", "TEXT"),
+    ("common_traps_json", "TEXT"),
+    ("references_json", "TEXT"),
+    ("metadata_json", "TEXT"),
+]
+
 
 # ----------------------------
 # Detect Postgres
@@ -36,6 +72,39 @@ def get_db(db_path: Optional[str] = None):
     if _using_postgres():
         return _get_pg()
     return _get_sqlite(db_path=db_path)
+
+
+def _questions_table_sql() -> str:
+    columns_sql = ",\n              ".join(f"{name} {ddl}" for name, ddl in QUESTIONS_COLUMNS)
+    return (
+        """
+            CREATE TABLE IF NOT EXISTS questions (
+              """
+        + columns_sql
+        + """
+            );
+            """
+    )
+
+
+def _sqlite_add_missing_question_columns(cur: sqlite3.Cursor) -> None:
+    cur.execute("PRAGMA table_info(questions);")
+    cols = {row[1] for row in cur.fetchall()}
+    for col, ddl in QUESTIONS_COLUMNS:
+        if col in cols:
+            continue
+
+        col_type = ddl.replace(" PRIMARY KEY", "")
+        col_type = col_type.replace(" NOT NULL", "")
+        cur.execute(f"ALTER TABLE questions ADD COLUMN {col} {col_type};")
+
+
+def _postgres_add_missing_question_columns(cur) -> None:
+    for col, ddl in QUESTIONS_COLUMNS:
+        if "PRIMARY KEY" in ddl:
+            continue
+
+        cur.execute(f"ALTER TABLE questions ADD COLUMN IF NOT EXISTS {col} {ddl};")
 
 
 # ----------------------------
@@ -80,29 +149,7 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
             """
         )
 
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS questions (
-              id TEXT PRIMARY KEY,
-              exam TEXT,
-              year INTEGER,
-              subject TEXT,
-              paper TEXT,
-              section TEXT,
-              qtype TEXT NOT NULL,
-              sort_key INTEGER,
-              page INTEGER,
-              marks INTEGER,
-              question_text TEXT NOT NULL,
-              options_json TEXT,
-              answer TEXT,
-              explanation TEXT,
-              sub_questions_json TEXT,
-              solution_steps_json TEXT,
-              diagrams_json TEXT
-            );
-            """
-        )
+        cur.execute(_questions_table_sql())
 
         cur.execute(
             """
@@ -130,15 +177,7 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         )
 
         # lightweight migration for older SQLite DBs
-        cur.execute("PRAGMA table_info(questions);")
-        cols = {row[1] for row in cur.fetchall()}
-        for col, ddl in [
-            ("exam", "ALTER TABLE questions ADD COLUMN exam TEXT;"),
-            ("year", "ALTER TABLE questions ADD COLUMN year INTEGER;"),
-            ("subject", "ALTER TABLE questions ADD COLUMN subject TEXT;"),
-        ]:
-            if col not in cols:
-                cur.execute(ddl)
+        _sqlite_add_missing_question_columns(cur)
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_exam_year_subject ON questions(exam, year, subject);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_qtype ON questions(qtype);")
@@ -190,8 +229,6 @@ def _init_db_postgres() -> None:
             """
         )
 
-        
-
         # --- migrations (Postgres) ---
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS paid_until TIMESTAMPTZ;")
@@ -213,29 +250,8 @@ def _init_db_postgres() -> None:
             """
         )
 
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS questions (
-              id TEXT PRIMARY KEY,
-              exam TEXT,
-              year INTEGER,
-              subject TEXT,
-              paper TEXT,
-              section TEXT,
-              qtype TEXT NOT NULL,
-              sort_key INTEGER,
-              page INTEGER,
-              marks INTEGER,
-              question_text TEXT NOT NULL,
-              options_json TEXT,
-              answer TEXT,
-              explanation TEXT,
-              sub_questions_json TEXT,
-              solution_steps_json TEXT,
-              diagrams_json TEXT
-            );
-            """
-        )
+        cur.execute(_questions_table_sql())
+        _postgres_add_missing_question_columns(cur)
 
         cur.execute(
             """
