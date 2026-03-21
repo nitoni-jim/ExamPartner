@@ -480,18 +480,36 @@ function getFeedbackDraft() {
   return {
     category: String(els("feedbackCategory")?.value || "").trim(),
     message: String(els("feedbackMessage")?.value || "").trim(),
+    source_area: "footer",
   };
 }
 
 async function submitPlatformFeedback(payload) {
+  const normalizedPayload = {
+    category: String(payload?.category || "").trim(),
+    message: String(payload?.message || "").trim(),
+    source_area: String(payload?.source_area || "footer").trim() || "footer",
+  };
+
+  const response = await api("/feedback/platform", {
+    method: "POST",
+    body: JSON.stringify(normalizedPayload),
+  });
+
+  if (response?.ok === false) {
+    return response;
+  }
+
   state.lastFeedbackSubmission = {
-    ...payload,
+    ...normalizedPayload,
+    id: response?.id || "",
     submittedAt: new Date().toISOString(),
   };
 
-  console.info("Platform feedback draft ready for backend wiring.", state.lastFeedbackSubmission);
-
-  return { ok: true, pendingBackend: true };
+  return {
+    ok: true,
+    id: response?.id || "",
+  };
 }
 
 async function handleFeedbackSubmit(event) {
@@ -513,17 +531,17 @@ async function handleFeedbackSubmit(event) {
   const submitBtn = els("btnSubmitFeedback");
   if (submitBtn) submitBtn.disabled = true;
 
-  setFeedbackStatus("Preparing feedback submission…");
+  setFeedbackStatus("Submitting feedback…");
 
   try {
     const result = await submitPlatformFeedback(payload);
     if (!result?.ok) throw new Error(result?.error || "Feedback submission failed.");
 
-    setFeedbackStatus("Feedback captured. Backend connection can be added next.", "ok");
+    setFeedbackStatus("Thanks — your feedback was submitted successfully.", "ok");
     const form = els("feedbackForm");
     if (form) form.reset();
   } catch (error) {
-    setFeedbackStatus(error?.message || "Unable to capture feedback.", "bad");
+    setFeedbackStatus(error?.message || "Unable to submit feedback right now.", "bad");
   } finally {
     if (submitBtn) submitBtn.disabled = false;
   }
