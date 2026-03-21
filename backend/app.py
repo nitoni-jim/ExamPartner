@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+
 from db import get_db, init_db
 from paystack_routes import router as paystack_router
 
@@ -184,6 +185,19 @@ class AuthResp(BaseModel):
     is_paid: bool
 
 
+class PlatformFeedbackReq(BaseModel):
+    category: str
+    message: str
+    source_area: str = "footer"
+
+
+class QuestionFeedbackReq(BaseModel):
+    question_id: str
+    category: str
+    message: str
+    source_area: Optional[str] = None
+
+
 # -----------------------------
 # USERS
 # -----------------------------
@@ -312,6 +326,70 @@ def update_email(
     db.commit()
 
     return {"ok": True, "email": email}
+
+
+def _require_feedback_value(value: Optional[str], field_name: str) -> str:
+    normalized = (value or "").strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail=f"{field_name} is required")
+    return normalized
+
+
+@app.post("/feedback/platform")
+def submit_platform_feedback(
+    body: PlatformFeedbackReq,
+    user: Optional[Dict[str, Any]] = Depends(get_current_user),
+):
+    feedback_id = secrets.token_hex(16)
+    category = _require_feedback_value(body.category, "category")
+    message = _require_feedback_value(body.message, "message")
+    source_area = (body.source_area or "footer").strip() or "footer"
+    user_identifier = user.get("sub") if user else None
+
+    db = db_conn()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO feedback (id, feedback_type, question_id, source_area, category, message, user_identifier)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (feedback_id, "platform", None, source_area, category, message, user_identifier),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    return {"ok": True, "id": feedback_id}
+
+
+@app.post("/feedback/question")
+def submit_question_feedback(
+    body: QuestionFeedbackReq,
+    user: Optional[Dict[str, Any]] = Depends(get_current_user),
+):
+    feedback_id = secrets.token_hex(16)
+    question_id = _require_feedback_value(body.question_id, "question_id")
+    category = _require_feedback_value(body.category, "category")
+    message = _require_feedback_value(body.message, "message")
+    source_area = (body.source_area or "").strip() or "question_detail"
+    user_identifier = user.get("sub") if user else None
+
+    db = db_conn()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO feedback (id, feedback_type, question_id, source_area, category, message, user_identifier)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (feedback_id, "question", question_id, source_area, category, message, user_identifier),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    return {"ok": True, "id": feedback_id}
 
 
 # -----------------------------
