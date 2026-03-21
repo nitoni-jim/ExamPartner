@@ -36,7 +36,55 @@ QUESTIONS_COLUMNS = [
     ("common_traps_json", "TEXT"),
     ("references_json", "TEXT"),
     ("metadata_json", "TEXT"),
+    ("passage_id", "TEXT"),
+    ("passage_snapshot", "TEXT"),
 ]
+
+PASSAGES_COLUMNS = [
+    ("id", "TEXT PRIMARY KEY"),
+    ("exam", "TEXT"),
+    ("year", "INTEGER"),
+    ("subject", "TEXT"),
+    ("paper", "TEXT"),
+    ("section", "TEXT"),
+    ("title", "TEXT"),
+    ("passage_type", "TEXT"),
+    ("passage_text", "TEXT"),
+    ("metadata_json", "TEXT"),
+    ("created_at", "TEXT"),
+]
+
+PASSAGES_SQLITE_COLUMNS = [
+    *PASSAGES_COLUMNS[:-1],
+    ("created_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+]
+
+PASSAGES_POSTGRES_COLUMNS = [
+    *PASSAGES_COLUMNS[:-1],
+    ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+]
+
+FEEDBACK_COLUMNS = [
+    ("id", "TEXT PRIMARY KEY"),
+    ("feedback_type", "TEXT NOT NULL"),
+    ("question_id", "TEXT"),
+    ("source_area", "TEXT NOT NULL"),
+    ("category", "TEXT"),
+    ("message", "TEXT"),
+    ("user_identifier", "TEXT"),
+    ("created_at", "TEXT"),
+]
+
+FEEDBACK_SQLITE_COLUMNS = [
+    *FEEDBACK_COLUMNS[:-1],
+    ("created_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+]
+
+FEEDBACK_POSTGRES_COLUMNS = [
+    *FEEDBACK_COLUMNS[:-1],
+    ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+]
+
 
 
 # ----------------------------
@@ -74,11 +122,11 @@ def get_db(db_path: Optional[str] = None):
     return _get_sqlite(db_path=db_path)
 
 
-def _questions_table_sql() -> str:
-    columns_sql = ",\n              ".join(f"{name} {ddl}" for name, ddl in QUESTIONS_COLUMNS)
+def _table_sql(table_name: str, columns: list[tuple[str, str]]) -> str:
+    columns_sql = ",\n              ".join(f"{name} {ddl}" for name, ddl in columns)
     return (
-        """
-            CREATE TABLE IF NOT EXISTS questions (
+        f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
               """
         + columns_sql
         + """
@@ -87,24 +135,44 @@ def _questions_table_sql() -> str:
     )
 
 
-def _sqlite_add_missing_question_columns(cur: sqlite3.Cursor) -> None:
-    cur.execute("PRAGMA table_info(questions);")
+def _questions_table_sql() -> str:
+    return _table_sql("questions", QUESTIONS_COLUMNS)
+
+
+def _passages_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("passages", columns)
+
+
+def _feedback_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("feedback", columns)
+
+
+def _sqlite_add_missing_columns(cur: sqlite3.Cursor, table_name: str, columns: list[tuple[str, str]]) -> None:
+    cur.execute(f"PRAGMA table_info({table_name});")
     cols = {row[1] for row in cur.fetchall()}
-    for col, ddl in QUESTIONS_COLUMNS:
+    for col, ddl in columns:
         if col in cols:
             continue
 
         col_type = ddl.replace(" PRIMARY KEY", "")
         col_type = col_type.replace(" NOT NULL", "")
-        cur.execute(f"ALTER TABLE questions ADD COLUMN {col} {col_type};")
+        cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col} {col_type};")
 
 
-def _postgres_add_missing_question_columns(cur) -> None:
-    for col, ddl in QUESTIONS_COLUMNS:
+def _sqlite_add_missing_question_columns(cur: sqlite3.Cursor) -> None:
+    _sqlite_add_missing_columns(cur, "questions", QUESTIONS_COLUMNS)
+
+
+def _postgres_add_missing_columns(cur, table_name: str, columns: list[tuple[str, str]]) -> None:
+    for col, ddl in columns:
         if "PRIMARY KEY" in ddl:
             continue
 
-        cur.execute(f"ALTER TABLE questions ADD COLUMN IF NOT EXISTS {col} {ddl};")
+        cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col} {ddl};")
+
+
+def _postgres_add_missing_question_columns(cur) -> None:
+    _postgres_add_missing_columns(cur, "questions", QUESTIONS_COLUMNS)
 
 
 # ----------------------------
@@ -150,6 +218,8 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         )
 
         cur.execute(_questions_table_sql())
+        cur.execute(_passages_table_sql(PASSAGES_SQLITE_COLUMNS))
+        cur.execute(_feedback_table_sql(FEEDBACK_SQLITE_COLUMNS))
 
         cur.execute(
             """
@@ -176,12 +246,19 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
             """
         )
 
-        # lightweight migration for older SQLite DBs
+        # lightweight migrations for older SQLite DBs
         _sqlite_add_missing_question_columns(cur)
+        _sqlite_add_missing_columns(cur, "passages", PASSAGES_COLUMNS)
+        _sqlite_add_missing_columns(cur, "feedback", FEEDBACK_COLUMNS)
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_exam_year_subject ON questions(exam, year, subject);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_qtype ON questions(qtype);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_sort_key ON questions(sort_key);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_passage_id ON questions(passage_id);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_passages_lookup ON passages(exam, year, subject, paper, section);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_feedback_question_id ON feedback(question_id);")
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_created_at ON admin_audit_log(created_at);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_action ON admin_audit_log(action);")
@@ -251,7 +328,11 @@ def _init_db_postgres() -> None:
         )
 
         cur.execute(_questions_table_sql())
+        cur.execute(_passages_table_sql(PASSAGES_POSTGRES_COLUMNS))
+        cur.execute(_feedback_table_sql(FEEDBACK_POSTGRES_COLUMNS))
         _postgres_add_missing_question_columns(cur)
+        _postgres_add_missing_columns(cur, "passages", PASSAGES_COLUMNS)
+        _postgres_add_missing_columns(cur, "feedback", FEEDBACK_COLUMNS)
 
         cur.execute(
             """
@@ -281,6 +362,11 @@ def _init_db_postgres() -> None:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_exam_year_subject ON questions(exam, year, subject);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_qtype ON questions(qtype);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_sort_key ON questions(sort_key);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_passage_id ON questions(passage_id);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_passages_lookup ON passages(exam, year, subject, paper, section);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_feedback_question_id ON feedback(question_id);")
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_created_at ON admin_audit_log(created_at);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_action ON admin_audit_log(action);")
