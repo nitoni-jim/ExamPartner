@@ -426,15 +426,21 @@
         </div>
         <div class="panel">
           <h3>Candidate Workspace</h3>
-          <p class="hint">Timer, palette, answer summary, and submit flow will be added later. This MVP focuses on loading and navigating questions safely.</p>
+          <p class="hint">Simple MVP workspace with a live countdown and saved answer selection per question. Final submit and results stay out of scope for now.</p>
+          <div id="cbtCandidateMeta" class="meta" style="margin-top:10px;">Start a CBT session to begin the timer and save answers as you move.</div>
         </div>
       </div>
 
       <div id="cbtWorkspace" class="viewer cbt-workspace" hidden>
-        <div class="row space">
+        <div class="row space cbt-header-row">
           <h3 id="cbtQuestionTitle">CBT Question</h3>
-          <div id="cbtQuestionPosition" class="badge">Question 0 of 0</div>
+          <div class="cbt-header-badges">
+            <div id="cbtTimer" class="badge cbt-timer">00:00</div>
+            <div id="cbtQuestionPosition" class="badge">Question 0 of 0</div>
+          </div>
         </div>
+
+        <div id="cbtSessionMeta" class="meta"></div>
 
         <div id="cbtQuestionMeta" class="meta"></div>
         <div id="cbtPassage" class="passage" hidden></div>
