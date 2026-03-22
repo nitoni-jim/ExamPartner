@@ -949,7 +949,48 @@ function renderSubQuestions(question, items, opts = {}) {
 
 
 // ---- Viewer rendering section ----
+function getPassageDisplayHtml(passageSnapshot) {
+  if (!passageSnapshot) return "";
+
+  if (typeof passageSnapshot === "string") {
+    const trimmed = passageSnapshot.trim();
+    if (!trimmed) return "";
+    return `<div class="passage-body">${renderTextWithDiagrams(trimmed, { mode: "question" })}</div>`;
+  }
+
+  if (typeof passageSnapshot !== "object") return "";
+
+  const title = String(passageSnapshot.title || passageSnapshot.heading || passageSnapshot.label || "Passage").trim();
+  const passageText = String(
+    passageSnapshot.passage_text
+    || passageSnapshot.text
+    || passageSnapshot.content
+    || passageSnapshot.body
+    || ""
+  ).trim();
+
+  const metaBits = [];
+  if (passageSnapshot.passage_type) metaBits.push(String(passageSnapshot.passage_type));
+  if (passageSnapshot.reference) metaBits.push(String(passageSnapshot.reference));
+
+  const titleHtml = `<div class="passage-title">${escapeHtml(title || "Passage")}</div>`;
+  const metaHtml = metaBits.length ? `<div class="passage-meta">${escapeHtml(metaBits.join(" • "))}</div>` : "";
+  const bodyHtml = passageText
+    ? `<div class="passage-body">${renderTextWithDiagrams(passageText, { mode: "question" })}</div>`
+    : "";
+
+  if (!bodyHtml && !metaHtml && !title) return "";
+  return `${titleHtml}${metaHtml}${bodyHtml}`;
+}
+
 function renderQuestion(question) {
+  const qPassageEl = els("qPassage");
+  const passageHtml = getPassageDisplayHtml(question.passage_snapshot);
+  if (qPassageEl) {
+    qPassageEl.hidden = !passageHtml;
+    qPassageEl.innerHTML = passageHtml;
+  }
+
   // Question text
   const qTextEl = els("qText");
   const hasInlineTableRef = /\[\[table:[A-Za-z0-9_]+\]\]/.test(question.question_text || "");
@@ -1514,7 +1555,8 @@ function closeViewer() {
   currentIndex = -1;
   updatePrevNextButtons();
 
-if (els("qDiagrams")) els("qDiagrams").innerHTML = "";
+  if (els("qPassage")) { els("qPassage").hidden = true; els("qPassage").innerHTML = ""; }
+  if (els("qDiagrams")) els("qDiagrams").innerHTML = "";
   els("qOptions").innerHTML = "";
   els("qExplain").hidden = true;
   els("qExplain").innerHTML = "";
