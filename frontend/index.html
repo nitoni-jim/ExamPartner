@@ -409,18 +409,46 @@
       <div class="row space">
         <div>
           <h2 class="h2-tight">JAMB CBT Flow</h2>
-          <div class="hint">Hidden sprint container for timed exam sessions, instructions, and CBT navigation.</div>
+          <div class="hint">First MVP JAMB CBT flow with one-question-at-a-time navigation for objective questions.</div>
         </div>
       </div>
 
       <div class="grid2">
         <div class="panel">
           <h3>CBT Session Setup</h3>
-          <p class="hint">Reserve this area for exam rules, timing controls, subject combinations, and start-session actions.</p>
+          <p class="hint">Uses your current Exam, Year, and Subject filters to load objective questions into a separate CBT session.</p>
+          <div id="cbtSetupMeta" class="meta" style="margin-top:10px;">Select Exam, Year, and Subject in Filters before starting.</div>
+          <div class="row" style="margin-top:12px;">
+            <button id="btnCbtStartSession" class="btn" type="button">Start CBT Session</button>
+            <button id="btnCbtReloadSession" class="btn ghost" type="button">Reload Questions</button>
+          </div>
+          <div id="cbtStatus" class="hint" style="margin-top:10px;"></div>
         </div>
         <div class="panel">
           <h3>Candidate Workspace</h3>
-          <p class="hint">Question palette, timer, submission checkpoints, and exam progress summaries can be mounted here later.</p>
+          <p class="hint">Timer, palette, answer summary, and submit flow will be added later. This MVP focuses on loading and navigating questions safely.</p>
+        </div>
+      </div>
+
+      <div id="cbtWorkspace" class="viewer cbt-workspace" hidden>
+        <div class="row space">
+          <h3 id="cbtQuestionTitle">CBT Question</h3>
+          <div id="cbtQuestionPosition" class="badge">Question 0 of 0</div>
+        </div>
+
+        <div id="cbtQuestionMeta" class="meta"></div>
+        <div id="cbtPassage" class="passage" hidden></div>
+        <div id="cbtQuestionText" class="qtext"></div>
+        <div id="cbtQuestionTables" class="tables" hidden></div>
+        <div id="cbtQuestionDiagrams" class="diagrams"></div>
+        <div id="cbtSubQuestions" class="subqs" hidden></div>
+        <div id="cbtOptions" class="options"></div>
+
+        <div class="divider"></div>
+
+        <div class="viewer-actions">
+          <button id="btnCbtPrev" class="btn ghost" type="button">◀ Previous</button>
+          <button id="btnCbtNext" class="btn ghost" type="button">Next ▶</button>
         </div>
       </div>
     </section>
