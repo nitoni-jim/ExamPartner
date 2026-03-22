@@ -381,6 +381,13 @@ const state = {
 
   adminKey: sessionStorage.getItem(ADMIN_KEY_STORAGE) || "",
   devMode: false,
+  cbt: {
+    loading: false,
+    questions: [],
+    currentIndex: 0,
+    selectedOptionKey: null,
+    sessionReady: false,
+  },
 };
 
 function setStatus(msg, kind = "ok") {
@@ -419,6 +426,10 @@ function setFeedbackStatus(msg, kind = "") {
 
 function setQuestionFeedbackStatus(msg, kind = "") {
   setStatusText(els("questionFeedbackStatus"), msg, kind);
+}
+
+function setCbtStatus(msg, kind = "") {
+  setStatusText(els("cbtStatus"), msg, kind);
 }
 
 function getSupportModalElements(kind) {
@@ -1037,6 +1048,72 @@ function renderQuestion(question) {
   }
 }
 
+function renderQuestionInto(prefix, question, { selectedOptionKey = null } = {}) {
+  const passageEl = els(`${prefix}Passage`);
+  const textEl = els(`${prefix}QuestionText`);
+  const tablesEl = els(`${prefix}QuestionTables`);
+  const diagramsEl = els(`${prefix}QuestionDiagrams`);
+  const subQuestionsEl = els(`${prefix}SubQuestions`);
+  const optionsEl = els(`${prefix}Options`);
+
+  const passageHtml = getPassageDisplayHtml(question.passage_snapshot);
+  if (passageEl) {
+    passageEl.hidden = !passageHtml;
+    passageEl.innerHTML = passageHtml;
+  }
+
+  const hasInlineTableRef = /\[\[table:[A-Za-z0-9_]+\]\]/.test(question.question_text || "");
+
+  if (textEl) {
+    textEl.innerHTML = `<div>${renderTextWithDiagrams(question.question_text || "", { question, tables: question.tables || {}, mode: "question" })}</div>`;
+  }
+
+  if (tablesEl) {
+    if (hasInlineTableRef) {
+      tablesEl.innerHTML = "";
+      tablesEl.hidden = true;
+    } else {
+      tablesEl.hidden = false;
+      renderTablesInto(tablesEl, question.tables || {}, question.table_refs || null, "question");
+    }
+  }
+
+  renderDiagramsInto(diagramsEl, question.diagrams || [], { variant: "block" });
+
+  if (subQuestionsEl) {
+    if (question.sub_questions && Array.isArray(question.sub_questions) && question.sub_questions.length) {
+      subQuestionsEl.hidden = false;
+      subQuestionsEl.innerHTML = `
+        <div style="font-weight:700; margin:12px 0 6px;">Sub-questions</div>
+        ${renderSubQuestions(question, question.sub_questions, { showAnswers: false, showExplanations: false, showDiagrams: true })}
+      `;
+    } else {
+      subQuestionsEl.hidden = true;
+      subQuestionsEl.innerHTML = "";
+    }
+  }
+
+  if (optionsEl) {
+    optionsEl.innerHTML = "";
+    const options = question.options && typeof question.options === "object" ? question.options : null;
+    if (options) {
+      for (const key of Object.keys(options)) {
+        const optionEl = document.createElement("div");
+        optionEl.className = "opt";
+        if (selectedOptionKey === key) optionEl.classList.add("selected");
+        optionEl.dataset.key = key;
+        optionEl.innerHTML = `<b>${escapeHtml(key)}</b>. ${escapeHtml(options[key])}`;
+        optionEl.onclick = () => {
+          const nextKey = state.cbt.selectedOptionKey === key ? null : key;
+          state.cbt.selectedOptionKey = nextKey;
+          renderCbtQuestion();
+        };
+        optionsEl.appendChild(optionEl);
+      }
+    }
+  }
+}
+
 function renderAnswerBlock(question) {
   const parts = [];
 
@@ -1055,6 +1132,133 @@ function renderAnswerBlock(question) {
   }
 
   return parts.join("<hr/>");
+}
+
+function updateCbtSetupMeta() {
+  const metaEl = els("cbtSetupMeta");
+  if (!metaEl) return;
+
+  const bits = [
+    state.filters.exam || "Exam not selected",
+    state.filters.year || "Year not selected",
+    state.filters.subject || "Subject not selected",
+  ];
+  metaEl.textContent = bits.join(" • ");
+}
+
+function updateCbtNavButtons() {
+  const prevBtn = els("btnCbtPrev");
+  const nextBtn = els("btnCbtNext");
+  const total = state.cbt.questions.length;
+  if (prevBtn) prevBtn.disabled = state.cbt.loading || state.cbt.currentIndex <= 0;
+  if (nextBtn) nextBtn.disabled = state.cbt.loading || total === 0 || state.cbt.currentIndex >= total - 1;
+}
+
+function renderCbtQuestion() {
+  const workspace = els("cbtWorkspace");
+  const titleEl = els("cbtQuestionTitle");
+  const positionEl = els("cbtQuestionPosition");
+  const metaEl = els("cbtQuestionMeta");
+  const cbtSection = els("cbtSection");
+
+  if (cbtSection) cbtSection.hidden = false;
+
+  const total = state.cbt.questions.length;
+  const question = total ? state.cbt.questions[state.cbt.currentIndex] : null;
+
+  if (!workspace || !titleEl || !positionEl || !metaEl) return;
+
+  if (!question) {
+    workspace.hidden = true;
+    titleEl.textContent = "CBT Question";
+    positionEl.textContent = "Question 0 of 0";
+    metaEl.textContent = "";
+    updateCbtNavButtons();
+    return;
+  }
+
+  workspace.hidden = false;
+  titleEl.textContent = question.id || `Question ${state.cbt.currentIndex + 1}`;
+  positionEl.textContent = `Question ${state.cbt.currentIndex + 1} of ${total}`;
+
+  const meta = [];
+  if (question.type) meta.push(question.type);
+  if (question.paper) meta.push(question.paper);
+  if (question.section && question.type !== "objective") meta.push(question.section);
+  if (question.marks) meta.push(`${question.marks} marks`);
+  if (question.page) meta.push(`page ${question.page}`);
+  if (question.exam) meta.push(question.exam);
+  if (question.year) meta.push(String(question.year));
+  if (question.subject) meta.push(question.subject);
+  metaEl.textContent = meta.join(" • ");
+
+  renderQuestionInto("cbt", question, { selectedOptionKey: state.cbt.selectedOptionKey });
+  updateCbtNavButtons();
+}
+
+async function loadCbtSession() {
+  updateCbtSetupMeta();
+
+  if (!filtersReady()) {
+    els("cbtSection").hidden = false;
+    els("cbtWorkspace").hidden = true;
+    setCbtStatus("Choose Exam, Year, and Subject in Filters before starting CBT.", "bad");
+    return;
+  }
+
+  state.cbt.loading = true;
+  state.cbt.questions = [];
+  state.cbt.currentIndex = 0;
+  state.cbt.selectedOptionKey = null;
+  state.cbt.sessionReady = false;
+  updateCbtNavButtons();
+  setCbtStatus("Loading CBT questions…", "ok");
+
+  const response = await fetchQuestionPage({
+    mode: "objective",
+    limit: state.pageSize,
+    offset: 0,
+    exam: state.filters.exam,
+    year: state.filters.year,
+    subject: state.filters.subject,
+  });
+
+  state.cbt.loading = false;
+
+  if (!response?.ok) {
+    els("cbtSection").hidden = false;
+    els("cbtWorkspace").hidden = true;
+    setCbtStatus(`Failed to load CBT questions: ${response?.error || "unknown error"}`, "bad");
+    updateCbtNavButtons();
+    return;
+  }
+
+  const items = Array.isArray(response.items) ? response.items : [];
+  state.cbt.questions = items.filter((item) => String(item.type || "").toLowerCase() === "objective");
+  state.cbt.currentIndex = 0;
+  state.cbt.selectedOptionKey = null;
+  state.cbt.sessionReady = state.cbt.questions.length > 0;
+
+  if (!state.cbt.sessionReady) {
+    els("cbtSection").hidden = false;
+    els("cbtWorkspace").hidden = true;
+    setCbtStatus("No objective CBT questions matched the selected filters yet.", "bad");
+    updateCbtNavButtons();
+    return;
+  }
+
+  setCbtStatus(`Loaded ${state.cbt.questions.length} CBT question(s).`, "ok");
+  renderCbtQuestion();
+}
+
+function moveCbtQuestion(step) {
+  const total = state.cbt.questions.length;
+  if (!total) return;
+  const nextIndex = Math.max(0, Math.min(total - 1, state.cbt.currentIndex + step));
+  if (nextIndex === state.cbt.currentIndex) return;
+  state.cbt.currentIndex = nextIndex;
+  state.cbt.selectedOptionKey = null;
+  renderCbtQuestion();
 }
 
 function renderExplainBlock(question) {
@@ -1287,6 +1491,7 @@ async function initFiltersUI() {
     save();
     await refreshFilterOptions({ exam: state.filters.exam || undefined, keepSelection: true });
     updatePracticeMetaUI();
+    updateCbtSetupMeta();
     maybeAutoLoadAfterFilterChange();
   };
 
@@ -1298,12 +1503,14 @@ async function initFiltersUI() {
       keepSelection: true
     });
     updatePracticeMetaUI();
+    updateCbtSetupMeta();
     maybeAutoLoadAfterFilterChange();
   };
 
   subjSel.onchange = () => {
     save();
     updatePracticeMetaUI();
+    updateCbtSetupMeta();
     maybeAutoLoadAfterFilterChange();
   };
 
@@ -1316,6 +1523,7 @@ async function initFiltersUI() {
       save();
       await refreshFilterOptions({ keepSelection: true });
       updatePracticeMetaUI();
+      updateCbtSetupMeta();
       if (isFirstTimeUser()) setStartGateVisible(true);
     };
   }
@@ -2539,6 +2747,7 @@ async function init() {
   setupSupportUi();
 
   updatePracticeMetaUI();
+  updateCbtSetupMeta();
   updateAdminUI();
   setListPagerUI({ loading: false });
 
@@ -2572,9 +2781,21 @@ async function init() {
 
   const btnDashboardStartCbt = els("btnDashboardStartCbt");
   if (btnDashboardStartCbt) btnDashboardStartCbt.onclick = () => {
-    const msg = "JAMB CBT is not available yet. Please keep using Practice for now.";
-    setDashboardMsg(msg);
-    setStatus(msg, "ok");
+    els("cbtSection")?.removeAttribute("hidden");
+    loadCbtSession();
+    setDashboardMsg("JAMB CBT session opened below.");
+  };
+
+  const btnCbtStartSession = els("btnCbtStartSession");
+  if (btnCbtStartSession) btnCbtStartSession.onclick = () => {
+    els("cbtSection")?.removeAttribute("hidden");
+    loadCbtSession();
+  };
+
+  const btnCbtReloadSession = els("btnCbtReloadSession");
+  if (btnCbtReloadSession) btnCbtReloadSession.onclick = () => {
+    els("cbtSection")?.removeAttribute("hidden");
+    loadCbtSession();
   };
 
   const btnClose = els("btnClose");
@@ -2610,6 +2831,12 @@ async function init() {
     if (state.endReached || state.paywalled) return;
     loadList(state.pageIndex + 1);
   };
+
+  const btnCbtPrev = els("btnCbtPrev");
+  if (btnCbtPrev) btnCbtPrev.onclick = () => moveCbtQuestion(-1);
+
+  const btnCbtNext = els("btnCbtNext");
+  if (btnCbtNext) btnCbtNext.onclick = () => moveCbtQuestion(1);
 
   const btnPay = els("btnPay");
   if (btnPay) btnPay.onclick = () => startPaystackPayment(PAYSTACK_AMOUNT_NGN);

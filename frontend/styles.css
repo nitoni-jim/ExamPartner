@@ -310,6 +310,14 @@ body.viewer-open .item:not(.active-question) {
 }
 .viewer-actions-spacer { flex: 1; }
 
+.cbt-workspace {
+  margin-top: 18px;
+}
+
+.cbt-workspace .viewer-actions {
+  margin-top: 18px;
+}
+
 .question-feedback-panel {
   margin-top: 12px;
   padding: 14px;
