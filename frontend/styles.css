@@ -630,6 +630,15 @@ a, .link {
   box-shadow: 0 0 0 2px var(--brand-glow);
 }
 
+.opt.disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.opt.disabled:hover {
+  transform: none;
+}
+
 /* Inputs focus — match brand */
 input:focus, select:focus {
   border-color: var(--brand-line);
