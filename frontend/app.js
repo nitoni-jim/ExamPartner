@@ -395,6 +395,7 @@ const state = {
     timerExpired: false,
     submitted: false,
     result: null,
+    feedbackOpen: false,
   },
 };
 
@@ -516,6 +517,7 @@ function populateFeedbackCategories() {
 
 function populateQuestionFeedbackCategories() {
   populateSelectOptions(els("questionFeedbackCategory"), QUESTION_FEEDBACK_CATEGORIES, "Select a category");
+  populateSelectOptions(els("cbtQuestionFeedbackCategory"), QUESTION_FEEDBACK_CATEGORIES, "Select a category");
 }
 
 function getFeedbackDraft() {
@@ -532,6 +534,16 @@ function getQuestionFeedbackDraft() {
     category: String(els("questionFeedbackCategory")?.value || "").trim(),
     message: String(els("questionFeedbackMessage")?.value || "").trim(),
     source_area: "practice",
+  };
+}
+
+function getCbtQuestionFeedbackDraft() {
+  const question = state.cbt.questions[state.cbt.currentIndex] || null;
+  return {
+    question_id: String(question?.id || question?.qid || question?._id || "").trim(),
+    category: String(els("cbtQuestionFeedbackCategory")?.value || "").trim(),
+    message: String(els("cbtQuestionFeedbackMessage")?.value || "").trim(),
+    source_area: "cbt",
   };
 }
 
@@ -558,12 +570,40 @@ function resetQuestionFeedbackForm({ keepStatus = false } = {}) {
   if (!keepStatus) setQuestionFeedbackStatus("");
 }
 
+function setCbtQuestionFeedbackStatus(msg, kind = "") {
+  setStatusText(els("cbtQuestionFeedbackStatus"), msg, kind);
+}
+
+function setCbtQuestionFeedbackPanelOpen(isOpen, { resetStatus = false, focusMessage = false } = {}) {
+  const panel = els("cbtQuestionFeedbackPanel");
+  const btn = els("btnCbtReportQuestion");
+  if (!panel || !btn) return;
+
+  panel.hidden = !isOpen;
+  btn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+  state.cbt.feedbackOpen = !!isOpen;
+
+  if (resetStatus) setCbtQuestionFeedbackStatus("");
+
+  if (isOpen && focusMessage) {
+    requestAnimationFrame(() => {
+      els("cbtQuestionFeedbackCategory")?.focus();
+    });
+  }
+}
+
+function resetCbtQuestionFeedbackForm({ keepStatus = false } = {}) {
+  const form = els("cbtQuestionFeedbackForm");
+  if (form) form.reset();
+  if (!keepStatus) setCbtQuestionFeedbackStatus("");
+}
+
 async function submitQuestionFeedback(payload) {
   const normalizedPayload = {
     question_id: String(payload?.question_id || "").trim(),
     category: String(payload?.category || "").trim(),
     message: String(payload?.message || "").trim(),
-    source_area: "practice",
+    source_area: String(payload?.source_area || "practice").trim() || "practice",
   };
 
   const response = await api("/feedback/question", {
@@ -611,6 +651,46 @@ async function handleQuestionFeedbackSubmit(event) {
     setQuestionFeedbackStatus("Thanks — this question report was submitted successfully.", "ok");
   } catch (error) {
     setQuestionFeedbackStatus(error?.message || "Unable to submit this report right now.", "bad");
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
+}
+
+async function handleCbtQuestionFeedbackSubmit(event) {
+  if (event) event.preventDefault();
+
+  const payload = getCbtQuestionFeedbackDraft();
+
+  if (!payload.question_id) {
+    setCbtQuestionFeedbackStatus("Open a CBT question before submitting a report.", "bad");
+    return;
+  }
+
+  if (!payload.category) {
+    setCbtQuestionFeedbackStatus("Choose a report category.", "bad");
+    els("cbtQuestionFeedbackCategory")?.focus();
+    return;
+  }
+
+  if (!payload.message) {
+    setCbtQuestionFeedbackStatus("Enter a short message about the issue.", "bad");
+    els("cbtQuestionFeedbackMessage")?.focus();
+    return;
+  }
+
+  const submitBtn = els("btnSubmitCbtQuestionFeedback");
+  if (submitBtn) submitBtn.disabled = true;
+
+  setCbtQuestionFeedbackStatus("Submitting report…");
+
+  try {
+    const result = await submitQuestionFeedback(payload);
+    if (!result?.ok) throw new Error(result?.error || "Question report failed.");
+
+    resetCbtQuestionFeedbackForm({ keepStatus: true });
+    setCbtQuestionFeedbackStatus("Thanks — this CBT question report was submitted successfully.", "ok");
+  } catch (error) {
+    setCbtQuestionFeedbackStatus(error?.message || "Unable to submit this CBT report right now.", "bad");
   } finally {
     if (submitBtn) submitBtn.disabled = false;
   }
@@ -1239,6 +1319,8 @@ function renderCbtResult() {
 function submitCurrentCbtSession({ reason = "manual" } = {}) {
   if (!state.cbt.sessionReady || state.cbt.submitted) return;
 
+  resetCbtQuestionFeedbackForm();
+  setCbtQuestionFeedbackPanelOpen(false, { resetStatus: true });
   stopCbtTimer();
   syncCbtTimer();
   state.cbt.submitted = true;
@@ -1378,6 +1460,8 @@ function renderCbtQuestion() {
 
   if (!question || state.cbt.submitted) {
     workspace.hidden = true;
+    setCbtQuestionFeedbackPanelOpen(false, { resetStatus: true });
+    resetCbtQuestionFeedbackForm();
     titleEl.textContent = "CBT Question";
     positionEl.textContent = "Question 0 of 0";
     metaEl.textContent = "";
@@ -1403,6 +1487,10 @@ function renderCbtQuestion() {
   metaEl.textContent = meta.join(" • ");
 
   state.cbt.selectedOptionKey = getCbtSelectedAnswer(question, state.cbt.currentIndex);
+  if (!state.cbt.feedbackOpen) {
+    resetCbtQuestionFeedbackForm();
+    setCbtQuestionFeedbackPanelOpen(false, { resetStatus: true });
+  }
   renderQuestionInto("cbt", question, {
     selectedOptionKey: state.cbt.selectedOptionKey,
     onOptionSelect: (nextKey, activeQuestion) => {
@@ -1437,6 +1525,7 @@ async function loadCbtSession() {
   state.cbt.timeRemainingMs = 0;
   state.cbt.timerStartedAt = 0;
   state.cbt.timerExpired = false;
+  state.cbt.feedbackOpen = false;
   stopCbtTimer();
   updateCbtTimerUi();
   updateCbtSessionMeta();
@@ -1490,6 +1579,8 @@ function moveCbtQuestion(step) {
   if (!total) return;
   const nextIndex = Math.max(0, Math.min(total - 1, state.cbt.currentIndex + step));
   if (nextIndex === state.cbt.currentIndex) return;
+  resetCbtQuestionFeedbackForm();
+  setCbtQuestionFeedbackPanelOpen(false, { resetStatus: true });
   state.cbt.currentIndex = nextIndex;
   state.cbt.selectedOptionKey = getCbtSelectedAnswer(state.cbt.questions[nextIndex], nextIndex);
   renderCbtQuestion();
@@ -3107,6 +3198,26 @@ async function init() {
 
   const btnCheckPaid = els("btnCheckPaid");
   if (btnCheckPaid) btnCheckPaid.onclick = checkPaidStatus;
+
+  const btnCbtReportQuestion = els("btnCbtReportQuestion");
+  if (btnCbtReportQuestion) {
+    btnCbtReportQuestion.onclick = () => {
+      const willOpen = els("cbtQuestionFeedbackPanel")?.hidden !== false;
+      if (willOpen) setCbtQuestionFeedbackStatus("");
+      setCbtQuestionFeedbackPanelOpen(willOpen, { focusMessage: willOpen });
+    };
+  }
+
+  const btnCancelCbtQuestionFeedback = els("btnCancelCbtQuestionFeedback");
+  if (btnCancelCbtQuestionFeedback) {
+    btnCancelCbtQuestionFeedback.onclick = () => {
+      resetCbtQuestionFeedbackForm();
+      setCbtQuestionFeedbackPanelOpen(false);
+    };
+  }
+
+  const cbtQuestionFeedbackForm = els("cbtQuestionFeedbackForm");
+  if (cbtQuestionFeedbackForm) cbtQuestionFeedbackForm.onsubmit = handleCbtQuestionFeedbackSubmit;
 
   const btnReportQuestion = els("btnReportQuestion");
   if (btnReportQuestion) {

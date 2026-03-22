@@ -456,6 +456,36 @@
           <button id="btnCbtPrev" class="btn ghost" type="button">◀ Previous</button>
           <button id="btnCbtSubmit" class="btn" type="button">Submit CBT</button>
           <button id="btnCbtNext" class="btn ghost" type="button">Next ▶</button>
+
+          <div class="viewer-actions-spacer"></div>
+
+          <button id="btnCbtReportQuestion" class="btn ghost" type="button" aria-expanded="false" aria-controls="cbtQuestionFeedbackPanel">Report Question</button>
+        </div>
+
+        <div id="cbtQuestionFeedbackPanel" class="question-feedback-panel" hidden>
+          <div class="question-feedback-header">
+            <div>
+              <strong>Report this CBT question</strong>
+              <div class="hint">Send a quick issue report without leaving your CBT session.</div>
+            </div>
+          </div>
+
+          <form id="cbtQuestionFeedbackForm" class="question-feedback-form">
+            <label for="cbtQuestionFeedbackCategory">Category</label>
+            <select id="cbtQuestionFeedbackCategory" required>
+              <option value="">Select a category</option>
+            </select>
+
+            <label for="cbtQuestionFeedbackMessage">Message</label>
+            <textarea id="cbtQuestionFeedbackMessage" placeholder="Briefly describe the issue with this CBT question." required></textarea>
+
+            <div class="question-feedback-actions">
+              <button id="btnSubmitCbtQuestionFeedback" class="btn" type="submit">Submit Report</button>
+              <button id="btnCancelCbtQuestionFeedback" class="btn ghost" type="button">Cancel</button>
+            </div>
+
+            <div id="cbtQuestionFeedbackStatus" class="support-feedback-status" aria-live="polite"></div>
+          </form>
         </div>
       </div>
     </section>
