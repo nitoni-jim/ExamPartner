@@ -448,8 +448,35 @@
 
         <div class="viewer-actions-spacer"></div>
 
+        <button id="btnReportQuestion" class="btn ghost" type="button" aria-expanded="false" aria-controls="questionFeedbackPanel">Report Question</button>
         <button id="btnReveal" class="btn" type="button">Reveal Answer</button>
         <button id="btnExplain" class="btn ghost" type="button">Show Explanation / Steps</button>
+      </div>
+
+      <div id="questionFeedbackPanel" class="question-feedback-panel" hidden>
+        <div class="question-feedback-header">
+          <div>
+            <strong>Report this question</strong>
+            <div class="hint">Tell us what is wrong so we can review and fix it.</div>
+          </div>
+        </div>
+
+        <form id="questionFeedbackForm" class="question-feedback-form">
+          <label for="questionFeedbackCategory">Category</label>
+          <select id="questionFeedbackCategory" required>
+            <option value="">Select a category</option>
+          </select>
+
+          <label for="questionFeedbackMessage">Message</label>
+          <textarea id="questionFeedbackMessage" placeholder="Briefly describe the issue with this question." required></textarea>
+
+          <div class="question-feedback-actions">
+            <button id="btnSubmitQuestionFeedback" class="btn" type="submit">Submit Report</button>
+            <button id="btnCancelQuestionFeedback" class="btn ghost" type="button">Cancel</button>
+          </div>
+
+          <div id="questionFeedbackStatus" class="support-feedback-status" aria-live="polite"></div>
+        </form>
       </div>
 
       <div id="qExplain" class="explain" hidden></div>
