@@ -426,7 +426,7 @@
         </div>
         <div class="panel">
           <h3>Candidate Workspace</h3>
-          <p class="hint">Simple MVP workspace with a live countdown and saved answer selection per question. Final submit and results stay out of scope for now.</p>
+          <p class="hint">Simple MVP workspace with a live countdown, saved answer selection per question, and a lightweight submit/result flow.</p>
           <div id="cbtCandidateMeta" class="meta" style="margin-top:10px;">Start a CBT session to begin the timer and save answers as you move.</div>
         </div>
       </div>
@@ -454,6 +454,7 @@
 
         <div class="viewer-actions">
           <button id="btnCbtPrev" class="btn ghost" type="button">◀ Previous</button>
+          <button id="btnCbtSubmit" class="btn" type="button">Submit CBT</button>
           <button id="btnCbtNext" class="btn ghost" type="button">Next ▶</button>
         </div>
       </div>
@@ -528,11 +529,22 @@
       <div class="grid2">
         <div class="panel">
           <h3>Result Summary</h3>
-          <p class="hint">Future score cards, completion metrics, and pass/fail summaries can be rendered in this result section.</p>
+          <div id="resultSummaryMeta" class="meta">Submit a CBT session to see your summary.</div>
+          <div id="resultScoreBadge" class="badge" style="margin-top:12px; display:inline-flex;">Score 0 / 0 (0%)</div>
+          <div id="resultStatus" class="hint" style="margin-top:12px;"></div>
         </div>
         <div class="panel">
           <h3>Performance Breakdown</h3>
-          <p class="hint">Use this area for subject analysis, corrections, explanations review, and next-step recommendations.</p>
+          <div id="resultBreakdown" class="grid2" style="margin-top:12px;">
+            <div class="panel"><strong>Total Questions</strong><div id="resultTotalQuestions" class="meta">0</div></div>
+            <div class="panel"><strong>Answered Questions</strong><div id="resultAnsweredQuestions" class="meta">0</div></div>
+            <div class="panel"><strong>Correct Answers</strong><div id="resultCorrectAnswers" class="meta">0</div></div>
+            <div class="panel"><strong>Wrong Answers</strong><div id="resultWrongAnswers" class="meta">0</div></div>
+          </div>
+          <div class="row" style="margin-top:12px;">
+            <button id="btnResultBackToCbt" class="btn ghost" type="button">Back to CBT</button>
+            <button id="btnResultStartNew" class="btn" type="button">Start New CBT Session</button>
+          </div>
         </div>
       </div>
     </section>
