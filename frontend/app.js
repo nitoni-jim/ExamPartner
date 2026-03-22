@@ -78,6 +78,7 @@ let activeQuestionId = null;
 let currentListIds = [];      // IDs from the current rendered list
 let currentIndex = -1;        // index of activeQuestionId within currentListIds
 let selectedOptionKey = null; // visual-only option highlight
+let practiceOpenRequestSeq = 0;
 
 function highlightQuestionCard(qid) {
   const items = document.querySelectorAll(".item");
@@ -1136,7 +1137,7 @@ function renderQuestion(question) {
   }
 }
 
-function renderQuestionInto(prefix, question, { selectedOptionKey = null, onOptionSelect = null } = {}) {
+function renderQuestionInto(prefix, question, { selectedOptionKey = null, onOptionSelect = null, readOnly = false } = {}) {
   const passageEl = els(`${prefix}Passage`);
   const textEl = els(`${prefix}QuestionText`);
   const tablesEl = els(`${prefix}QuestionTables`);
@@ -1191,12 +1192,17 @@ function renderQuestionInto(prefix, question, { selectedOptionKey = null, onOpti
         if (selectedOptionKey === key) optionEl.classList.add("selected");
         optionEl.dataset.key = key;
         optionEl.innerHTML = `<b>${escapeHtml(key)}</b>. ${escapeHtml(options[key])}`;
-        optionEl.onclick = () => {
-          const nextKey = selectedOptionKey === key ? null : key;
-          if (typeof onOptionSelect === "function") {
-            onOptionSelect(nextKey, question, key);
-          }
-        };
+        if (!readOnly) {
+          optionEl.onclick = () => {
+            const nextKey = selectedOptionKey === key ? null : key;
+            if (typeof onOptionSelect === "function") {
+              onOptionSelect(nextKey, question, key);
+            }
+          };
+        } else {
+          optionEl.setAttribute("aria-disabled", "true");
+          optionEl.classList.add("disabled");
+        }
         optionsEl.appendChild(optionEl);
       }
     }
@@ -1388,7 +1394,8 @@ function updateCbtSessionMeta() {
 
   if (total > 0) bits.push(`${answered} answered`);
   if (total > 0) bits.push(`${remaining} remaining`);
-  if (state.cbt.timerStartedAt) bits.push(`Time left ${formatCountdown(state.cbt.timeRemainingMs)}`);
+  if (state.cbt.submitted) bits.push("Submitted");
+  else if (state.cbt.timerStartedAt) bits.push(`Time left ${formatCountdown(state.cbt.timeRemainingMs)}`);
   if (state.cbt.timerExpired) bits.push("Time elapsed");
 
   const metaText = bits.join(" • ");
@@ -1438,10 +1445,11 @@ function updateCbtNavButtons() {
   const nextBtn = els("btnCbtNext");
   const submitBtn = els("btnCbtSubmit");
   const total = state.cbt.questions.length;
-  const locked = state.cbt.loading || !state.cbt.sessionReady || state.cbt.submitted || total === 0;
-  if (prevBtn) prevBtn.disabled = locked || state.cbt.currentIndex <= 0;
-  if (nextBtn) nextBtn.disabled = locked || state.cbt.currentIndex >= total - 1;
-  if (submitBtn) submitBtn.disabled = locked;
+  const canReview = state.cbt.submitted && total > 0;
+  const navLocked = state.cbt.loading || total === 0 || (!state.cbt.sessionReady && !canReview);
+  if (prevBtn) prevBtn.disabled = navLocked || state.cbt.currentIndex <= 0;
+  if (nextBtn) nextBtn.disabled = navLocked || state.cbt.currentIndex >= total - 1;
+  if (submitBtn) submitBtn.disabled = state.cbt.loading || !state.cbt.sessionReady || state.cbt.submitted || total === 0;
 }
 
 function renderCbtQuestion() {
@@ -1458,7 +1466,7 @@ function renderCbtQuestion() {
 
   if (!workspace || !titleEl || !positionEl || !metaEl) return;
 
-  if (!question || state.cbt.submitted) {
+  if (!question) {
     workspace.hidden = true;
     setCbtQuestionFeedbackPanelOpen(false, { resetStatus: true });
     resetCbtQuestionFeedbackForm();
@@ -1471,6 +1479,7 @@ function renderCbtQuestion() {
     return;
   }
 
+  const isReviewMode = !!state.cbt.submitted;
   workspace.hidden = false;
   titleEl.textContent = question.id || `Question ${state.cbt.currentIndex + 1}`;
   positionEl.textContent = `Question ${state.cbt.currentIndex + 1} of ${total}`;
@@ -1487,13 +1496,15 @@ function renderCbtQuestion() {
   metaEl.textContent = meta.join(" • ");
 
   state.cbt.selectedOptionKey = getCbtSelectedAnswer(question, state.cbt.currentIndex);
-  if (!state.cbt.feedbackOpen) {
+  if (!state.cbt.feedbackOpen || isReviewMode) {
     resetCbtQuestionFeedbackForm();
     setCbtQuestionFeedbackPanelOpen(false, { resetStatus: true });
   }
   renderQuestionInto("cbt", question, {
     selectedOptionKey: state.cbt.selectedOptionKey,
+    readOnly: isReviewMode,
     onOptionSelect: (nextKey, activeQuestion) => {
+      if (isReviewMode) return;
       setCbtSelectedAnswer(activeQuestion, nextKey, state.cbt.currentIndex);
       renderCbtQuestion();
     },
@@ -1501,6 +1512,14 @@ function renderCbtQuestion() {
   updateCbtTimerUi();
   updateCbtSessionMeta();
   updateCbtNavButtons();
+
+  const reportBtn = els("btnCbtReportQuestion");
+  if (reportBtn) reportBtn.disabled = isReviewMode;
+
+  const statusBits = [];
+  if (isReviewMode) statusBits.push("Review mode — answers are locked after submission.");
+  if (state.cbt.result) statusBits.push(`Current score ${state.cbt.result.score}/${state.cbt.result.totalQuestions}.`);
+  if (statusBits.length) setCbtStatus(statusBits.join(" "), isReviewMode ? "ok" : "");
 }
 
 async function loadCbtSession() {
@@ -1976,14 +1995,18 @@ if (!items || !items.length) {
   }
 
   // restore highlight + visibility if a question is already selected
-  if (activeQuestionId) {
+  if (activeQuestionId && currentListIds.includes(activeQuestionId)) {
     highlightQuestionCard(activeQuestionId);
     requestAnimationFrame(() => ensureActiveCardVisibleInList(activeQuestionId));
+  } else if (activeQuestionId) {
+    closeViewer();
   }
 }
 
 
 async function openQuestion(id) {
+  const requestSeq = ++practiceOpenRequestSeq;
+
   try {
     activeQuestionId = id;
 
@@ -2009,6 +2032,8 @@ async function openQuestion(id) {
     });
 
     const q = await fetchQuestion(id);
+    if (requestSeq !== practiceOpenRequestSeq) return;
+    if (!q?.id) throw new Error(q?.error || "Question not found.");
 
     // ✅ Keep current question in state so Reveal/Explain (wired once in init) can use it
     state.currentQuestion = q;
@@ -2081,6 +2106,8 @@ async function openQuestion(id) {
 
 
 function closeViewer() {
+  practiceOpenRequestSeq += 1;
+  state.currentQuestion = null;
   els("viewer").hidden = true;
   setViewerOpen(false);
   clearQuestionHighlight();
@@ -2459,6 +2486,11 @@ async function loadList(targetPageIndex = state.pageIndex) {
     subject: state.filters.subject,
   });
 
+  if (!r?.ok && r?.status !== 402 && !r?.paywall) {
+    setStatus(`Failed to load questions: ${r?.error || "unknown error"}`, "bad");
+    setListPagerUI({ loading: false });
+    return;
+  }
 
   // Paywall: show ONLY after user has attempted to load questions
  if (
@@ -3175,7 +3207,7 @@ async function init() {
     btnResultBackToCbt.onclick = () => {
       els("cbtSection")?.removeAttribute("hidden");
       els("resultSection")?.setAttribute("hidden", "hidden");
-      if (!state.cbt.submitted) renderCbtQuestion();
+      renderCbtQuestion();
       els("cbtSection")?.scrollIntoView({ behavior: "smooth", block: "start" });
     };
   }
@@ -3202,6 +3234,7 @@ async function init() {
   const btnCbtReportQuestion = els("btnCbtReportQuestion");
   if (btnCbtReportQuestion) {
     btnCbtReportQuestion.onclick = () => {
+      if (state.cbt.submitted) return;
       const willOpen = els("cbtQuestionFeedbackPanel")?.hidden !== false;
       if (willOpen) setCbtQuestionFeedbackStatus("");
       setCbtQuestionFeedbackPanelOpen(willOpen, { focusMessage: willOpen });
