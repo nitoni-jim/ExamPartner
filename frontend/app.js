@@ -386,7 +386,13 @@ const state = {
     questions: [],
     currentIndex: 0,
     selectedOptionKey: null,
+    answersByQuestionKey: {},
     sessionReady: false,
+    timerDurationMs: 0,
+    timeRemainingMs: 0,
+    timerStartedAt: 0,
+    timerIntervalId: null,
+    timerExpired: false,
   },
 };
 
@@ -1048,7 +1054,7 @@ function renderQuestion(question) {
   }
 }
 
-function renderQuestionInto(prefix, question, { selectedOptionKey = null } = {}) {
+function renderQuestionInto(prefix, question, { selectedOptionKey = null, onOptionSelect = null } = {}) {
   const passageEl = els(`${prefix}Passage`);
   const textEl = els(`${prefix}QuestionText`);
   const tablesEl = els(`${prefix}QuestionTables`);
@@ -1104,9 +1110,10 @@ function renderQuestionInto(prefix, question, { selectedOptionKey = null } = {})
         optionEl.dataset.key = key;
         optionEl.innerHTML = `<b>${escapeHtml(key)}</b>. ${escapeHtml(options[key])}`;
         optionEl.onclick = () => {
-          const nextKey = state.cbt.selectedOptionKey === key ? null : key;
-          state.cbt.selectedOptionKey = nextKey;
-          renderCbtQuestion();
+          const nextKey = selectedOptionKey === key ? null : key;
+          if (typeof onOptionSelect === "function") {
+            onOptionSelect(nextKey, question, key);
+          }
         };
         optionsEl.appendChild(optionEl);
       }
@@ -1146,6 +1153,108 @@ function updateCbtSetupMeta() {
   metaEl.textContent = bits.join(" • ");
 }
 
+const CBT_DEFAULT_SECONDS_PER_QUESTION = 60;
+
+function getCbtQuestionKey(question, fallbackIndex = state.cbt.currentIndex) {
+  if (!question) return `cbt-${fallbackIndex}`;
+  return question.id || question.qid || question._id || `cbt-${fallbackIndex}`;
+}
+
+function getCbtSelectedAnswer(question, fallbackIndex = state.cbt.currentIndex) {
+  const key = getCbtQuestionKey(question, fallbackIndex);
+  return state.cbt.answersByQuestionKey[key] ?? null;
+}
+
+function setCbtSelectedAnswer(question, answerKey, fallbackIndex = state.cbt.currentIndex) {
+  const key = getCbtQuestionKey(question, fallbackIndex);
+  if (!key) return;
+  if (answerKey == null) {
+    delete state.cbt.answersByQuestionKey[key];
+  } else {
+    state.cbt.answersByQuestionKey[key] = answerKey;
+  }
+  state.cbt.selectedOptionKey = answerKey;
+  updateCbtSessionMeta();
+}
+
+function formatCountdown(ms) {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function stopCbtTimer() {
+  if (state.cbt.timerIntervalId) {
+    clearInterval(state.cbt.timerIntervalId);
+    state.cbt.timerIntervalId = null;
+  }
+}
+
+function updateCbtTimerUi() {
+  const timerEl = els("cbtTimer");
+  if (!timerEl) return;
+
+  timerEl.textContent = formatCountdown(state.cbt.timeRemainingMs);
+  timerEl.classList.toggle("is-warning", state.cbt.timeRemainingMs > 0 && state.cbt.timeRemainingMs <= 5 * 60 * 1000);
+  timerEl.classList.toggle("is-expired", state.cbt.timeRemainingMs <= 0);
+}
+
+function updateCbtSessionMeta() {
+  const sessionMetaEl = els("cbtSessionMeta");
+  const candidateMetaEl = els("cbtCandidateMeta");
+  const total = state.cbt.questions.length;
+  const answered = Object.keys(state.cbt.answersByQuestionKey).length;
+  const remaining = Math.max(0, total - answered);
+  const bits = [];
+
+  if (total > 0) bits.push(`${answered} answered`);
+  if (total > 0) bits.push(`${remaining} remaining`);
+  if (state.cbt.timerStartedAt) bits.push(`Time left ${formatCountdown(state.cbt.timeRemainingMs)}`);
+  if (state.cbt.timerExpired) bits.push("Time elapsed");
+
+  const metaText = bits.join(" • ");
+  if (sessionMetaEl) sessionMetaEl.textContent = metaText;
+  if (candidateMetaEl) {
+    candidateMetaEl.textContent = total
+      ? `Answers save inside this CBT session only. ${metaText || "Session ready."}`
+      : "Start a CBT session to begin the timer and save answers as you move.";
+  }
+}
+
+function syncCbtTimer() {
+  if (!state.cbt.timerStartedAt || !state.cbt.timerDurationMs) {
+    state.cbt.timeRemainingMs = 0;
+    updateCbtTimerUi();
+    updateCbtSessionMeta();
+    return;
+  }
+
+  const elapsed = Date.now() - state.cbt.timerStartedAt;
+  state.cbt.timeRemainingMs = Math.max(0, state.cbt.timerDurationMs - elapsed);
+  const justExpired = state.cbt.timeRemainingMs === 0 && !state.cbt.timerExpired;
+  state.cbt.timerExpired = state.cbt.timeRemainingMs === 0;
+
+  if (justExpired) {
+    stopCbtTimer();
+    setCbtStatus("Time is up. Final submit/result flow will be added later, so your answers remain visible for now.", "bad");
+  }
+
+  updateCbtTimerUi();
+  updateCbtSessionMeta();
+}
+
+function startCbtTimer(questionCount = 0) {
+  stopCbtTimer();
+  const durationMs = Math.max(1, questionCount) * CBT_DEFAULT_SECONDS_PER_QUESTION * 1000;
+  state.cbt.timerDurationMs = durationMs;
+  state.cbt.timeRemainingMs = durationMs;
+  state.cbt.timerStartedAt = Date.now();
+  state.cbt.timerExpired = false;
+  syncCbtTimer();
+  state.cbt.timerIntervalId = setInterval(syncCbtTimer, 1000);
+}
+
 function updateCbtNavButtons() {
   const prevBtn = els("btnCbtPrev");
   const nextBtn = els("btnCbtNext");
@@ -1173,6 +1282,8 @@ function renderCbtQuestion() {
     titleEl.textContent = "CBT Question";
     positionEl.textContent = "Question 0 of 0";
     metaEl.textContent = "";
+    updateCbtTimerUi();
+    updateCbtSessionMeta();
     updateCbtNavButtons();
     return;
   }
@@ -1192,7 +1303,16 @@ function renderCbtQuestion() {
   if (question.subject) meta.push(question.subject);
   metaEl.textContent = meta.join(" • ");
 
-  renderQuestionInto("cbt", question, { selectedOptionKey: state.cbt.selectedOptionKey });
+  state.cbt.selectedOptionKey = getCbtSelectedAnswer(question, state.cbt.currentIndex);
+  renderQuestionInto("cbt", question, {
+    selectedOptionKey: state.cbt.selectedOptionKey,
+    onOptionSelect: (nextKey, activeQuestion) => {
+      setCbtSelectedAnswer(activeQuestion, nextKey, state.cbt.currentIndex);
+      renderCbtQuestion();
+    },
+  });
+  updateCbtTimerUi();
+  updateCbtSessionMeta();
   updateCbtNavButtons();
 }
 
@@ -1210,7 +1330,15 @@ async function loadCbtSession() {
   state.cbt.questions = [];
   state.cbt.currentIndex = 0;
   state.cbt.selectedOptionKey = null;
+  state.cbt.answersByQuestionKey = {};
   state.cbt.sessionReady = false;
+  state.cbt.timerDurationMs = 0;
+  state.cbt.timeRemainingMs = 0;
+  state.cbt.timerStartedAt = 0;
+  state.cbt.timerExpired = false;
+  stopCbtTimer();
+  updateCbtTimerUi();
+  updateCbtSessionMeta();
   updateCbtNavButtons();
   setCbtStatus("Loading CBT questions…", "ok");
 
@@ -1237,6 +1365,7 @@ async function loadCbtSession() {
   state.cbt.questions = items.filter((item) => String(item.type || "").toLowerCase() === "objective");
   state.cbt.currentIndex = 0;
   state.cbt.selectedOptionKey = null;
+  state.cbt.answersByQuestionKey = {};
   state.cbt.sessionReady = state.cbt.questions.length > 0;
 
   if (!state.cbt.sessionReady) {
@@ -1247,7 +1376,8 @@ async function loadCbtSession() {
     return;
   }
 
-  setCbtStatus(`Loaded ${state.cbt.questions.length} CBT question(s).`, "ok");
+  startCbtTimer(state.cbt.questions.length);
+  setCbtStatus(`Loaded ${state.cbt.questions.length} CBT question(s). Timer started.`, "ok");
   renderCbtQuestion();
 }
 
@@ -1257,7 +1387,7 @@ function moveCbtQuestion(step) {
   const nextIndex = Math.max(0, Math.min(total - 1, state.cbt.currentIndex + step));
   if (nextIndex === state.cbt.currentIndex) return;
   state.cbt.currentIndex = nextIndex;
-  state.cbt.selectedOptionKey = null;
+  state.cbt.selectedOptionKey = getCbtSelectedAnswer(state.cbt.questions[nextIndex], nextIndex);
   renderCbtQuestion();
 }
 
@@ -1771,6 +1901,8 @@ function closeViewer() {
   resetQuestionFeedbackForm();
   setQuestionFeedbackPanelOpen(false);
 }
+
+window.addEventListener("beforeunload", stopCbtTimer);
 
 async function checkApi() {
   saveApiBase();
@@ -2748,6 +2880,8 @@ async function init() {
 
   updatePracticeMetaUI();
   updateCbtSetupMeta();
+  updateCbtTimerUi();
+  updateCbtSessionMeta();
   updateAdminUI();
   setListPagerUI({ loading: false });
 

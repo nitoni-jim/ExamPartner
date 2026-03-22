@@ -317,6 +317,36 @@ body.viewer-open .item:not(.active-question) {
 .cbt-workspace .viewer-actions {
   margin-top: 18px;
 }
+.cbt-header-row {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.cbt-header-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cbt-timer {
+  min-width: 88px;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.cbt-timer.is-warning {
+  background: rgba(251, 191, 36, 0.14);
+  border-color: rgba(251, 191, 36, 0.35);
+  color: #fde68a;
+}
+
+.cbt-timer.is-expired {
+  background: rgba(248, 113, 113, 0.16);
+  border-color: rgba(248, 113, 113, 0.38);
+  color: #fecaca;
+}
+
 
 .question-feedback-panel {
   margin-top: 12px;
