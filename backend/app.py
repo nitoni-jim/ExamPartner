@@ -486,6 +486,13 @@ def _normalize_explanation(qtype: Optional[str], raw_explanation: Optional[str])
     return raw_explanation or ""
 
 
+def _normalize_passage_snapshot(raw_passage_snapshot: Optional[str]):
+    parsed = _jloads(raw_passage_snapshot)
+    if parsed is not None:
+        return parsed
+    return raw_passage_snapshot or None
+
+
 def _row_to_question(row) -> Dict[str, Any]:
     qtype = row["qtype"]
     return {
@@ -508,6 +515,8 @@ def _row_to_question(row) -> Dict[str, Any]:
         "answer_diagrams": _jloads(row.get("answer_diagrams_json")) or [],
         "explanation_diagrams": _jloads(row.get("explanation_diagrams_json")) or [],
         "tables": _jloads(row.get("tables_json")) or {},
+        "passage_id": row.get("passage_id"),
+        "passage_snapshot": _normalize_passage_snapshot(row.get("passage_snapshot")),
     }
 
 
@@ -590,7 +599,8 @@ def list_objective(
         f"""
         SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
                options_json, answer, explanation, sub_questions_json,
-               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json
+               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json,
+               passage_id, passage_snapshot
         FROM questions
         WHERE {where_sql}
         ORDER BY COALESCE(sort_key, 999999999), id
@@ -630,7 +640,8 @@ def list_theory(
         f"""
         SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
                options_json, answer, explanation, sub_questions_json,
-               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json
+               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json,
+               passage_id, passage_snapshot
         FROM questions
         WHERE {where_sql}
         ORDER BY COALESCE(sort_key, 999999999), id
@@ -652,7 +663,8 @@ def get_question(qid: str, user: Optional[Dict[str, Any]] = Depends(get_current_
         """
         SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
                options_json, answer, explanation, sub_questions_json,
-               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json
+               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json,
+               passage_id, passage_snapshot
         FROM questions
         WHERE id = ?
         """,

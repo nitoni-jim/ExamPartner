@@ -805,3 +805,28 @@ hr {
 .diagrams {
   margin: 10px 0;
 }
+
+.passage {
+  margin-bottom: 14px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(96, 165, 250, 0.28);
+  background: rgba(96, 165, 250, 0.08);
+}
+
+.passage-title {
+  font-weight: 800;
+  margin-bottom: 6px;
+  color: #dbeafe;
+}
+
+.passage-meta {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.passage-body {
+  line-height: 1.6;
+  white-space: normal;
+}

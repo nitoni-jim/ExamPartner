@@ -35,6 +35,8 @@ QUESTION_COLUMNS = [
     "sub_questions_json",
     "solution_steps_json",
     "diagrams_json",
+    "passage_id",
+    "passage_snapshot",
 ]
 
 JSON_TO_JSON_COL = {
@@ -42,6 +44,7 @@ JSON_TO_JSON_COL = {
     "sub_questions": "sub_questions_json",
     "solution_steps": "solution_steps_json",
     "diagrams": "diagrams_json",
+    "passage_snapshot": "passage_snapshot",
 }
 
 
