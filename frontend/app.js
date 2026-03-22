@@ -393,6 +393,8 @@ const state = {
     timerStartedAt: 0,
     timerIntervalId: null,
     timerExpired: false,
+    submitted: false,
+    result: null,
   },
 };
 
@@ -1165,6 +1167,100 @@ function getCbtSelectedAnswer(question, fallbackIndex = state.cbt.currentIndex) 
   return state.cbt.answersByQuestionKey[key] ?? null;
 }
 
+function normalizeCbtAnswerKey(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const match = raw.match(/^([A-Z])/i);
+  return match ? match[1].toUpperCase() : raw.toUpperCase();
+}
+
+function calculateCbtResult() {
+  const questions = Array.isArray(state.cbt.questions) ? state.cbt.questions : [];
+  const totalQuestions = questions.length;
+  let answeredQuestions = 0;
+  let correctAnswers = 0;
+
+  for (let index = 0; index < questions.length; index += 1) {
+    const question = questions[index];
+    const selected = normalizeCbtAnswerKey(getCbtSelectedAnswer(question, index));
+    const expected = normalizeCbtAnswerKey(question?.answer);
+    if (selected) answeredQuestions += 1;
+    if (selected && expected && selected === expected) correctAnswers += 1;
+  }
+
+  const wrongAnswers = Math.max(0, answeredQuestions - correctAnswers);
+  const percentage = totalQuestions ? Math.round((correctAnswers / totalQuestions) * 100) : 0;
+
+  return {
+    totalQuestions,
+    answeredQuestions,
+    correctAnswers,
+    wrongAnswers,
+    score: correctAnswers,
+    percentage,
+    submittedAt: Date.now(),
+  };
+}
+
+function renderCbtResult() {
+  const result = state.cbt.result;
+  const resultSection = els("resultSection");
+  if (!result || !resultSection) return;
+
+  const totalEl = els("resultTotalQuestions");
+  const answeredEl = els("resultAnsweredQuestions");
+  const correctEl = els("resultCorrectAnswers");
+  const wrongEl = els("resultWrongAnswers");
+  const badgeEl = els("resultScoreBadge");
+  const metaEl = els("resultSummaryMeta");
+  const statusEl = els("resultStatus");
+
+  if (totalEl) totalEl.textContent = String(result.totalQuestions);
+  if (answeredEl) answeredEl.textContent = String(result.answeredQuestions);
+  if (correctEl) correctEl.textContent = String(result.correctAnswers);
+  if (wrongEl) wrongEl.textContent = String(result.wrongAnswers);
+  if (badgeEl) badgeEl.textContent = `Score ${result.score} / ${result.totalQuestions} (${result.percentage}%)`;
+
+  const filterBits = [state.filters.exam, state.filters.year, state.filters.subject].filter(Boolean);
+  if (metaEl) metaEl.textContent = filterBits.length
+    ? `Submitted ${filterBits.join(" • ")} CBT session.`
+    : "Submitted CBT session.";
+
+  if (statusEl) {
+    const unanswered = Math.max(0, result.totalQuestions - result.answeredQuestions);
+    statusEl.textContent = unanswered
+      ? `${unanswered} question(s) were left unanswered before submission.`
+      : "All questions were answered before submission.";
+  }
+
+  resultSection.hidden = false;
+}
+
+function submitCurrentCbtSession({ reason = "manual" } = {}) {
+  if (!state.cbt.sessionReady || state.cbt.submitted) return;
+
+  stopCbtTimer();
+  syncCbtTimer();
+  state.cbt.submitted = true;
+  state.cbt.result = calculateCbtResult();
+  state.cbt.sessionReady = false;
+
+  renderCbtResult();
+  renderCbtQuestion();
+  updateCbtNavButtons();
+
+  const answered = state.cbt.result?.answeredQuestions ?? 0;
+  const total = state.cbt.result?.totalQuestions ?? 0;
+  const msg = reason === "timer"
+    ? `Time is up. CBT submitted automatically with ${answered} of ${total} question(s) answered.`
+    : `CBT submitted. You answered ${answered} of ${total} question(s).`;
+  setCbtStatus(msg, reason === "timer" ? "bad" : "ok");
+
+  els("cbtWorkspace")?.setAttribute("hidden", "hidden");
+  els("resultSection")?.removeAttribute("hidden");
+  els("resultSection")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function setCbtSelectedAnswer(question, answerKey, fallbackIndex = state.cbt.currentIndex) {
   const key = getCbtQuestionKey(question, fallbackIndex);
   if (!key) return;
@@ -1236,8 +1332,8 @@ function syncCbtTimer() {
   state.cbt.timerExpired = state.cbt.timeRemainingMs === 0;
 
   if (justExpired) {
-    stopCbtTimer();
-    setCbtStatus("Time is up. Final submit/result flow will be added later, so your answers remain visible for now.", "bad");
+    submitCurrentCbtSession({ reason: "timer" });
+    return;
   }
 
   updateCbtTimerUi();
@@ -1258,9 +1354,12 @@ function startCbtTimer(questionCount = 0) {
 function updateCbtNavButtons() {
   const prevBtn = els("btnCbtPrev");
   const nextBtn = els("btnCbtNext");
+  const submitBtn = els("btnCbtSubmit");
   const total = state.cbt.questions.length;
-  if (prevBtn) prevBtn.disabled = state.cbt.loading || state.cbt.currentIndex <= 0;
-  if (nextBtn) nextBtn.disabled = state.cbt.loading || total === 0 || state.cbt.currentIndex >= total - 1;
+  const locked = state.cbt.loading || !state.cbt.sessionReady || state.cbt.submitted || total === 0;
+  if (prevBtn) prevBtn.disabled = locked || state.cbt.currentIndex <= 0;
+  if (nextBtn) nextBtn.disabled = locked || state.cbt.currentIndex >= total - 1;
+  if (submitBtn) submitBtn.disabled = locked;
 }
 
 function renderCbtQuestion() {
@@ -1277,7 +1376,7 @@ function renderCbtQuestion() {
 
   if (!workspace || !titleEl || !positionEl || !metaEl) return;
 
-  if (!question) {
+  if (!question || state.cbt.submitted) {
     workspace.hidden = true;
     titleEl.textContent = "CBT Question";
     positionEl.textContent = "Question 0 of 0";
@@ -1332,6 +1431,8 @@ async function loadCbtSession() {
   state.cbt.selectedOptionKey = null;
   state.cbt.answersByQuestionKey = {};
   state.cbt.sessionReady = false;
+  state.cbt.submitted = false;
+  state.cbt.result = null;
   state.cbt.timerDurationMs = 0;
   state.cbt.timeRemainingMs = 0;
   state.cbt.timerStartedAt = 0;
@@ -1340,6 +1441,7 @@ async function loadCbtSession() {
   updateCbtTimerUi();
   updateCbtSessionMeta();
   updateCbtNavButtons();
+  els("resultSection")?.setAttribute("hidden", "hidden");
   setCbtStatus("Loading CBT questions…", "ok");
 
   const response = await fetchQuestionPage({
@@ -1366,6 +1468,8 @@ async function loadCbtSession() {
   state.cbt.currentIndex = 0;
   state.cbt.selectedOptionKey = null;
   state.cbt.answersByQuestionKey = {};
+  state.cbt.submitted = false;
+  state.cbt.result = null;
   state.cbt.sessionReady = state.cbt.questions.length > 0;
 
   if (!state.cbt.sessionReady) {
@@ -2971,6 +3075,29 @@ async function init() {
 
   const btnCbtNext = els("btnCbtNext");
   if (btnCbtNext) btnCbtNext.onclick = () => moveCbtQuestion(1);
+
+  const btnCbtSubmit = els("btnCbtSubmit");
+  if (btnCbtSubmit) btnCbtSubmit.onclick = () => submitCurrentCbtSession({ reason: "manual" });
+
+  const btnResultBackToCbt = els("btnResultBackToCbt");
+  if (btnResultBackToCbt) {
+    btnResultBackToCbt.onclick = () => {
+      els("cbtSection")?.removeAttribute("hidden");
+      els("resultSection")?.setAttribute("hidden", "hidden");
+      if (!state.cbt.submitted) renderCbtQuestion();
+      els("cbtSection")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+  }
+
+  const btnResultStartNew = els("btnResultStartNew");
+  if (btnResultStartNew) {
+    btnResultStartNew.onclick = async () => {
+      els("cbtSection")?.removeAttribute("hidden");
+      updateCbtSetupMeta();
+      await loadCbtSession();
+      els("cbtSection")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+  }
 
   const btnPay = els("btnPay");
   if (btnPay) btnPay.onclick = () => startPaystackPayment(PAYSTACK_AMOUNT_NGN);
