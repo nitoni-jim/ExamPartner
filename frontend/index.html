@@ -134,6 +134,120 @@
       font-size: 12px;
       opacity: 0.85;
     }
+
+    .diagram-img {
+      cursor: zoom-in;
+    }
+
+    .diagram-lightbox {
+      position: fixed;
+      inset: 0;
+      z-index: 120;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(3, 7, 18, 0.92);
+      backdrop-filter: blur(6px);
+      opacity: 1;
+      transition: opacity 180ms ease;
+    }
+
+    .diagram-lightbox[hidden] {
+      display: none;
+    }
+
+    .diagram-lightbox.is-closing {
+      opacity: 0;
+    }
+
+    .diagram-lightbox-dialog {
+      position: relative;
+      width: min(100%, 1100px);
+      height: min(100%, 92vh);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 14px;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(17, 24, 39, 0.96);
+      box-shadow: 0 24px 60px rgba(0,0,0,0.45);
+    }
+
+    .diagram-lightbox-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .diagram-lightbox-label {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: rgba(191, 219, 254, 0.92);
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(96, 165, 250, 0.14);
+    }
+
+    .diagram-lightbox-spacer {
+      flex: 1;
+    }
+
+    .diagram-lightbox-stage {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: auto;
+      border-radius: 14px;
+      background: rgba(2, 6, 23, 0.72);
+      padding: 12px;
+    }
+
+    .diagram-lightbox-image {
+      max-width: 100%;
+      max-height: 100%;
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      border-radius: 12px;
+      transform-origin: center center;
+      transform: scale(1);
+      transition: transform 160ms ease;
+      box-shadow: 0 18px 45px rgba(0,0,0,0.35);
+    }
+
+    @media (max-width: 640px) {
+      .diagram-lightbox {
+        padding: 10px;
+      }
+
+      .diagram-lightbox-dialog {
+        height: min(100%, 96vh);
+        padding: 12px;
+      }
+
+      .diagram-lightbox-toolbar {
+        gap: 6px;
+      }
+
+      .diagram-lightbox-toolbar .btn {
+        flex: 1 1 calc(50% - 6px);
+      }
+
+      .diagram-lightbox-spacer {
+        display: none;
+      }
+
+      .diagram-lightbox-label {
+        width: 100%;
+      }
+    }
   </style>
 </head>
 <body>
@@ -611,6 +725,23 @@
 
       <div id="qExplain" class="explain" hidden></div>
     </section>
+
+    <div id="diagramLightbox" class="diagram-lightbox" hidden aria-hidden="true">
+      <div id="diagramLightboxBackdrop" class="diagram-lightbox-backdrop"></div>
+      <div class="diagram-lightbox-dialog" role="dialog" aria-modal="true" aria-labelledby="diagramLightboxLabel">
+        <div class="diagram-lightbox-toolbar">
+          <div id="diagramLightboxLabel" class="diagram-lightbox-label">Diagram</div>
+          <div class="diagram-lightbox-spacer"></div>
+          <button id="btnDiagramZoomOut" class="btn ghost" type="button" aria-label="Zoom out diagram">−</button>
+          <button id="btnDiagramZoomIn" class="btn ghost" type="button" aria-label="Zoom in diagram">+</button>
+          <button id="btnDiagramZoomReset" class="btn ghost" type="button">Reset</button>
+          <button id="btnDiagramClose" class="btn" type="button">Close</button>
+        </div>
+        <div id="diagramLightboxStage" class="diagram-lightbox-stage">
+          <img id="diagramLightboxImage" class="diagram-lightbox-image" alt="Expanded diagram preview" />
+        </div>
+      </div>
+    </div>
 
     <section class="card" id="resultSection" hidden>
       <div class="row space">
