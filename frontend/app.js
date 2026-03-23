@@ -2162,6 +2162,59 @@ function isValidEmail(s) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim());
 }
 
+function normalizeEmail(s) {
+  return String(s || "").trim().toLowerCase();
+}
+
+function syncPayEmailAutofill() {
+  const identifierInput = els("identifier");
+  const payEmailInput = els("payEmailInput");
+  if (!payEmailInput) return;
+
+  const identifierValue = normalizeEmail(identifierInput?.value || state.me?.identifier || "");
+  if (isValidEmail(identifierValue)) {
+    payEmailInput.value = identifierValue;
+    return;
+  }
+
+  const storedEmail = normalizeEmail(state.me?.email || "");
+  if (isValidEmail(storedEmail) && !payEmailInput.value.trim()) {
+    payEmailInput.value = storedEmail;
+  }
+}
+
+async function resolvePaystackEmail(access) {
+  const payEmailInput = els("payEmailInput");
+  const inputEmail = normalizeEmail(payEmailInput?.value || "");
+  if (payEmailInput && !payEmailInput.hidden && isValidEmail(inputEmail)) {
+    return { email: inputEmail, source: "payEmailInput" };
+  }
+
+  const profileIdentifier = normalizeEmail(access?.profile?.identifier || "");
+  if (isValidEmail(profileIdentifier)) {
+    return { email: profileIdentifier, source: "identifier" };
+  }
+
+  const formIdentifier = normalizeEmail(els("identifier")?.value || "");
+  if (isValidEmail(formIdentifier)) {
+    return { email: formIdentifier, source: "identifier" };
+  }
+
+  if (state.token) {
+    const me = await api("/me");
+    if (me?.identifier) {
+      applyProfile(me);
+      const meEmail = normalizeEmail(me.email || "");
+      if (isValidEmail(meEmail)) {
+        syncPayEmailAutofill();
+        return { email: meEmail, source: "/me" };
+      }
+    }
+  }
+
+  return { email: "", source: "" };
+}
+
 function computeAccessUiState(profile) {
   const resolvedProfile = profile || state.me || null;
   const authenticated = !!state.authenticated;
@@ -2234,10 +2287,9 @@ function updatePayEmailUI() {
   if (hint) hint.hidden = !needsEmail;
 
   if (needsEmail) {
-    // keep whatever user typed; if profile has email, prefill
-    if (isValidEmail(storedEmail) && !input.value) input.value = storedEmail;
+    if (!input.value.trim()) syncPayEmailAutofill();
   } else {
-    input.value = "";
+    syncPayEmailAutofill();
   }
 }
 
@@ -2935,32 +2987,23 @@ async function startPayment(amountNgn = PAYSTACK_AMOUNT_NGN) {
     return;
   }
 
-  const identifier = String(access.profile.identifier || els("identifier")?.value || "")
-    .trim()
-    .toLowerCase();
+  const identifier = normalizeEmail(access.profile.identifier || els("identifier")?.value || "");
+  const payEmailInput = els("payEmailInput");
+  syncPayEmailAutofill();
 
-  let payEmail = "";
-
-  if (isValidEmail(identifier)) {
-    payEmail = identifier;
-  } else if (isValidEmail(access.profile.email || "")) {
-    payEmail = String(access.profile.email).trim().toLowerCase();
-  } else {
-    // HARD GATE: phone identifier must provide receipt email
-    const input = els("payEmailInput");
-    payEmail = String(input?.value || "").trim().toLowerCase();
-
-    if (!isValidEmail(payEmail)) {
-      updatePayEmailUI();
-      if (input) {
-        input.hidden = false;
-        input.focus();
-      }
-      setStatus("Please enter a valid receipt email to continue.", "bad");
-      setPayMsg("Receipt email is required for phone-number accounts.");
-      return;
+  const { email: payEmail, source } = await resolvePaystackEmail(access);
+  if (!isValidEmail(payEmail)) {
+    updatePayEmailUI();
+    if (payEmailInput) {
+      payEmailInput.hidden = false;
+      payEmailInput.focus();
     }
+    setStatus("Please enter a valid receipt email to continue.", "bad");
+    setPayMsg("A valid email is required before checkout can open.");
+    return;
+  }
 
+  if (source === "payEmailInput" && payEmail !== normalizeEmail(state.me?.email || "")) {
     const up = await api("/me/email", {
       method: "POST",
       body: JSON.stringify({ email: payEmail }),
@@ -2972,7 +3015,7 @@ async function startPayment(amountNgn = PAYSTACK_AMOUNT_NGN) {
       return;
     }
 
-    state.me.email = payEmail;
+    if (state.me) state.me.email = payEmail;
     updatePayEmailUI();
   }
 
@@ -3336,6 +3379,21 @@ async function init() {
 
   const btnLogin = els("btnLogin");
   if (btnLogin) btnLogin.onclick = doLogin;
+
+  const identifierInput = els("identifier");
+  if (identifierInput) {
+    identifierInput.addEventListener("input", () => {
+      syncPayEmailAutofill();
+      updatePayEmailUI();
+    });
+  }
+
+  const payEmailInput = els("payEmailInput");
+  if (payEmailInput) {
+    payEmailInput.addEventListener("input", () => {
+      if (!payEmailInput.value.trim()) syncPayEmailAutofill();
+    });
+  }
 
   const btnLogout = els("btnLogout");
   if (btnLogout) btnLogout.onclick = doLogout;
