@@ -41,6 +41,11 @@ CORS_ORIGINS = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
 
 FREE_SAMPLE_LIMIT_OBJ = int(os.getenv("FREE_SAMPLE_LIMIT_OBJ", "10"))
 FREE_SAMPLE_LIMIT_THEORY = int(os.getenv("FREE_SAMPLE_LIMIT_THEORY", "2"))
+ADMIN_IDENTIFIERS = {
+    item.strip().lower()
+    for item in os.getenv("ADMIN_IDENTIFIERS", "admin@exampartner.com").split(",")
+    if item.strip()
+}
 
 
 # -----------------------------
@@ -183,6 +188,7 @@ class AuthResp(BaseModel):
     token: str
     identifier: str
     is_paid: bool
+    is_admin: bool = False
 
 
 class PlatformFeedbackReq(BaseModel):
@@ -237,7 +243,7 @@ def register(body: AuthReq):
         db.close()
 
     token = make_token(identifier)
-    return {"token": token, "identifier": identifier, "is_paid": False}
+    return {"token": token, "identifier": identifier, "is_paid": False, "is_admin": _is_admin_identifier(identifier)}
 
 
 @app.post("/auth/login", response_model=AuthResp)
@@ -245,7 +251,7 @@ def login(body: AuthReq):
     identifier = body.identifier.strip().lower()
     db = db_conn()
     cur = db.cursor()
-    cur.execute("SELECT identifier, salt, pw_hash, is_paid FROM users WHERE identifier = ?", (identifier,))
+    cur.execute("SELECT identifier, salt, pw_hash, is_paid, is_admin FROM users WHERE identifier = ?", (identifier,))
     row = cur.fetchone()
     db.close()
 
@@ -258,7 +264,7 @@ def login(body: AuthReq):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = make_token(identifier)
-    return {"token": token, "identifier": identifier, "is_paid": bool(row["is_paid"])}
+    return {"token": token, "identifier": identifier, "is_paid": bool(row["is_paid"]), "is_admin": _is_admin_identifier(identifier) or bool(_row_get(row, "is_admin") or False)}
 
 
 @app.get("/me")
@@ -273,7 +279,7 @@ def me(user: Optional[Dict[str, Any]] = Depends(get_current_user)):
     db = db_conn()
     cur = db.cursor()
     cur.execute(
-        "SELECT is_paid, paid_until, plan, is_founding, email FROM users WHERE identifier = ?",
+        "SELECT is_paid, paid_until, plan, is_founding, email, is_admin FROM users WHERE identifier = ?",
         (identifier,),
     )
     row = cur.fetchone()
@@ -282,17 +288,18 @@ def me(user: Optional[Dict[str, Any]] = Depends(get_current_user)):
 
     is_paid_active = _is_paid_user({"sub": identifier})
 
-    paid_until = row.get("paid_until")
+    paid_until = _row_get(row, "paid_until")
     return {
         "identifier": identifier,
         # legacy flag (kept for compatibility)
-        "is_paid": bool(row.get("is_paid")),
+        "is_paid": bool(_row_get(row, "is_paid")),
         # preferred flag for access gating
         "is_paid_active": bool(is_paid_active),
         "paid_until": paid_until.isoformat() if paid_until else None,
-        "plan": row.get("plan") or "free",
-        "is_founding": bool(row.get("is_founding") or False),
-        "email": row.get("email"),
+        "plan": _row_get(row, "plan") or "free",
+        "is_founding": bool(_row_get(row, "is_founding") or False),
+        "email": _row_get(row, "email"),
+        "is_admin": _is_admin_identifier(identifier) or bool(_row_get(row, "is_admin") or False),
     }
 
 
@@ -473,6 +480,18 @@ def filters(
 # QUESTIONS
 # -----------------------------
 
+
+
+def _row_get(row: Any, key: str, default: Any = None) -> Any:
+    if row is None:
+        return default
+    if hasattr(row, "get"):
+        return row.get(key, default)
+    try:
+        return row[key]
+    except Exception:
+        return default
+
 def _jloads(x: Optional[str]):
     try:
         return json.loads(x) if x else None
@@ -497,27 +516,53 @@ def _row_to_question(row) -> Dict[str, Any]:
     qtype = row["qtype"]
     return {
         "id": row["id"],
-        "exam": row.get("exam"),
-        "year": row.get("year"),
-        "subject": row.get("subject"),
-        "paper": row.get("paper"),
-        "section": row.get("section"),
+        "exam": _row_get(row, "exam"),
+        "year": _row_get(row, "year"),
+        "subject": _row_get(row, "subject"),
+        "paper": _row_get(row, "paper"),
+        "section": _row_get(row, "section"),
         "type": qtype,
-        "page": row.get("page"),
-        "marks": row.get("marks"),
+        "page": _row_get(row, "page"),
+        "marks": _row_get(row, "marks"),
         "question_text": row["question_text"],
-        "options": _jloads(row.get("options_json")),
-        "answer": row.get("answer"),
-        "explanation": _normalize_explanation(qtype, row.get("explanation")),
-        "sub_questions": _jloads(row.get("sub_questions_json")),
-        "solution_steps": _jloads(row.get("solution_steps_json")),
-        "diagrams": _jloads(row.get("diagrams_json")) or [],
-        "answer_diagrams": _jloads(row.get("answer_diagrams_json")) or [],
-        "explanation_diagrams": _jloads(row.get("explanation_diagrams_json")) or [],
-        "tables": _jloads(row.get("tables_json")) or {},
-        "passage_id": row.get("passage_id"),
-        "passage_snapshot": _normalize_passage_snapshot(row.get("passage_snapshot")),
+        "options": _jloads(_row_get(row, "options_json")),
+        "answer": _row_get(row, "answer"),
+        "explanation": _normalize_explanation(qtype, _row_get(row, "explanation")),
+        "sub_questions": _jloads(_row_get(row, "sub_questions_json")),
+        "solution_steps": _jloads(_row_get(row, "solution_steps_json")),
+        "diagrams": _jloads(_row_get(row, "diagrams_json")) or [],
+        "answer_diagrams": _jloads(_row_get(row, "answer_diagrams_json")) or [],
+        "explanation_diagrams": _jloads(_row_get(row, "explanation_diagrams_json")) or [],
+        "tables": _jloads(_row_get(row, "tables_json")) or {},
+        "passage_id": _row_get(row, "passage_id"),
+        "passage_snapshot": _normalize_passage_snapshot(_row_get(row, "passage_snapshot")),
     }
+
+
+def _is_admin_identifier(identifier: Optional[str]) -> bool:
+    normalized = (identifier or "").strip().lower()
+    return bool(normalized and normalized in ADMIN_IDENTIFIERS)
+
+
+def _is_admin_user(user: Optional[Dict[str, Any]]) -> bool:
+    if not user:
+        return False
+
+    identifier = (user.get("sub") or "").strip().lower()
+    if _is_admin_identifier(identifier):
+        return True
+    if not identifier:
+        return False
+
+    db = db_conn()
+    cur = db.cursor()
+    try:
+        cur.execute("SELECT is_admin FROM users WHERE identifier = ?", (identifier,))
+        row = cur.fetchone()
+    finally:
+        db.close()
+
+    return bool(row and _row_get(row, "is_admin"))
 
 
 def _is_paid_user(user: Optional[Dict[str, Any]]) -> bool:
@@ -530,6 +575,8 @@ def _is_paid_user(user: Optional[Dict[str, Any]]) -> bool:
     identifier = user.get("sub")
     if not identifier:
         return False
+    if _is_admin_identifier(identifier):
+        return True
 
     db = db_conn()
     cur = db.cursor()
@@ -539,13 +586,13 @@ def _is_paid_user(user: Optional[Dict[str, Any]]) -> bool:
     if not row:
         return False
 
-    paid_until = row.get("paid_until")
+    paid_until = _row_get(row, "paid_until")
     if paid_until is not None:
         now = datetime.now(timezone.utc)
         return paid_until > now
 
     # legacy fallback
-    return bool(row.get("is_paid"))
+    return bool(_row_get(row, "is_paid"))
 
 
 
@@ -653,6 +700,115 @@ def list_theory(
     db.close()
 
     return {"items": [_row_to_question(r) for r in rows], "limit": limit, "offset": offset}
+
+
+def _require_admin(user: Optional[Dict[str, Any]]) -> str:
+    if not user or not _is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return str(user.get("sub") or "").strip().lower()
+
+
+@app.get("/admin/questions")
+def admin_list_questions(
+    limit: int = 100,
+    offset: int = 0,
+    exam: Optional[str] = Query(default=None),
+    year: Optional[int] = Query(default=None),
+    subject: Optional[str] = Query(default=None),
+    qtype: Optional[str] = Query(default=None),
+    user: Optional[Dict[str, Any]] = Depends(get_current_user),
+):
+    _require_admin(user)
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+
+    where = []
+    params: List[Any] = []
+    if exam:
+        where.append("exam = ?")
+        params.append(exam)
+    if year is not None:
+        where.append("year = ?")
+        params.append(year)
+    if subject:
+        where.append("subject = ?")
+        params.append(subject)
+    if qtype:
+        where.append("qtype = ?")
+        params.append(qtype)
+
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+
+    db = db_conn()
+    cur = db.cursor()
+    try:
+        cur.execute(f"SELECT COUNT(*) AS total FROM questions {where_sql}", tuple(params) if params else None)
+        total_row = cur.fetchone()
+        total = int(_row_get(total_row, "total", 0) if total_row else 0)
+
+        cur.execute(
+            f"""
+            SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
+                   options_json, answer, explanation, sub_questions_json,
+                   solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json,
+                   passage_id, passage_snapshot
+            FROM questions
+            {where_sql}
+            ORDER BY year DESC, exam, subject, COALESCE(sort_key, 999999999), id
+            LIMIT ? OFFSET ?
+            """,
+            (*params, limit, offset),
+        )
+        rows = cur.fetchall()
+    finally:
+        db.close()
+
+    return {"items": [_row_to_question(r) for r in rows], "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/admin/feedback")
+def admin_list_feedback(
+    limit: int = 100,
+    offset: int = 0,
+    feedback_type: Optional[str] = Query(default=None),
+    source_area: Optional[str] = Query(default=None),
+    user: Optional[Dict[str, Any]] = Depends(get_current_user),
+):
+    _require_admin(user)
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+
+    where = []
+    params: List[Any] = []
+    if feedback_type:
+        where.append("feedback_type = ?")
+        params.append(feedback_type)
+    if source_area:
+        where.append("source_area = ?")
+        params.append(source_area)
+
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    db = db_conn()
+    cur = db.cursor()
+    try:
+        cur.execute(f"SELECT COUNT(*) AS total FROM feedback {where_sql}", tuple(params) if params else None)
+        total_row = cur.fetchone()
+        total = int(_row_get(total_row, "total", 0) if total_row else 0)
+        cur.execute(
+            f"""
+            SELECT id, feedback_type, question_id, category, message, source_area, user_identifier, created_at
+            FROM feedback
+            {where_sql}
+            ORDER BY created_at DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, limit, offset),
+        )
+        rows = cur.fetchall()
+    finally:
+        db.close()
+
+    return {"items": rows, "total": total, "limit": limit, "offset": offset}
 
 
 @app.get("/question/{qid}")
