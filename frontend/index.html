@@ -148,6 +148,8 @@
 
     <div class="topbar-right">
       <div class="chip" id="chipPaid" hidden>PAID</div>
+      <button id="btnNavDashboard" class="btn ghost tiny" type="button" hidden>Dashboard</button>
+      <button id="btnNavAdmin" class="btn ghost tiny" type="button" hidden>Admin</button>
 
       <!-- ✅ Logout lives here so normal users can always see it when logged in -->
       <button id="btnLogout" class="btn ghost tiny" type="button" hidden>Logout</button>
@@ -339,6 +341,68 @@
           </div>
 
           <div id="payMsg" class="hint"></div>
+        </div>
+      </div>
+    </section>
+
+
+    <section class="card" id="adminSection" hidden>
+      <div class="row space">
+        <div>
+          <h2 class="h2-tight">Admin Dashboard</h2>
+          <div class="hint">Full access to all questions and feedback records for content review.</div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="panel">
+          <h3>Questions Manager</h3>
+          <div class="filters-row" style="margin-top:10px;">
+            <label for="adminExamFilter">Exam</label>
+            <select id="adminExamFilter"></select>
+
+            <label for="adminYearFilter">Year</label>
+            <select id="adminYearFilter"></select>
+
+            <label for="adminSubjectFilter">Subject</label>
+            <select id="adminSubjectFilter"></select>
+
+            <label for="adminQtypeFilter">Type</label>
+            <select id="adminQtypeFilter">
+              <option value="">All</option>
+              <option value="objective">Objective</option>
+              <option value="theory">Theory</option>
+            </select>
+          </div>
+          <div class="row" style="margin-top:12px;">
+            <button id="btnAdminLoadQuestions" class="btn" type="button">Load Questions</button>
+            <button id="btnAdminResetQuestions" class="btn ghost" type="button">Reset</button>
+          </div>
+          <div id="adminQuestionsMeta" class="hint" style="margin-top:10px;">Choose filters to review every question without preview limits.</div>
+          <div id="adminQuestionsList" class="list admin-list"></div>
+        </div>
+
+        <div class="panel">
+          <h3>Feedback Viewer</h3>
+          <div class="filters-row" style="margin-top:10px;">
+            <label for="adminFeedbackTypeFilter">Feedback type</label>
+            <select id="adminFeedbackTypeFilter">
+              <option value="">All</option>
+              <option value="question">Question</option>
+              <option value="platform">Platform</option>
+            </select>
+
+            <label for="adminFeedbackSourceFilter">Source</label>
+            <select id="adminFeedbackSourceFilter">
+              <option value="">All</option>
+            </select>
+          </div>
+          <div class="row" style="margin-top:12px;">
+            <button id="btnAdminLoadFeedback" class="btn" type="button">Load Feedback</button>
+            <button id="btnAdminResetFeedback" class="btn ghost" type="button">Reset</button>
+          </div>
+          <div id="adminFeedbackMeta" class="hint" style="margin-top:10px;">Review platform and question feedback from one place.</div>
+          <div id="adminFeedbackList" class="list admin-list"></div>
         </div>
       </div>
     </section>
@@ -673,6 +737,6 @@
   </div>
 
   <script src="https://js.paystack.co/v1/inline.js"></script>
-  <script src="app.js?v=21"></script>
+  <script src="app.js?v=22"></script>
 </body>
 </html>

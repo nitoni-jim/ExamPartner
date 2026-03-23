@@ -356,6 +356,7 @@ const state = {
   token: sessionStorage.getItem("token") || "",
   
   isPaid: false,
+  isAdmin: false,
   authenticated: false,
   freeLimit: 10,
   busyPay: false,
@@ -381,6 +382,9 @@ const state = {
   },
 
   adminKey: sessionStorage.getItem(ADMIN_KEY_STORAGE) || "",
+  adminView: "dashboard",
+  adminQuestions: [],
+  adminFeedback: [],
   devMode: false,
   cbt: {
     loading: false,
@@ -1747,6 +1751,26 @@ async function fetchQuestion(id) {
   return api(`/question/${encodeURIComponent(id)}`);
 }
 
+async function fetchAdminQuestions({ limit = 200, offset = 0, exam = "", year = "", subject = "", qtype = "" } = {}) {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  if (exam) params.set("exam", exam);
+  if (year) params.set("year", String(year));
+  if (subject) params.set("subject", subject);
+  if (qtype) params.set("qtype", qtype);
+  return api(`/admin/questions?${params.toString()}`);
+}
+
+async function fetchAdminFeedback({ limit = 200, offset = 0, feedbackType = "", sourceArea = "" } = {}) {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  if (feedbackType) params.set("feedback_type", feedbackType);
+  if (sourceArea) params.set("source_area", sourceArea);
+  return api(`/admin/feedback?${params.toString()}`);
+}
+
 
 async function refreshFilterOptions({ exam, year, qtype, keepSelection = true } = {}) {
   const examSel = els("examFilter");
@@ -2217,13 +2241,177 @@ function updatePayEmailUI() {
   }
 }
 
+function setTopNavActive(view = "dashboard") {
+  const dashboardBtn = els("btnNavDashboard");
+  const adminBtn = els("btnNavAdmin");
+  if (dashboardBtn) dashboardBtn.classList.toggle("active-nav", view === "dashboard");
+  if (adminBtn) adminBtn.classList.toggle("active-nav", view === "admin");
+}
+
+function showDashboardView() {
+  state.adminView = "dashboard";
+  const dashboard = els("dashboardSection");
+  const admin = els("adminSection");
+  if (dashboard) dashboard.hidden = !state.authenticated;
+  if (admin) admin.hidden = true;
+  setTopNavActive("dashboard");
+}
+
+function showAdminView() {
+  if (!state.isAdmin) return;
+  state.adminView = "admin";
+  const dashboard = els("dashboardSection");
+  const admin = els("adminSection");
+  if (dashboard) dashboard.hidden = true;
+  if (admin) admin.hidden = false;
+  setTopNavActive("admin");
+  if (admin) admin.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderAdminQuestions(items = [], total = 0) {
+  state.adminQuestions = Array.isArray(items) ? items : [];
+  currentListIds = state.adminQuestions.map((item) => item.id).filter(Boolean);
+  syncCurrentIndexFromId(activeQuestionId || "");
+  updatePrevNextButtons();
+  const list = els("adminQuestionsList");
+  const meta = els("adminQuestionsMeta");
+  if (!list || !meta) return;
+
+  meta.textContent = total
+    ? `Showing ${state.adminQuestions.length} of ${total} question(s). Admin access bypasses preview limits.`
+    : "No questions matched the current filters.";
+  list.innerHTML = "";
+
+  if (!state.adminQuestions.length) {
+    list.innerHTML = `<div class="status">No questions found for these filters.</div>`;
+    return;
+  }
+
+  for (const q of state.adminQuestions) {
+    const item = document.createElement("div");
+    item.className = "item";
+    item.dataset.qid = q.id;
+    item.onclick = () => openQuestion(q.id);
+
+    const metaBits = [q.exam, q.year, q.subject, q.type].filter(Boolean);
+    item.innerHTML = `
+      <div class="card-top">
+        <span class="qid">${escapeHtml(q.id || "")}</span>
+        ${q.type ? `<span class="pill">${escapeHtml(q.type)}</span>` : ""}
+      </div>
+      <div class="qtext">${escapeHtml(trimText(cleanPreviewText(q.question_text), 160))}</div>
+      <div class="meta">${escapeHtml(metaBits.join(" • "))}</div>
+    `;
+    list.appendChild(item);
+  }
+}
+
+function renderAdminFeedback(items = [], total = 0) {
+  state.adminFeedback = Array.isArray(items) ? items : [];
+  const list = els("adminFeedbackList");
+  const meta = els("adminFeedbackMeta");
+  if (!list || !meta) return;
+
+  meta.textContent = total
+    ? `Showing ${state.adminFeedback.length} of ${total} feedback record(s).`
+    : "No feedback matched the current filters.";
+  list.innerHTML = "";
+
+  if (!state.adminFeedback.length) {
+    list.innerHTML = `<div class="status">No feedback records found.</div>`;
+    return;
+  }
+
+  for (const entry of state.adminFeedback) {
+    const item = document.createElement("div");
+    item.className = "item admin-feedback-item";
+
+    const questionLink = entry.question_id
+      ? `<button class="btn ghost tiny admin-question-link" type="button" data-question-id="${escapeHtml(String(entry.question_id))}">${escapeHtml(String(entry.question_id))}</button>`
+      : "—";
+
+    item.innerHTML = `
+      <div class="admin-feedback-grid">
+        <div><strong>Type:</strong> ${escapeHtml(String(entry.feedback_type || "—"))}</div>
+        <div><strong>Question:</strong> ${questionLink}</div>
+        <div><strong>Category:</strong> ${escapeHtml(String(entry.category || "—"))}</div>
+        <div><strong>Message:</strong> ${escapeHtml(String(entry.message || "—"))}</div>
+        <div><strong>Source area:</strong> ${escapeHtml(String(entry.source_area || "—"))}</div>
+        <div><strong>User:</strong> ${escapeHtml(String(entry.user_identifier || "anonymous"))}</div>
+        <div><strong>Created:</strong> ${escapeHtml(String(entry.created_at || "—"))}</div>
+      </div>
+    `;
+
+    const questionBtn = item.querySelector("[data-question-id]");
+    if (questionBtn) {
+      questionBtn.onclick = (event) => {
+        event.stopPropagation();
+        openQuestion(entry.question_id);
+      };
+    }
+
+    list.appendChild(item);
+  }
+}
+
+async function loadAdminQuestions() {
+  if (!state.isAdmin) return;
+  const result = await fetchAdminQuestions({
+    exam: els("adminExamFilter")?.value || "",
+    year: els("adminYearFilter")?.value || "",
+    subject: els("adminSubjectFilter")?.value || "",
+    qtype: els("adminQtypeFilter")?.value || "",
+  });
+
+  if (!result || result.ok === false) {
+    const meta = els("adminQuestionsMeta");
+    if (meta) meta.textContent = result?.error || "Unable to load admin questions.";
+    return;
+  }
+
+  renderAdminQuestions(result.items || [], Number(result.total || 0));
+}
+
+async function loadAdminFeedback() {
+  if (!state.isAdmin) return;
+  const result = await fetchAdminFeedback({
+    feedbackType: els("adminFeedbackTypeFilter")?.value || "",
+    sourceArea: els("adminFeedbackSourceFilter")?.value || "",
+  });
+
+  if (!result || result.ok === false) {
+    const meta = els("adminFeedbackMeta");
+    if (meta) meta.textContent = result?.error || "Unable to load feedback records.";
+    return;
+  }
+
+  renderAdminFeedback(result.items || [], Number(result.total || 0));
+
+  const currentSource = els("adminFeedbackSourceFilter")?.value || "";
+  const sourceOptions = [...new Set((result.items || []).map((item) => String(item.source_area || "").trim()).filter(Boolean))].sort();
+  populateSelectOptions(els("adminFeedbackSourceFilter"), sourceOptions, "All");
+  const sourceSel = els("adminFeedbackSourceFilter");
+  if (sourceSel) sourceSel.value = sourceOptions.includes(currentSource) ? currentSource : "";
+}
+
+async function setupAdminFilters() {
+  const filters = await fetchFilters();
+  if (filters && filters.ok !== false) {
+    populateSelectOptions(els("adminExamFilter"), filters.exams || [], "All");
+    populateSelectOptions(els("adminYearFilter"), (filters.years || []).map(String), "All");
+    populateSelectOptions(els("adminSubjectFilter"), filters.subjects || [], "All");
+  }
+}
+
 function resetSessionProfileState() {
   state.authenticated = false;
   state.isPaid = false;
+  state.isAdmin = false;
   state.justPaidAttempt = false;
   state.me = null;
 
   setPaidChip(false);
+  showDashboardView();
   setDashboardMsg("");
 
   const btnLogout = els("btnLogout");
@@ -2256,11 +2444,13 @@ function applyProfile(profile) {
     isPaidActive: (profile.is_paid_active !== undefined) ? !!profile.is_paid_active : !!profile.is_paid,
     plan: String(profile.plan || "free"),
     isFounding: !!profile.is_founding,
+    isAdmin: !!profile.is_admin,
     paidUntil: profile.paid_until ? String(profile.paid_until) : "",
   };
 
   const nowPaid = !!state.me.isPaidActive;
   state.isPaid = nowPaid;
+  state.isAdmin = !!state.me.isAdmin;
   if (state.isPaid) state.justPaidAttempt = false;
 
   const btnLogout = els("btnLogout");
@@ -2285,9 +2475,12 @@ function applyProfile(profile) {
 
   resetIdleTimer();
 
-  const dashboardSection = els("dashboardSection");
-  if (dashboardSection) {
-    dashboardSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (state.isAdmin && state.adminView === "admin") showAdminView();
+  else showDashboardView();
+
+  const activeSection = els(state.isAdmin && state.adminView === "admin" ? "adminSection" : "dashboardSection");
+  if (activeSection) {
+    activeSection.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   return { nowPaid };
@@ -2579,11 +2772,14 @@ function getActiveUntilText(profile = state.me) {
 
 function updateDashboardUI() {
   const section = els("dashboardSection");
+  const adminSection = els("adminSection");
   const identifierEl = els("dashboardIdentifier");
   const planEl = els("dashboardPlan");
   const untilEl = els("dashboardPaidUntil");
   const logoutBtn = els("btnDashboardLogout");
   const cbtBtn = els("btnDashboardStartCbt");
+  const btnNavDashboard = els("btnNavDashboard");
+  const btnNavAdmin = els("btnNavAdmin");
 
   if (!section || !identifierEl || !planEl || !untilEl) return;
 
@@ -2592,17 +2788,23 @@ function updateDashboardUI() {
 
   if (logoutBtn) logoutBtn.hidden = !isLoggedIn;
   if (cbtBtn) cbtBtn.hidden = !isLoggedIn;
+  if (btnNavDashboard) btnNavDashboard.hidden = !isLoggedIn;
+  if (btnNavAdmin) btnNavAdmin.hidden = !(isLoggedIn && state.isAdmin);
 
   if (!isLoggedIn) {
     identifierEl.textContent = "—";
     planEl.textContent = "Free";
     untilEl.textContent = "Free preview";
+    if (adminSection) adminSection.hidden = true;
+    setTopNavActive("dashboard");
     return;
   }
 
   identifierEl.textContent = state.me.identifier || state.me.email || "—";
-  planEl.textContent = formatPlanLabel(state.me.plan);
-  untilEl.textContent = getActiveUntilText(state.me);
+  planEl.textContent = state.isAdmin ? `${formatPlanLabel(state.me.plan)} • Admin` : formatPlanLabel(state.me.plan);
+  untilEl.textContent = state.isAdmin ? "Admin access • unrestricted questions and feedback" : getActiveUntilText(state.me);
+  if (adminSection) adminSection.hidden = !(state.isAdmin && state.adminView === "admin");
+  setTopNavActive(state.isAdmin && state.adminView === "admin" ? "admin" : "dashboard");
 }
 
 function updatePlanMetaUI() {
@@ -3079,6 +3281,7 @@ async function init() {
   if (apiBaseEl) apiBaseEl.value = state.apiBase;
 
   await initFiltersUI();
+  await setupAdminFilters();
 
   const modeEl = els("mode");
   if (modeEl) {
@@ -3136,6 +3339,18 @@ async function init() {
 
   const btnLogout = els("btnLogout");
   if (btnLogout) btnLogout.onclick = doLogout;
+
+  const btnNavDashboard = els("btnNavDashboard");
+  if (btnNavDashboard) btnNavDashboard.onclick = showDashboardView;
+
+  const btnNavAdmin = els("btnNavAdmin");
+  if (btnNavAdmin) {
+    btnNavAdmin.onclick = async () => {
+      showAdminView();
+      if (!state.adminQuestions.length) await loadAdminQuestions();
+      if (!state.adminFeedback.length) await loadAdminFeedback();
+    };
+  }
 
   const btnDashboardLogout = els("btnDashboardLogout");
   if (btnDashboardLogout) btnDashboardLogout.onclick = doLogout;
@@ -3342,6 +3557,34 @@ const btnReveal = els("btnReveal");
 
   const btnAdminClear = els("btnAdminClear");
   if (btnAdminClear) btnAdminClear.onclick = adminClearKey;
+
+  const btnAdminLoadQuestions = els("btnAdminLoadQuestions");
+  if (btnAdminLoadQuestions) btnAdminLoadQuestions.onclick = loadAdminQuestions;
+
+  const btnAdminResetQuestions = els("btnAdminResetQuestions");
+  if (btnAdminResetQuestions) {
+    btnAdminResetQuestions.onclick = async () => {
+      ["adminExamFilter", "adminYearFilter", "adminSubjectFilter", "adminQtypeFilter"].forEach((id) => {
+        const el = els(id);
+        if (el) el.value = "";
+      });
+      await loadAdminQuestions();
+    };
+  }
+
+  const btnAdminLoadFeedback = els("btnAdminLoadFeedback");
+  if (btnAdminLoadFeedback) btnAdminLoadFeedback.onclick = loadAdminFeedback;
+
+  const btnAdminResetFeedback = els("btnAdminResetFeedback");
+  if (btnAdminResetFeedback) {
+    btnAdminResetFeedback.onclick = async () => {
+      ["adminFeedbackTypeFilter", "adminFeedbackSourceFilter"].forEach((id) => {
+        const el = els(id);
+        if (el) el.value = "";
+      });
+      await loadAdminFeedback();
+    };
+  }
 
   setupIdleTimeout();
 

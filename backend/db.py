@@ -195,6 +195,7 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
               salt TEXT NOT NULL,
               pw_hash TEXT NOT NULL,
               is_paid INTEGER NOT NULL DEFAULT 0,
+              is_admin INTEGER NOT NULL DEFAULT 0,
               created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             """
@@ -247,6 +248,7 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         )
 
         # lightweight migrations for older SQLite DBs
+        _sqlite_add_missing_columns(cur, "users", [("email", "TEXT"), ("paid_until", "TEXT"), ("plan", "TEXT"), ("is_founding", "INTEGER"), ("is_admin", "INTEGER NOT NULL DEFAULT 0")])
         _sqlite_add_missing_question_columns(cur)
         _sqlite_add_missing_columns(cur, "passages", PASSAGES_COLUMNS)
         _sqlite_add_missing_columns(cur, "feedback", FEEDBACK_COLUMNS)
@@ -301,6 +303,7 @@ def _init_db_postgres() -> None:
               salt TEXT NOT NULL,
               pw_hash TEXT NOT NULL,
               is_paid BOOLEAN NOT NULL DEFAULT FALSE,
+              is_admin BOOLEAN NOT NULL DEFAULT FALSE,
               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
             """
@@ -311,6 +314,7 @@ def _init_db_postgres() -> None:
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS paid_until TIMESTAMPTZ;")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'free';")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_founding BOOLEAN NOT NULL DEFAULT FALSE;")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS payments (
