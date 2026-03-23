@@ -3084,8 +3084,19 @@ async function getPaystackPublicKeyOrThrow() {
 
 function setPayBusy(isBusy, msg) {
   state.busyPay = !!isBusy;
-  if (msg) setPayMsg(msg);
+  if (typeof msg === "string") setPayMsg(msg);
   updateUpgradeUI();
+}
+
+function getPaymentRecoveryMessage(prefix) {
+  const lead = prefix ? `${prefix} ` : "";
+  return `${lead}Retry with Card, Bank Transfer, USSD, or OPay via Pay with Bank in the Paystack popup.`;
+}
+
+function resetPaymentRetryState(message, { statusMessage = "", statusKind = "", preserveRefresh = true } = {}) {
+  setPayBusy(false, message);
+  if (statusMessage) setStatus(statusMessage, statusKind || "bad");
+  if (preserveRefresh) state.justPaidAttempt = true;
 }
 
 async function verifyPayment(reference, email) {
@@ -3174,10 +3185,10 @@ async function startPayment(amountNgn = PAYSTACK_AMOUNT_NGN) {
         (async () => {
           const reference = resp?.reference;
           if (!reference) {
-            setPayBusy(false, "");
-            setStatus("Payment returned no reference. Please try again.", "bad");
-            // keep justPaidAttempt = true so Refresh can show
-            updateUpgradeUI();
+            resetPaymentRetryState(
+              getPaymentRecoveryMessage("We couldn't confirm the payment reference."),
+              { statusMessage: "Payment returned no reference. Please try again.", statusKind: "bad" }
+            );
             return;
           }
 
@@ -3185,11 +3196,13 @@ async function startPayment(amountNgn = PAYSTACK_AMOUNT_NGN) {
           const vr = await verifyPayment(reference, payEmail);
 
           if (!vr?.ok) {
-            setPayBusy(false, "");
-            setStatus(`Payment received but verification failed: ${vr?.error || "unknown"}`, "bad");
-            setPayMsg(`Ref: ${reference} (not verified)`);
-            // keep justPaidAttempt = true so Refresh can show
-            updateUpgradeUI();
+            resetPaymentRetryState(
+              `Verification did not complete for ref ${reference}. Retry with Card, Bank Transfer, USSD, or OPay via Pay with Bank in the Paystack popup.`,
+              {
+                statusMessage: `Payment received but verification failed: ${vr?.error || "unknown"}`,
+                statusKind: "bad",
+              }
+            );
             return;
           }
 
@@ -3200,26 +3213,27 @@ async function startPayment(amountNgn = PAYSTACK_AMOUNT_NGN) {
           setPayMsg(`Paid ✅ Ref: ${reference}`);
           updateUpgradeUI();
         })().catch((e) => {
-          setPayBusy(false, "");
-          setStatus(`Pay verify error: ${e?.message || e}`, "bad");
-          // keep justPaidAttempt = true so Refresh can show
-          updateUpgradeUI();
+          resetPaymentRetryState(
+            getPaymentRecoveryMessage("We couldn't verify the payment right now."),
+            { statusMessage: `Pay verify error: ${e?.message || e}`, statusKind: "bad" }
+          );
         });
       },
 
       onClose: function () {
-        setPayBusy(false, "Payment cancelled.");
-        // keep justPaidAttempt = true so Refresh can show
-        updateUpgradeUI();
+        resetPaymentRetryState(
+          getPaymentRecoveryMessage("Checkout was closed before payment finished."),
+          { statusMessage: "Payment cancelled.", statusKind: "bad" }
+        );
       },
     });
 
     handler.openIframe();
   } catch (e) {
-    setPayBusy(false, "");
-    setStatus(`Pay error: ${e?.message || e}`, "bad");
-    // keep justPaidAttempt = true so Refresh can show
-    updateUpgradeUI();
+    resetPaymentRetryState(
+      getPaymentRecoveryMessage("We couldn't start the Paystack checkout."),
+      { statusMessage: `Pay error: ${e?.message || e}`, statusKind: "bad" }
+    );
   }
 }
 
