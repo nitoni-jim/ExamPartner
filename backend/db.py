@@ -211,6 +211,7 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
               amount_kobo INTEGER NOT NULL,
               currency TEXT NOT NULL,
               status TEXT NOT NULL,
+              channel TEXT,
               raw_json TEXT,
               created_at TEXT NOT NULL DEFAULT (datetime('now')),
               FOREIGN KEY(user_id) REFERENCES users(id)
@@ -252,6 +253,7 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         _sqlite_add_missing_question_columns(cur)
         _sqlite_add_missing_columns(cur, "passages", PASSAGES_COLUMNS)
         _sqlite_add_missing_columns(cur, "feedback", FEEDBACK_COLUMNS)
+        _sqlite_add_missing_columns(cur, "payments", [("channel", "TEXT")])
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_exam_year_subject ON questions(exam, year, subject);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_qtype ON questions(qtype);")
@@ -325,6 +327,7 @@ def _init_db_postgres() -> None:
               amount_kobo BIGINT NOT NULL,
               currency TEXT NOT NULL,
               status TEXT NOT NULL,
+              channel TEXT,
               raw_json TEXT,
               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
@@ -337,6 +340,7 @@ def _init_db_postgres() -> None:
         _postgres_add_missing_question_columns(cur)
         _postgres_add_missing_columns(cur, "passages", PASSAGES_COLUMNS)
         _postgres_add_missing_columns(cur, "feedback", FEEDBACK_COLUMNS)
+        _postgres_add_missing_columns(cur, "payments", [("channel", "TEXT")])
 
         cur.execute(
             """
