@@ -46,13 +46,116 @@ function diagramSrc(name) {
   return `${apiBaseNoSlash()}/static/diagrams/${encodeURIComponent(raw)}`;
 }
 
+const DIAGRAM_LIGHTBOX_MIN_ZOOM = 1;
+const DIAGRAM_LIGHTBOX_MAX_ZOOM = 4;
+const DIAGRAM_LIGHTBOX_ZOOM_STEP = 0.25;
+const DIAGRAM_LIGHTBOX_CLOSE_ANIMATION_MS = 180;
+
+const diagramLightboxState = {
+  isOpen: false,
+  scale: 1,
+  opener: null,
+};
+
 function createDiagramImage(name, extraClass = "") {
   const img = document.createElement("img");
   img.loading = "lazy";
   img.alt = name;
   img.className = `diagram-img ${extraClass}`.trim();
   img.src = diagramSrc(name);
+  img.dataset.diagramName = name;
+  img.dataset.zoomableDiagram = "true";
   return img;
+}
+
+function getDiagramLightboxElements() {
+  return {
+    overlay: els("diagramLightbox"),
+    image: els("diagramLightboxImage"),
+    label: els("diagramLightboxLabel"),
+    zoomOut: els("btnDiagramZoomOut"),
+    zoomReset: els("btnDiagramZoomReset"),
+  };
+}
+
+function clampDiagramZoom(scale) {
+  return Math.max(DIAGRAM_LIGHTBOX_MIN_ZOOM, Math.min(DIAGRAM_LIGHTBOX_MAX_ZOOM, scale));
+}
+
+function syncDiagramLightboxZoom() {
+  const { image, zoomOut, zoomReset } = getDiagramLightboxElements();
+  if (!image) return;
+
+  image.style.transform = `scale(${diagramLightboxState.scale})`;
+  if (zoomOut) zoomOut.disabled = diagramLightboxState.scale <= DIAGRAM_LIGHTBOX_MIN_ZOOM;
+  if (zoomReset) zoomReset.disabled = diagramLightboxState.scale === 1;
+}
+
+function setDiagramLightboxZoom(scale) {
+  diagramLightboxState.scale = clampDiagramZoom(scale);
+  syncDiagramLightboxZoom();
+}
+
+function resetDiagramLightboxZoom() {
+  setDiagramLightboxZoom(1);
+}
+
+function openDiagramLightboxFromImage(img) {
+  const { overlay, image, label } = getDiagramLightboxElements();
+  if (!overlay || !image || !img?.src) return;
+
+  diagramLightboxState.isOpen = true;
+  diagramLightboxState.opener = img;
+  overlay.hidden = false;
+  overlay.classList.remove("is-closing");
+  overlay.setAttribute("aria-hidden", "false");
+
+  image.src = img.currentSrc || img.src;
+  image.alt = img.alt || "Expanded diagram preview";
+
+  const diagramName = String(img.dataset.diagramName || img.alt || "Diagram").trim() || "Diagram";
+  if (label) label.textContent = diagramName;
+
+  resetDiagramLightboxZoom();
+
+  requestAnimationFrame(() => {
+    els("btnDiagramClose")?.focus();
+  });
+}
+
+function closeDiagramLightbox({ restoreFocus = true } = {}) {
+  const { overlay, image } = getDiagramLightboxElements();
+  if (!overlay || overlay.hidden) return;
+
+  diagramLightboxState.isOpen = false;
+  overlay.classList.add("is-closing");
+  overlay.setAttribute("aria-hidden", "true");
+
+  window.setTimeout(() => {
+    overlay.hidden = true;
+    overlay.classList.remove("is-closing");
+    if (image) {
+      image.removeAttribute("src");
+      image.alt = "Expanded diagram preview";
+    }
+  }, DIAGRAM_LIGHTBOX_CLOSE_ANIMATION_MS);
+
+  resetDiagramLightboxZoom();
+
+  if (restoreFocus && diagramLightboxState.opener && typeof diagramLightboxState.opener.focus === "function") {
+    diagramLightboxState.opener.focus();
+  }
+  diagramLightboxState.opener = null;
+}
+
+function handleDiagramLightboxClick(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+
+  const diagramImg = target.closest("img.diagram-img");
+  if (!diagramImg || target.closest("#diagramLightbox")) return;
+
+  openDiagramLightboxFromImage(diagramImg);
 }
 
 function setViewerOpen(isOpen) {
@@ -170,10 +273,13 @@ function renderDiagramsHtml(diagrams) {
   const imgs = diagrams
     .map((name) => {
       const src = diagramSrc(name);
+      const diagramName = escapeHtml(name);
       return `<img 
                 class="diagram-img inline-diagram" 
                 loading="lazy" 
-                alt="${escapeHtml(name)}" 
+                alt="${diagramName}" 
+                data-diagram-name="${diagramName}"
+                data-zoomable-diagram="true"
                 src="${src}">
               `;
     })
@@ -212,7 +318,7 @@ function renderTextWithDiagrams(rawText, ctx = {}) {
 
     const alt = escapeHtml(file);
     const src = diagramSrc(file);
-    return `<div class="diagrams"><img loading="lazy" alt="${alt}" class="diagram-img inline-diagram" src="${src}"></div>`;
+    return `<div class="diagrams"><img loading="lazy" alt="${alt}" class="diagram-img inline-diagram" data-diagram-name="${alt}" data-zoomable-diagram="true" src="${src}"></div>`;
   });
 
   return out;
@@ -768,6 +874,7 @@ function setupSupportUi() {
   populateContactUi();
   populateFeedbackCategories();
   populateQuestionFeedbackCategories();
+  initDiagramLightbox();
 
   const btnFooterContact = els("btnFooterContact");
   if (btnFooterContact) btnFooterContact.onclick = () => openSupportModal("contact");
@@ -2149,6 +2256,27 @@ function closeViewer() {
 }
 
 window.addEventListener("beforeunload", stopCbtTimer);
+
+function initDiagramLightbox() {
+  document.addEventListener("click", handleDiagramLightboxClick);
+
+  els("btnDiagramClose")?.addEventListener("click", () => closeDiagramLightbox());
+  els("btnDiagramZoomIn")?.addEventListener("click", () => setDiagramLightboxZoom(diagramLightboxState.scale + DIAGRAM_LIGHTBOX_ZOOM_STEP));
+  els("btnDiagramZoomOut")?.addEventListener("click", () => setDiagramLightboxZoom(diagramLightboxState.scale - DIAGRAM_LIGHTBOX_ZOOM_STEP));
+  els("btnDiagramZoomReset")?.addEventListener("click", () => resetDiagramLightboxZoom());
+  els("diagramLightbox")?.addEventListener("click", (event) => {
+    if (event.target === els("diagramLightbox") || event.target === els("diagramLightboxBackdrop") || event.target === els("diagramLightboxStage")) {
+      closeDiagramLightbox();
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && diagramLightboxState.isOpen) {
+      event.preventDefault();
+      closeDiagramLightbox();
+    }
+  });
+}
 
 async function checkApi() {
   saveApiBase();
