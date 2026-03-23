@@ -238,7 +238,22 @@ def remember_webhook_reference(reference: str, event_type: str, body_hash: str) 
 # -----------------------------
 # Payment state helpers
 # -----------------------------
-def update_payment_status(reference: str, status: str, raw_json: Optional[Dict[str, Any]] = None) -> None:
+def extract_paystack_channel(payload: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+
+    channel = payload.get("channel")
+    if channel is None and isinstance(payload.get("data"), dict):
+        channel = payload["data"].get("channel")
+
+    if channel is None:
+        return None
+
+    channel = str(channel).strip()
+    return channel or None
+
+
+def update_payment_status(reference: str, status: str, raw_json: Optional[Dict[str, Any]] = None, channel: Optional[str] = None) -> None:
     ref = (reference or "").strip()
     if not ref:
         return
@@ -250,13 +265,81 @@ def update_payment_status(reference: str, status: str, raw_json: Optional[Dict[s
         except Exception:
             raw_str = None
 
+    normalized_channel = (channel or "").strip() or None
+
     db = get_db()
     try:
         cur = db.cursor()
         if raw_str is not None:
-            cur.execute("UPDATE payments SET status = ?, raw_json = ? WHERE reference = ?", (status, raw_str, ref))
+            cur.execute("UPDATE payments SET status = ?, raw_json = ?, channel = COALESCE(?, channel) WHERE reference = ?", (status, raw_str, normalized_channel, ref))
         else:
-            cur.execute("UPDATE payments SET status = ? WHERE reference = ?", (status, ref))
+            cur.execute("UPDATE payments SET status = ?, channel = COALESCE(?, channel) WHERE reference = ?", (status, normalized_channel, ref))
+        db.commit()
+    finally:
+        db.close()
+
+
+def persist_payment_payload_by_identifier(
+    identifier: str,
+    reference: str,
+    source: str,
+    pay_data: Optional[Dict[str, Any]] = None,
+) -> None:
+    identifier = (identifier or "").strip().lower()
+    ref = (reference or "").strip()
+    if not identifier or not ref:
+        return
+
+    pay_data = pay_data or {}
+    raw_json = None
+    try:
+        raw_json = json.dumps(pay_data, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        raw_json = None
+
+    channel = extract_paystack_channel(pay_data)
+    amount_kobo = int(pay_data.get("amount") or 0)
+    currency = (pay_data.get("currency") or "NGN").strip().upper()
+    status = (pay_data.get("status") or "unknown").strip() or "unknown"
+
+    db = get_db()
+    try:
+        cur = db.cursor()
+        cur.execute("SELECT id FROM users WHERE lower(identifier) = ?", (identifier,))
+        urow = cur.fetchone()
+        if not urow:
+            return
+
+        try:
+            user_id = int(urow["id"])
+        except Exception:
+            user_id = int(urow[0])
+
+        cur.execute("SELECT id FROM payments WHERE reference = ?", (ref,))
+        prow = cur.fetchone()
+        if prow:
+            cur.execute(
+                "UPDATE payments SET user_id = ?, provider = ?, amount_kobo = ?, currency = ?, status = ?, channel = ?, raw_json = ? WHERE reference = ?",
+                (user_id, source or "paystack", amount_kobo, currency, status, channel, raw_json, ref),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO payments (user_id, provider, reference, amount_kobo, currency, status, channel, raw_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    source or "paystack",
+                    ref,
+                    amount_kobo,
+                    currency,
+                    status,
+                    channel,
+                    raw_json,
+                    datetime.utcnow().isoformat(),
+                ),
+            )
         db.commit()
     finally:
         db.close()
@@ -331,6 +414,8 @@ def mark_user_paid_by_identifier(
         raw_json = json.dumps(pay_data, ensure_ascii=False, separators=(",", ":"))
     except Exception:
         raw_json = None
+
+    channel = extract_paystack_channel(pay_data)
 
     # Placeholder style: Postgres uses %s, SQLite uses ?
     ph = "%s" if _using_postgres() else "?"
@@ -414,8 +499,8 @@ def mark_user_paid_by_identifier(
         if not prow:
             cur.execute(
                 """
-                INSERT INTO payments (user_id, provider, reference, amount_kobo, currency, status, raw_json, created_at)
-                VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})
+                INSERT INTO payments (user_id, provider, reference, amount_kobo, currency, status, channel, raw_json, created_at)
+                VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})
                 """.format(ph=ph),
                 (
                     user_id,
@@ -424,6 +509,7 @@ def mark_user_paid_by_identifier(
                     amount_kobo,
                     currency,
                     status,
+                    channel,
                     raw_json,
                     datetime.utcnow().isoformat(),
                 ),
@@ -484,7 +570,7 @@ def payment_history(request: Request, limit: int = 20):
 
         cur.execute(
             """
-            SELECT provider, reference, amount_kobo, currency, status, created_at
+            SELECT provider, reference, amount_kobo, currency, status, channel, raw_json, created_at
             FROM payments
             WHERE user_id = ?
             ORDER BY created_at DESC
@@ -504,9 +590,17 @@ def payment_history(request: Request, limit: int = 20):
             amount_kobo = int(r["amount_kobo"] or 0)
             currency = r["currency"]
             status = r["status"]
+            channel = r["channel"]
+            raw_json = r["raw_json"]
             created_at = r["created_at"]
         except Exception:
-            provider, reference, amount_kobo, currency, status, created_at = r
+            provider, reference, amount_kobo, currency, status, channel, raw_json, created_at = r
+
+        if not channel and raw_json:
+            try:
+                channel = extract_paystack_channel(json.loads(raw_json))
+            except Exception:
+                channel = None
 
         items.append(
             {
@@ -515,6 +609,7 @@ def payment_history(request: Request, limit: int = 20):
                 "amount": int(amount_kobo // 100),
                 "currency": currency,
                 "status": status,
+                "channel": channel or None,
                 "created_at": created_at,
             }
         )
@@ -542,17 +637,20 @@ def verify_payment(req: VerifyReq):
     status = (tx.get("status") or "").strip().lower()
     amount = int(tx.get("amount") or 0)
 
+    customer = tx.get("customer") or {}
+    customer_email = (customer.get("email") or "").strip().lower()
+    final_identifier = customer_email or email
+
+    persist_payment_payload_by_identifier(final_identifier, ref, source="paystack:verify", pay_data=tx)
+
     if status != "success":
         raise HTTPException(status_code=400, detail=f"Payment not successful: {status}")
 
     if amount < MIN_AMOUNT_KOBO:
         raise HTTPException(status_code=400, detail="Amount too low")
 
-    customer = tx.get("customer") or {}
-    customer_email = (customer.get("email") or "").strip().lower()
-    final_identifier = customer_email or email
-
     mark_user_paid_by_identifier(final_identifier, ref, source="paystack:verify", pay_data=tx)
+    update_payment_status(ref, status, raw_json=tx, channel=extract_paystack_channel(tx))
 
     return {"ok": True, "reference": ref, "email": final_identifier, "amount_kobo": amount}
 
@@ -589,7 +687,7 @@ async def paystack_webhook(request: Request):
     remember_webhook_reference(reference, event_type, body_hash)
 
     if "refund" in event_type.lower():
-        update_payment_status(reference, "refunded", raw_json=event)
+        update_payment_status(reference, "refunded", raw_json=event, channel=extract_paystack_channel(event))
         maybe_downgrade_user_on_refund(reference)
         return {"ok": True, "event": event_type, "reference": reference, "refunded": True}
 
@@ -600,18 +698,24 @@ async def paystack_webhook(request: Request):
     tx = verify.get("data") or {}
     paid = (tx.get("status") == "success")
 
+    customer = tx.get("customer") or {}
+    email = (customer.get("email") or "").strip().lower()
+
+    metadata = tx.get("metadata") or {}
+    meta_identifier = (metadata.get("identifier") or "").strip().lower()
+    final_identifier = email or meta_identifier
+
+    if final_identifier:
+        persist_payment_payload_by_identifier(final_identifier, reference, source=f"webhook:{event_type}", pay_data=tx)
+
     if paid:
         amount = int(tx.get("amount") or 0)
-        if amount >= MIN_AMOUNT_KOBO:
-            customer = tx.get("customer") or {}
-            email = (customer.get("email") or "").strip().lower()
+        if amount >= MIN_AMOUNT_KOBO and final_identifier:
+            mark_user_paid_by_identifier(final_identifier, reference, source=f"webhook:{event_type}", pay_data=tx)
+        update_payment_status(reference, tx.get("status") or "success", raw_json=tx, channel=extract_paystack_channel(tx))
 
-            metadata = tx.get("metadata") or {}
-            meta_identifier = (metadata.get("identifier") or "").strip().lower()
-
-            final_identifier = email or meta_identifier
-            if final_identifier:
-                mark_user_paid_by_identifier(final_identifier, reference, source=f"webhook:{event_type}", pay_data=tx)
+    if not paid:
+        update_payment_status(reference, (tx.get("status") or event_type or "unknown").strip() or "unknown", raw_json=tx, channel=extract_paystack_channel(tx))
 
     return {"ok": True, "event": event_type, "reference": reference, "paid": bool(paid)}
 
@@ -641,10 +745,16 @@ def admin_reconcile(reference: str, request: Request):
     meta_identifier = (metadata.get("identifier") or "").strip().lower()
     final_identifier = email or meta_identifier
 
+    if final_identifier:
+        persist_payment_payload_by_identifier(final_identifier, ref, source="admin:reconcile", pay_data=tx)
+
     if paid and final_identifier:
         mark_user_paid_by_identifier(final_identifier, ref, source="admin:reconcile", pay_data=tx)
+        update_payment_status(ref, tx.get("status") or "success", raw_json=tx, channel=extract_paystack_channel(tx))
+    else:
+        update_payment_status(ref, (tx.get("status") or "unknown").strip() or "unknown", raw_json=tx, channel=extract_paystack_channel(tx))
 
-    return {"ok": True, "reference": ref, "paid": bool(paid), "identifier": final_identifier or None}
+    return {"ok": True, "reference": ref, "paid": bool(paid), "identifier": final_identifier or None, "channel": extract_paystack_channel(tx)}
 
 
 @router.post("/admin/refund")
@@ -667,7 +777,7 @@ def admin_refund(req: AdminRefundReq, request: Request):
 
     out = paystack_api_post("/refund", payload)
 
-    update_payment_status(ref, "refund_queued", raw_json=out)
+    update_payment_status(ref, "refund_queued", raw_json=out, channel=extract_paystack_channel(out))
 
     return {"ok": True, "reference": ref, "paystack": out}
 
