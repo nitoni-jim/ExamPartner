@@ -284,28 +284,27 @@
         </div>
 
         <div class="panel">
-          <h3>👨‍👩‍👧 Parents &amp; Guardians</h3>
+           <h3>👨‍👩‍👧 Parents &amp; Guardians</h3>
           <p class="hint">
-            A structured online exam preparation platform that supports consistent,
-            self-paced study on any device.
-          </p>
-        </div>
+              Help your child study consistently with a structured, self-paced exam preparation platform available on any device.
+           </p>
+         </div>
 
         <div class="panel">
-          <h3>👩‍🏫 Teachers &amp; Tutors</h3>
-          <p class="hint">
-            Useful for revision, assignments, and extra lessons aligned with Nigerian
-            examination standards.
-          </p>
+           <h3>👩‍🏫 Teachers &amp; Tutors</h3>
+           <p class="hint">
+               Support revision, assignments, and extra lessons with content aligned to Nigerian examination standards.
+            </p>
         </div>
+
       </div>
     </section>
 
     <section class="card" id="dashboardSection" hidden>
       <div class="row space">
         <div>
-          <h2 class="h2-tight">Dashboard</h2>
-          <div class="hint">Your logged-in control center for account access and the upcoming JAMB CBT sprint.</div>
+            <h2 class="h2-tight">Dashboard</h2>
+           <div class="hint">Manage your account and quickly access practice and CBT features.</div>
         </div>
       </div>
 
@@ -396,8 +395,16 @@
             You’re using the free preview. Upgrade to unlock all questions.
           </div>
           <div class="hint" style="margin-top:6px;">
-            Parents and guardians can safely make payments on behalf of students using Paystack.
-          </div>
+             Pay securely using Paystack.
+           </div>
+
+             <div class="hint" style="margin-top:4px; font-size:13px;">
+                 💳 Card • 🏦 Bank Transfer • 📱 USSD • 🟢 OPay (via Pay with Bank)
+             </div>
+
+             <div class="hint" style="margin-top:4px;">
+                After clicking pay, choose your preferred option in the Paystack popup.
+             </div>
 
           <!-- 🔖 Plan meta: Founding badge + expiry -->
           <div id="planMeta" class="plan-meta" hidden>
@@ -412,7 +419,9 @@
               <span class="hint">Core plan: ₦10,000 for 1 year • AI Tutor features later as Pro</span>
             </div>
 
-            <button id="btnPay" type="button" class="btn" hidden> Pay ₦1,000</button>
+            <button id="btnPay" type="button" class="btn" hidden>
+               Pay ₦1,000 (Card / Transfer / USSD / OPay)
+            </button>
             <button id="btnCheckPaid" class="btn ghost" hidden>Refresh Paid Status</button>
           </div>
 
@@ -590,8 +599,8 @@
     <section class="card" id="cbtSection" hidden>
       <div class="row space">
         <div>
-          <h2 class="h2-tight">JAMB CBT Flow</h2>
-          <div class="hint">First MVP JAMB CBT flow with one-question-at-a-time navigation for objective questions.</div>
+          <h2 class="h2-tight">JAMB CBT Practice</h2>
+             <div class="hint">Practice JAMB questions one at a time, just like the real exam.</div>
         </div>
       </div>
 
@@ -608,7 +617,7 @@
         </div>
         <div class="panel">
           <h3>Candidate Workspace</h3>
-          <p class="hint">Simple MVP workspace with a live countdown, saved answer selection per question, and a lightweight submit/result flow.</p>
+          <p class="hint">Answer questions, track your time, and submit to see your results.</p>
           <div id="cbtCandidateMeta" class="meta" style="margin-top:10px;">Start a CBT session to begin the timer and save answers as you move.</div>
         </div>
       </div>
@@ -750,8 +759,8 @@
     <section class="card" id="resultSection" hidden>
       <div class="row space">
         <div>
-          <h2 class="h2-tight">Results</h2>
-          <div class="hint">Hidden sprint container for score summaries, breakdowns, and performance insights.</div>
+            <h2 class="h2-tight">Results</h2>
+           <div class="hint">View your score, performance breakdown, and overall results.</div>
         </div>
       </div>
 
@@ -782,18 +791,19 @@
       <div class="row space">
         <div>
           <h2 class="h2-tight">Feedback</h2>
-          <div class="hint">Hidden sprint container for collecting platform feedback and support follow-ups.</div>
+          <div class="hint">Use this section to contact support or follow up on your requests.</div>
         </div>
       </div>
 
       <div class="grid2">
         <div class="panel">
-          <h3>Platform Feedback Queue</h3>
-          <p class="hint">Reserve this section for feature ideas, bug reports, and user experience feedback workflows.</p>
+          <h3>Platform Feedback</h3>
+        <p class="hint">View and manage feedback on features, bugs, and user experience.</p>
+      </div>
         </div>
         <div class="panel">
           <h3>Response Tracking</h3>
-          <p class="hint">Future sprint work can connect acknowledgement states, follow-up notes, and feedback status updates here.</p>
+             <p class="hint">Track responses, follow-ups, and feedback status updates.</p>
         </div>
       </div>
     </section>
@@ -822,7 +832,7 @@
       <div class="support-modal-header">
         <div>
           <h2 id="contactUsTitle" class="h2-tight">Contact Us</h2>
-          <div class="hint">Direct support information only. Feedback stays in the separate Send Feedback flow.</div>
+          <div class="hint">For direct support contact only. To share feedback, use the separate Send Feedback option.</div>
         </div>
         <button id="btnCloseContactModal" class="btn ghost tiny" type="button" aria-label="Close Contact Us">Close</button>
       </div>
@@ -845,7 +855,7 @@
       <div class="support-modal-header">
         <div>
           <h2 id="feedbackModalTitle" class="h2-tight">Send Feedback</h2>
-          <div class="hint">Simple platform feedback form for category-based product input. Backend endpoint wiring can plug into this next.</div>
+          <div class="hint">Share your feedback to help us improve ExamPartner.</div>
         </div>
         <button id="btnCloseFeedbackModal" class="btn ghost tiny" type="button" aria-label="Close Send Feedback">Close</button>
       </div>
@@ -875,3 +885,4 @@
   <script src="app.js?v=23"></script>
 </body>
 </html>
+
