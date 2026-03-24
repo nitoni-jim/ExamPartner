@@ -2084,10 +2084,17 @@ function renderList(items) {
   const list = els("list");
   list.innerHTML = "";
 
-  
   currentListIds = (items || []).map(x => x.id).filter(Boolean);
-if (!items || !items.length) {
+  if (DEBUG_QUESTIONS) {
+    console.debug("[questions] renderList received items.length", Array.isArray(items) ? items.length : 0);
+    console.debug("[questions] renderList currentListIds.length", currentListIds.length);
+  }
+
+  if (!items || !items.length) {
     list.innerHTML = `<div class="status">No items returned. Try a smaller offset or clear filters.</div>`;
+    if (DEBUG_QUESTIONS) {
+      console.debug("[questions] renderList #list child count after empty state", list.childElementCount);
+    }
     return;
   }
 
@@ -2124,6 +2131,10 @@ if (!items || !items.length) {
 
 
     list.appendChild(div);
+  }
+
+  if (DEBUG_QUESTIONS) {
+    console.debug("[questions] renderList #list child count after render", list.childElementCount);
   }
 
   // restore highlight + visibility if a question is already selected
@@ -2931,6 +2942,12 @@ async function loadList(targetPageIndex = state.pageIndex) {
  // ✅ Only use endReached heuristic for PAID users.
 // For unpaid users, backend may clamp results (preview cap), but that doesn't mean "end".
   state.endReached = !!state.isPaid && (items.length < limit);
+
+  if (DEBUG_QUESTIONS) {
+    console.debug("[questions] loadList success items.length", items.length);
+    console.debug("[questions] loadList success first question id", items[0]?.id ?? null);
+    console.debug("[questions] loadList about to call renderList(items)");
+  }
 
   renderList(items);
   setStatus(`Loaded ${items.length || 0} items.`, "ok");
