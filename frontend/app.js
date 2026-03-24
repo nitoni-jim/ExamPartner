@@ -7,6 +7,7 @@ const apiBaseNoSlash = () => (state.apiBase || "").replace(/\/$/, "");
 const FILTERS_PANEL_OPEN = "ep_filters_open";
 const FILTER_CACHE_KEY = "ep_filter_cache_v1";
 const FILTER_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const DEBUG_QUESTIONS = true;
 
 const SUPPORT_CONTACT = Object.freeze({
   email: "support@exampartner.com",
@@ -2841,6 +2842,18 @@ async function loadList(targetPageIndex = state.pageIndex) {
   const limit = state.pageSize || 20;
   const pageIndex = Math.max(0, parseInt(targetPageIndex || 0, 10) || 0);
   const offset = pageIndex * limit;
+  const requestParams = {
+    mode,
+    pageIndex,
+    offset,
+    exam: state.filters.exam,
+    year: state.filters.year,
+    subject: state.filters.subject,
+  };
+
+  if (DEBUG_QUESTIONS) {
+    console.debug("[questions] loadList request params", requestParams);
+  }
 
   // keep current list visible unless successful load
   const pw = els("paywall");
@@ -2851,13 +2864,25 @@ async function loadList(targetPageIndex = state.pageIndex) {
   setListPagerUI({ loading: true });
 
   const r = await fetchQuestionPage({
-    mode,
+    mode: requestParams.mode,
     limit,
-    offset,
-    exam: state.filters.exam,
-    year: state.filters.year,
-    subject: state.filters.subject,
+    offset: requestParams.offset,
+    exam: requestParams.exam,
+    year: requestParams.year,
+    subject: requestParams.subject,
   });
+
+  if (DEBUG_QUESTIONS) {
+    const returnedItems = Array.isArray(r?.items) ? r.items.length : 0;
+    const errorPayload = r?.error ?? r?.payload ?? r?.detail ?? null;
+    console.debug("[questions] loadList response", {
+      status: r?.status ?? null,
+      returnedItems,
+      errorPayload,
+      ok: !!r?.ok,
+      paywall: !!r?.paywall,
+    });
+  }
 
   if (!r?.ok && r?.status !== 402 && !r?.paywall) {
     setStatus(`Failed to load questions: ${r?.error || "unknown error"}`, "bad");
