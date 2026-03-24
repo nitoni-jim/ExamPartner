@@ -476,6 +476,42 @@ def filters(
     }
 
 
+@app.get("/debug/question-combos")
+def debug_question_combos():
+    db = db_conn()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT
+                exam,
+                year,
+                subject,
+                qtype,
+                COUNT(*) AS count
+            FROM questions
+            GROUP BY exam, year, subject, qtype
+            ORDER BY year DESC, exam, subject, qtype
+            """
+        )
+        rows = cur.fetchall()
+    finally:
+        db.close()
+
+    return {
+        "items": [
+            {
+                "exam": _row_get(row, "exam"),
+                "year": _row_get(row, "year"),
+                "subject": _row_get(row, "subject"),
+                "qtype": _row_get(row, "qtype"),
+                "count": int(_row_get(row, "count", 0) or 0),
+            }
+            for row in rows
+        ]
+    }
+
+
 # -----------------------------
 # QUESTIONS
 # -----------------------------
