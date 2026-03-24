@@ -10,8 +10,8 @@ const FILTER_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DEBUG_QUESTIONS = true;
 
 const SUPPORT_CONTACT = Object.freeze({
-  email: "support@exampartner.com",
-  phoneDisplay: "+234 800 000 0000",
+  email: "exampartnerteam@gmail.com",
+  phoneDisplay: "+234 803 528 0334",
   phoneHref: "+2348000000000",
 });
 
