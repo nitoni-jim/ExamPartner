@@ -2079,48 +2079,24 @@ function maybeAutoLoadAfterFilterChange() {
   }
 }
 
+function buildFilterQuery() {
+  const params = new URLSearchParams();
+  if (state.filters.exam) params.set("exam", state.filters.exam);
+  if (state.filters.year) params.set("year", state.filters.year);
+  if (state.filters.subject) params.set("subject", state.filters.subject);
+  const qs = params.toString();
+  return qs ? `&${qs}` : "";
+}
+
 // ====== List ======
 function renderList(items) {
   const list = els("list");
-  const logRenderVisibility = () => {
-    if (!DEBUG_QUESTIONS) return;
-    console.debug("[questions] visibility #list", !list?.hidden);
-    console.debug("[questions] visibility #startGate", !els("startGate")?.hidden);
-    console.debug("[questions] visibility #paywall", !els("paywall")?.hidden);
-    console.debug("[questions] visibility #practiceSection", !els("practiceSection")?.hidden);
-  };
-  if (DEBUG_QUESTIONS) {
-    const listExists = !!list;
-    console.debug("[questions] renderList entered");
-    console.debug("[questions] renderList items.length", Array.isArray(items) ? items.length : 0);
-    console.debug("[questions] renderList #list exists", listExists);
-    if (!listExists) {
-      console.debug("[questions] renderList missing #list; cannot render items");
-    }
-  }
-  if (!list) {
-    logRenderVisibility();
-    return;
-  }
-
-  if (DEBUG_QUESTIONS) {
-    console.debug("[questions] renderList #list child count before render", list.childElementCount);
-  }
+  if (!list) return;
   list.innerHTML = "";
 
   currentListIds = (items || []).map(x => x.id).filter(Boolean);
-  if (DEBUG_QUESTIONS) {
-    console.debug("[questions] renderList received items.length", Array.isArray(items) ? items.length : 0);
-    console.debug("[questions] renderList currentListIds.length", currentListIds.length);
-  }
-
   if (!items || !items.length) {
     list.innerHTML = `<div class="status">No items returned. Try a smaller offset or clear filters.</div>`;
-    if (DEBUG_QUESTIONS) {
-      console.debug("[questions] renderList #list child count after empty state", list.childElementCount);
-      console.debug("[questions] renderList first rendered question id", null);
-    }
-    logRenderVisibility();
     return;
   }
 
@@ -2159,18 +2135,10 @@ function renderList(items) {
     list.appendChild(div);
   }
 
-  if (DEBUG_QUESTIONS) {
-    console.debug("[questions] renderList #list child count after render", list.childElementCount);
-    console.debug("[questions] renderList first rendered question id", items[0]?.id ?? null);
-  }
-  logRenderVisibility();
-
   // restore highlight + visibility if a question is already selected
-  if (activeQuestionId && currentListIds.includes(activeQuestionId)) {
+  if (activeQuestionId) {
     highlightQuestionCard(activeQuestionId);
     requestAnimationFrame(() => ensureActiveCardVisibleInList(activeQuestionId));
-  } else if (activeQuestionId) {
-    closeViewer();
   }
 }
 
@@ -2872,36 +2840,14 @@ async function doLogin() {
 
 
 async function loadList(targetPageIndex = state.pageIndex) {
-  if (DEBUG_QUESTIONS) {
-    console.debug("[questions] loadList entered");
-    console.debug("[questions] loadList state", {
-      hasLoadedQuestions: state.hasLoadedQuestions,
-      paywalled: state.paywalled,
-      endReached: state.endReached,
-    });
-  }
-
   saveApiBase();
   state.hasLoadedQuestions = true; // ✅ STEP 2: user attempted to load questions
   updateUpgradeUI();
-
 
   const mode = els("mode").value;
   const limit = state.pageSize || 20;
   const pageIndex = Math.max(0, parseInt(targetPageIndex || 0, 10) || 0);
   const offset = pageIndex * limit;
-  const requestParams = {
-    mode,
-    pageIndex,
-    offset,
-    exam: state.filters.exam,
-    year: state.filters.year,
-    subject: state.filters.subject,
-  };
-
-  if (DEBUG_QUESTIONS) {
-    console.debug("[questions] loadList request params", requestParams);
-  }
 
   // keep current list visible unless successful load
   const pw = els("paywall");
@@ -2911,48 +2857,18 @@ async function loadList(targetPageIndex = state.pageIndex) {
   state.paywalled = false;
   setListPagerUI({ loading: true });
 
-  if (DEBUG_QUESTIONS) {
-    console.debug("[questions] loadList before fetchQuestionPage(...)");
-  }
-  const r = await fetchQuestionPage({
-    mode: requestParams.mode,
-    limit,
-    offset: requestParams.offset,
-    exam: requestParams.exam,
-    year: requestParams.year,
-    subject: requestParams.subject,
-  });
-  if (DEBUG_QUESTIONS) {
-    console.debug("[questions] loadList after response received");
-  }
+  const filterQs = buildFilterQuery();
+  const r = await api(`/questions/${mode}?limit=${limit}&offset=${offset}${filterQs}`);
 
-  if (DEBUG_QUESTIONS) {
-    const returnedItems = Array.isArray(r?.items) ? r.items.length : 0;
-    const errorPayload = r?.error ?? r?.payload ?? r?.detail ?? null;
-    console.debug("[questions] loadList response", {
-      status: r?.status ?? null,
-      returnedItems,
-      errorPayload,
-      ok: !!r?.ok,
-      paywall: !!r?.paywall,
-    });
-  }
 
-  if (!r?.ok && r?.status !== 402 && !r?.paywall) {
-    setStatus(`Failed to load questions: ${r?.error || "unknown error"}`, "bad");
-    setListPagerUI({ loading: false });
-    return;
-  }
-
-  const items = Array.isArray(r?.items) ? r.items : [];
-  const paywallTriggered =
+  // Paywall: show ONLY after user has attempted to load questions
+ if (
     state.hasLoadedQuestions &&
-    ((r?.ok === false && r?.status === 402) || r?.paywall);
-
-  // Paywall: show ONLY after user has attempted to load questions.
-  // If preview items are present, render them and still show paywall.
-  if (paywallTriggered) {
+    ((r?.ok === false && r?.status === 402) || r?.paywall)
+ ) {
     state.paywalled = true;
+
+    setStatus("Preview limit reached. Please upgrade.", "bad");
 
     // ✅ SHOW paywall
     const pw = els("paywall");
@@ -2963,12 +2879,12 @@ async function loadList(targetPageIndex = state.pageIndex) {
     const upgradeHint = els("upgradeHint");
     if (upgradeHint) upgradeHint.hidden = true;
 
-    if (!items.length) {
-      setStatus("Preview limit reached. Please upgrade.", "bad");
-      setListPagerUI({ loading: false });
-      return;
-    }
+    setListPagerUI({ loading: false });
+    return;
   }
+
+
+  const items = r.items || [];
 
   // end-of-list: don't show an empty page
   if (!items.length && pageIndex > 0) {
@@ -2986,37 +2902,9 @@ async function loadList(targetPageIndex = state.pageIndex) {
 // For unpaid users, backend may clamp results (preview cap), but that doesn't mean "end".
   state.endReached = !!state.isPaid && (items.length < limit);
 
-  if (DEBUG_QUESTIONS) {
-    console.debug("[questions] loadList success items.length", items.length);
-    console.debug("[questions] loadList success first question id", items[0]?.id ?? null);
-    console.debug("[questions] loadList before renderList(items)");
-  }
-
   renderList(items);
-  if (items.length > 0) {
-    const listEl = els("list");
-    if (listEl && listEl.childElementCount === 0) {
-      console.error("[questions] renderList produced no DOM children for non-empty items", {
-        itemsLength: items.length,
-        mode,
-        pageIndex,
-      });
-    }
-  }
-  if (DEBUG_QUESTIONS) {
-    console.debug("[questions] loadList after renderList(items)");
-    console.debug("[questions] loadList state", {
-      hasLoadedQuestions: state.hasLoadedQuestions,
-      paywalled: state.paywalled,
-      endReached: state.endReached,
-    });
-  }
-  if (state.paywalled) {
-    setStatus(`Loaded ${items.length || 0} preview items. Preview limit reached. Please upgrade.`, "bad");
-  } else {
-    setStatus(`Loaded ${items.length || 0} items.`, "ok");
-    if (state.endReached) setStatus("End reached. No more questions.", "ok");
-  }
+  setStatus(`Loaded ${items.length || 0} items.`, "ok");
+  if (state.endReached) setStatus("End reached. No more questions.", "ok");
 
   setListPagerUI({ loading: false });
 }
