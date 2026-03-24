@@ -2944,31 +2944,31 @@ async function loadList(targetPageIndex = state.pageIndex) {
     return;
   }
 
-  // Paywall: show ONLY after user has attempted to load questions
- if (
-  state.hasLoadedQuestions &&
-  ((r?.ok === false && r?.status === 402) || r?.paywall)
-) {
-  state.paywalled = true;
+  const items = Array.isArray(r?.items) ? r.items : [];
+  const paywallTriggered =
+    state.hasLoadedQuestions &&
+    ((r?.ok === false && r?.status === 402) || r?.paywall);
 
-  setStatus("Preview limit reached. Please upgrade.", "bad");
+  // Paywall: show ONLY after user has attempted to load questions.
+  // If preview items are present, render them and still show paywall.
+  if (paywallTriggered) {
+    state.paywalled = true;
 
-  // ✅ SHOW paywall
-  const pw = els("paywall");
-  pw.removeAttribute("hidden");
-  pw.classList.add("is-open");
+    // ✅ SHOW paywall
+    const pw = els("paywall");
+    pw.removeAttribute("hidden");
+    pw.classList.add("is-open");
 
+    // ✅ HIDE passive upgrade hint (no double messaging)
+    const upgradeHint = els("upgradeHint");
+    if (upgradeHint) upgradeHint.hidden = true;
 
-  // ✅ HIDE passive upgrade hint (no double messaging)
-  const upgradeHint = els("upgradeHint");
-  if (upgradeHint) upgradeHint.hidden = true;
-
-  setListPagerUI({ loading: false });
-  return;
-}
-
-
-  const items = r.items || [];
+    if (!items.length) {
+      setStatus("Preview limit reached. Please upgrade.", "bad");
+      setListPagerUI({ loading: false });
+      return;
+    }
+  }
 
   // end-of-list: don't show an empty page
   if (!items.length && pageIndex > 0) {
@@ -2993,6 +2993,16 @@ async function loadList(targetPageIndex = state.pageIndex) {
   }
 
   renderList(items);
+  if (items.length > 0) {
+    const listEl = els("list");
+    if (listEl && listEl.childElementCount === 0) {
+      console.error("[questions] renderList produced no DOM children for non-empty items", {
+        itemsLength: items.length,
+        mode,
+        pageIndex,
+      });
+    }
+  }
   if (DEBUG_QUESTIONS) {
     console.debug("[questions] loadList after renderList(items)");
     console.debug("[questions] loadList state", {
@@ -3001,8 +3011,12 @@ async function loadList(targetPageIndex = state.pageIndex) {
       endReached: state.endReached,
     });
   }
-  setStatus(`Loaded ${items.length || 0} items.`, "ok");
-  if (state.endReached) setStatus("End reached. No more questions.", "ok");
+  if (state.paywalled) {
+    setStatus(`Loaded ${items.length || 0} preview items. Preview limit reached. Please upgrade.`, "bad");
+  } else {
+    setStatus(`Loaded ${items.length || 0} items.`, "ok");
+    if (state.endReached) setStatus("End reached. No more questions.", "ok");
+  }
 
   setListPagerUI({ loading: false });
 }
