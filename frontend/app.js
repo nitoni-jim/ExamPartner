@@ -2644,7 +2644,7 @@ function applyProfile(profile) {
   if (btnLogout) btnLogout.hidden = false;
 
   setAuthMsg(`Logged in as: ${state.me.identifier}`);
-  setDashboardMsg("Dashboard ready. JAMB CBT will appear here when it ships.");
+  setDashboardMsg("Dashboard ready. JAMB CBT will be available here soon.");
   updatePayEmailUI();
 
   const btnHist = els("btnToggleHistory");
