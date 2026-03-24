@@ -2082,6 +2082,30 @@ function maybeAutoLoadAfterFilterChange() {
 // ====== List ======
 function renderList(items) {
   const list = els("list");
+  const logRenderVisibility = () => {
+    if (!DEBUG_QUESTIONS) return;
+    console.debug("[questions] visibility #list", !list?.hidden);
+    console.debug("[questions] visibility #startGate", !els("startGate")?.hidden);
+    console.debug("[questions] visibility #paywall", !els("paywall")?.hidden);
+    console.debug("[questions] visibility #practiceSection", !els("practiceSection")?.hidden);
+  };
+  if (DEBUG_QUESTIONS) {
+    const listExists = !!list;
+    console.debug("[questions] renderList entered");
+    console.debug("[questions] renderList items.length", Array.isArray(items) ? items.length : 0);
+    console.debug("[questions] renderList #list exists", listExists);
+    if (!listExists) {
+      console.debug("[questions] renderList missing #list; cannot render items");
+    }
+  }
+  if (!list) {
+    logRenderVisibility();
+    return;
+  }
+
+  if (DEBUG_QUESTIONS) {
+    console.debug("[questions] renderList #list child count before render", list.childElementCount);
+  }
   list.innerHTML = "";
 
   currentListIds = (items || []).map(x => x.id).filter(Boolean);
@@ -2094,7 +2118,9 @@ function renderList(items) {
     list.innerHTML = `<div class="status">No items returned. Try a smaller offset or clear filters.</div>`;
     if (DEBUG_QUESTIONS) {
       console.debug("[questions] renderList #list child count after empty state", list.childElementCount);
+      console.debug("[questions] renderList first rendered question id", null);
     }
+    logRenderVisibility();
     return;
   }
 
@@ -2135,7 +2161,9 @@ function renderList(items) {
 
   if (DEBUG_QUESTIONS) {
     console.debug("[questions] renderList #list child count after render", list.childElementCount);
+    console.debug("[questions] renderList first rendered question id", items[0]?.id ?? null);
   }
+  logRenderVisibility();
 
   // restore highlight + visibility if a question is already selected
   if (activeQuestionId && currentListIds.includes(activeQuestionId)) {
@@ -2844,6 +2872,15 @@ async function doLogin() {
 
 
 async function loadList(targetPageIndex = state.pageIndex) {
+  if (DEBUG_QUESTIONS) {
+    console.debug("[questions] loadList entered");
+    console.debug("[questions] loadList state", {
+      hasLoadedQuestions: state.hasLoadedQuestions,
+      paywalled: state.paywalled,
+      endReached: state.endReached,
+    });
+  }
+
   saveApiBase();
   state.hasLoadedQuestions = true; // ✅ STEP 2: user attempted to load questions
   updateUpgradeUI();
@@ -2874,6 +2911,9 @@ async function loadList(targetPageIndex = state.pageIndex) {
   state.paywalled = false;
   setListPagerUI({ loading: true });
 
+  if (DEBUG_QUESTIONS) {
+    console.debug("[questions] loadList before fetchQuestionPage(...)");
+  }
   const r = await fetchQuestionPage({
     mode: requestParams.mode,
     limit,
@@ -2882,6 +2922,9 @@ async function loadList(targetPageIndex = state.pageIndex) {
     year: requestParams.year,
     subject: requestParams.subject,
   });
+  if (DEBUG_QUESTIONS) {
+    console.debug("[questions] loadList after response received");
+  }
 
   if (DEBUG_QUESTIONS) {
     const returnedItems = Array.isArray(r?.items) ? r.items.length : 0;
@@ -2946,10 +2989,18 @@ async function loadList(targetPageIndex = state.pageIndex) {
   if (DEBUG_QUESTIONS) {
     console.debug("[questions] loadList success items.length", items.length);
     console.debug("[questions] loadList success first question id", items[0]?.id ?? null);
-    console.debug("[questions] loadList about to call renderList(items)");
+    console.debug("[questions] loadList before renderList(items)");
   }
 
   renderList(items);
+  if (DEBUG_QUESTIONS) {
+    console.debug("[questions] loadList after renderList(items)");
+    console.debug("[questions] loadList state", {
+      hasLoadedQuestions: state.hasLoadedQuestions,
+      paywalled: state.paywalled,
+      endReached: state.endReached,
+    });
+  }
   setStatus(`Loaded ${items.length || 0} items.`, "ok");
   if (state.endReached) setStatus("End reached. No more questions.", "ok");
 
