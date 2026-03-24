@@ -7,7 +7,6 @@ const apiBaseNoSlash = () => (state.apiBase || "").replace(/\/$/, "");
 const FILTERS_PANEL_OPEN = "ep_filters_open";
 const FILTER_CACHE_KEY = "ep_filter_cache_v1";
 const FILTER_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
-const DEBUG_QUESTIONS = true;
 
 const SUPPORT_CONTACT = Object.freeze({
   email: "exampartnerteam@gmail.com",
