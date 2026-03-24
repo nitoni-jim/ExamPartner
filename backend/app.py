@@ -476,42 +476,6 @@ def filters(
     }
 
 
-@app.get("/debug/question-combos")
-def debug_question_combos():
-    db = db_conn()
-    cur = db.cursor()
-    try:
-        cur.execute(
-            """
-            SELECT
-                exam,
-                year,
-                subject,
-                qtype,
-                COUNT(*) AS count
-            FROM questions
-            GROUP BY exam, year, subject, qtype
-            ORDER BY year DESC, exam, subject, qtype
-            """
-        )
-        rows = cur.fetchall()
-    finally:
-        db.close()
-
-    return {
-        "items": [
-            {
-                "exam": _row_get(row, "exam"),
-                "year": _row_get(row, "year"),
-                "subject": _row_get(row, "subject"),
-                "qtype": _row_get(row, "qtype"),
-                "count": int(_row_get(row, "count", 0) or 0),
-            }
-            for row in rows
-        ]
-    }
-
-
 # -----------------------------
 # QUESTIONS
 # -----------------------------
@@ -666,18 +630,6 @@ def list_objective(
     user: Optional[Dict[str, Any]] = Depends(get_current_user),
 ):
     is_paid = _is_paid_user(user)
-    requested_limit = limit
-    requested_offset = offset
-    logger.info(
-        "QUESTION_LOAD_OBJECTIVE exam=%s year=%s subject=%s limit=%s offset=%s is_paid=%s",
-        exam,
-        year,
-        subject,
-        requested_limit,
-        requested_offset,
-        is_paid,
-    )
-
     # ✅ Objective preview cap (unpaid): max 10 total
     if not is_paid:
         if offset >= FREE_SAMPLE_LIMIT_OBJ:
@@ -704,13 +656,6 @@ def list_objective(
     )
     rows = cur.fetchall()
     db.close()
-    logger.info(
-        "QUESTION_LOAD_OBJECTIVE returned_rows=%s effective_limit=%s effective_offset=%s",
-        len(rows),
-        limit,
-        offset,
-    )
-
     return {"items": [_row_to_question(r) for r in rows], "limit": limit, "offset": offset}
 
 
@@ -724,18 +669,6 @@ def list_theory(
     user: Optional[Dict[str, Any]] = Depends(get_current_user),
 ):
     is_paid = _is_paid_user(user)
-    requested_limit = limit
-    requested_offset = offset
-    logger.info(
-        "QUESTION_LOAD_THEORY exam=%s year=%s subject=%s limit=%s offset=%s is_paid=%s",
-        exam,
-        year,
-        subject,
-        requested_limit,
-        requested_offset,
-        is_paid,
-    )
-
     # ✅ Theory preview cap (unpaid): max 2 total
     if not is_paid:
         if offset >= FREE_SAMPLE_LIMIT_THEORY:
@@ -762,13 +695,6 @@ def list_theory(
     )
     rows = cur.fetchall()
     db.close()
-    logger.info(
-        "QUESTION_LOAD_THEORY returned_rows=%s effective_limit=%s effective_offset=%s",
-        len(rows),
-        limit,
-        offset,
-    )
-
     return {"items": [_row_to_question(r) for r in rows], "limit": limit, "offset": offset}
 
 
