@@ -6,7 +6,6 @@ import base64
 import hashlib
 import secrets
 import logging
-import random
 from pathlib import Path
 from typing import Optional, Any, Dict, List, Tuple
 
@@ -658,87 +657,6 @@ def list_objective(
     rows = cur.fetchall()
     db.close()
     return {"items": [_row_to_question(r) for r in rows], "limit": limit, "offset": offset}
-
-
-# -----------------------------
-# CBT — JAMB full-simulation endpoint
-# -----------------------------
-CBT_ENGLISH_SUBJECT = "Use of English"
-CBT_ENGLISH_CAP = 60
-CBT_OTHER_CAP = 40
-
-
-@app.get("/cbt/questions")
-def cbt_questions(
-    subject: str = Query(...),
-    exam: str = Query(default="JAMB"),
-    user: Optional[Dict[str, Any]] = Depends(get_current_user),
-):
-    """
-    Returns a shuffled, deduplicated set of objective questions for one subject.
-    - Pools ALL years for that subject (no year filter).
-    - Deduplicates by exact question_text match (so repeated questions across
-      years only appear once per session).
-    - Caps at 60 for Use of English, 40 for all other subjects.
-    - Requires paid access or admin.
-    - Never reuses practice viewer preview caps or paywall logic.
-    """
-    if not user:
-        raise HTTPException(status_code=401, detail="Authentication required for CBT.")
-
-    if not (_is_paid_user(user) or _is_admin_user(user)):
-        raise HTTPException(status_code=402, detail="CBT requires an active subscription.")
-
-    subject = (subject or "").strip()
-    exam = (exam or "JAMB").strip()
-
-    if not subject:
-        raise HTTPException(status_code=400, detail="subject is required.")
-
-    db = db_conn()
-    cur = db.cursor()
-    try:
-        cur.execute(
-            """
-            SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
-                   options_json, answer, explanation, sub_questions_json,
-                   solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json,
-                   tables_json, passage_id, passage_snapshot
-            FROM questions
-            WHERE qtype = ? AND exam = ? AND subject = ?
-            ORDER BY id
-            """,
-            ("objective", exam, subject),
-        )
-        rows = cur.fetchall()
-    finally:
-        db.close()
-
-    total_available = len(rows)
-
-    # Deduplicate by exact question_text — keep first occurrence per text
-    seen_texts: set = set()
-    deduped = []
-    for row in rows:
-        text = (row["question_text"] or "").strip()
-        if text and text in seen_texts:
-            continue
-        seen_texts.add(text)
-        deduped.append(row)
-
-    # Shuffle
-    random.shuffle(deduped)
-
-    # Cap by subject
-    cap = CBT_ENGLISH_CAP if subject == CBT_ENGLISH_SUBJECT else CBT_OTHER_CAP
-    capped = deduped[:cap]
-
-    return {
-        "items": [_row_to_question(r) for r in capped],
-        "subject": subject,
-        "total_available": total_available,
-        "returned": len(capped),
-    }
 
 
 @app.get("/questions/theory")
