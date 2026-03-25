@@ -175,6 +175,39 @@ function focusViewer() {
   viewer.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+
+function openPracticeLane({ scroll = false } = {}) {
+  const practiceSection = els("practiceSection");
+  const cbtSection = els("cbtSection");
+  const viewer = els("viewer");
+  const result = els("resultSection");
+
+  if (practiceSection) practiceSection.hidden = false;
+  if (cbtSection) cbtSection.hidden = true;
+  if (viewer) viewer.hidden = true;
+  if (result) result.hidden = true;
+
+  setViewerOpen(false);
+  if (scroll) practiceSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function openCbtLane({ scroll = true } = {}) {
+  const practiceSection = els("practiceSection");
+  const cbtSection = els("cbtSection");
+  const viewer = els("viewer");
+  const result = els("resultSection");
+  const laneStatus = els("cbtLaneStatus");
+
+  if (practiceSection) practiceSection.hidden = true;
+  if (cbtSection) cbtSection.hidden = false;
+  if (viewer) viewer.hidden = true;
+  if (result) result.hidden = true;
+
+  setViewerOpen(false);
+  if (laneStatus) laneStatus.textContent = "CBT screen opened. Session controls are intentionally disabled for this frontend-only lane setup.";
+  if (scroll) cbtSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 let activeQuestionId = null;
 
 // Viewer navigation + option state
@@ -3490,6 +3523,7 @@ async function init() {
   updatePracticeMetaUI();
   updateCbtSetupMeta();
   updateCbtTimerUi();
+  openPracticeLane({ scroll: false });
   updateCbtSessionMeta();
   updateAdminUI();
   setListPagerUI({ loading: false });
@@ -3551,21 +3585,20 @@ async function init() {
 
   const btnDashboardStartCbt = els("btnDashboardStartCbt");
   if (btnDashboardStartCbt) btnDashboardStartCbt.onclick = () => {
-    els("cbtSection")?.removeAttribute("hidden");
-    loadCbtSession();
-    setDashboardMsg("JAMB CBT session opened below.");
+    openCbtLane({ scroll: true });
+    setDashboardMsg("Dedicated CBT screen opened.");
   };
 
   const btnCbtStartSession = els("btnCbtStartSession");
   if (btnCbtStartSession) btnCbtStartSession.onclick = () => {
-    els("cbtSection")?.removeAttribute("hidden");
-    loadCbtSession();
+    const laneStatus = els("cbtLaneStatus");
+    if (laneStatus) laneStatus.textContent = "CBT session startup is not implemented in this task. This screen is navigation-only for now.";
   };
 
   const btnCbtReloadSession = els("btnCbtReloadSession");
   if (btnCbtReloadSession) btnCbtReloadSession.onclick = () => {
-    els("cbtSection")?.removeAttribute("hidden");
-    loadCbtSession();
+    const laneStatus = els("cbtLaneStatus");
+    if (laneStatus) laneStatus.textContent = "CBT reload is not implemented in this task. This screen is navigation-only for now.";
   };
 
   const btnClose = els("btnClose");
@@ -3586,6 +3619,13 @@ async function init() {
     const list = els("list");
     if (list) list.scrollIntoView({ behavior: "smooth", block: "start" });
   };
+
+
+  const btnOpenCbtLane = els("btnOpenCbtLane");
+  if (btnOpenCbtLane) btnOpenCbtLane.onclick = () => openCbtLane({ scroll: true });
+
+  const btnBackToPractice = els("btnBackToPractice");
+  if (btnBackToPractice) btnBackToPractice.onclick = () => openPracticeLane({ scroll: true });
 
   // List pager (separate from question viewer Prev/Next)
   const btnPrevPage = els("btnPrevPage");
@@ -3614,20 +3654,16 @@ async function init() {
   const btnResultBackToCbt = els("btnResultBackToCbt");
   if (btnResultBackToCbt) {
     btnResultBackToCbt.onclick = () => {
-      els("cbtSection")?.removeAttribute("hidden");
-      els("resultSection")?.setAttribute("hidden", "hidden");
-      renderCbtQuestion();
-      els("cbtSection")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      openCbtLane({ scroll: true });
     };
   }
 
   const btnResultStartNew = els("btnResultStartNew");
   if (btnResultStartNew) {
-    btnResultStartNew.onclick = async () => {
-      els("cbtSection")?.removeAttribute("hidden");
-      updateCbtSetupMeta();
-      await loadCbtSession();
-      els("cbtSection")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    btnResultStartNew.onclick = () => {
+      openCbtLane({ scroll: true });
+      const laneStatus = els("cbtLaneStatus");
+      if (laneStatus) laneStatus.textContent = "Start new CBT session is not implemented in this task.";
     };
   }
 
