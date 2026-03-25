@@ -543,6 +543,7 @@
 
         <div class="row" style="gap:10px; flex-wrap:wrap; align-items:center;">
           <button id="btnPractice" class="btn" type="button">Start Practice</button>
+          <button id="btnOpenCbtLane" class="btn ghost" type="button">Open CBT Screen</button>
 
           <select id="mode">
             <option value="objective">Objective</option>
@@ -597,14 +598,17 @@
     </section>
 
     <section class="card" id="cbtSection" hidden>
-      <div class="row space">
+      <div class="row space" style="margin-bottom:12px;">
         <div>
-          <h2 class="h2-tight">JAMB CBT Practice</h2>
-             <div class="hint">Practice JAMB questions one at a time, just like the real exam.</div>
+          <h2 class="h2-tight">JAMB CBT Screen</h2>
+          <div class="hint">Dedicated CBT container (frontend structure only). Question loading and timer will be added in a later step.</div>
         </div>
+        <button id="btnBackToPractice" class="btn ghost" type="button">← Back to Practice</button>
       </div>
 
-      <div class="grid2">
+      <div id="cbtLaneStatus" class="status">CBT screen is ready. No CBT session logic is enabled yet.</div>
+
+      <div class="grid2" hidden>
         <div class="panel">
           <h3>CBT Session Setup</h3>
           <p class="hint">Uses your current Exam, Year, and Subject filters to load objective questions into a separate CBT session.</p>
