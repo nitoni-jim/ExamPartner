@@ -515,6 +515,38 @@ def _normalize_passage_snapshot(raw_passage_snapshot: Optional[str]):
 
 def _row_to_question(row) -> Dict[str, Any]:
     qtype = row["qtype"]
+
+    raw_passage_snapshot = _normalize_passage_snapshot(_row_get(row, "passage_snapshot"))
+
+    joined_passage_text = _row_get(row, "passage_text")
+    joined_passage_title = _row_get(row, "passage_title")
+    joined_passage_type = _row_get(row, "passage_type")
+    joined_passage_metadata = _jloads(_row_get(row, "passage_metadata_json"))
+
+    if _row_get(row, "passage_id"):
+        merged_passage_snapshot = {}
+
+        if isinstance(raw_passage_snapshot, dict):
+            merged_passage_snapshot.update(raw_passage_snapshot)
+
+        if joined_passage_title and not merged_passage_snapshot.get("title"):
+            merged_passage_snapshot["title"] = joined_passage_title
+
+        if joined_passage_type and not merged_passage_snapshot.get("passage_type"):
+            merged_passage_snapshot["passage_type"] = joined_passage_type
+
+        if joined_passage_text and not merged_passage_snapshot.get("passage_text"):
+            merged_passage_snapshot["passage_text"] = joined_passage_text
+
+        if isinstance(joined_passage_metadata, dict):
+            for k, v in joined_passage_metadata.items():
+                if k not in merged_passage_snapshot:
+                    merged_passage_snapshot[k] = v
+
+        normalized_passage_snapshot = merged_passage_snapshot or raw_passage_snapshot
+    else:
+        normalized_passage_snapshot = raw_passage_snapshot
+
     return {
         "id": row["id"],
         "exam": _row_get(row, "exam"),
@@ -536,7 +568,7 @@ def _row_to_question(row) -> Dict[str, Any]:
         "explanation_diagrams": _jloads(_row_get(row, "explanation_diagrams_json")) or [],
         "tables": _jloads(_row_get(row, "tables_json")) or {},
         "passage_id": _row_get(row, "passage_id"),
-        "passage_snapshot": _normalize_passage_snapshot(_row_get(row, "passage_snapshot")),
+        "passage_snapshot": normalized_passage_snapshot,
     }
 
 
@@ -631,7 +663,8 @@ def list_objective(
     user: Optional[Dict[str, Any]] = Depends(get_current_user),
 ):
     is_paid = _is_paid_user(user)
-    # ✅ Objective preview cap (unpaid): max 10 total
+
+    # Objective preview cap (unpaid): max 10 total
     if not is_paid:
         if offset >= FREE_SAMPLE_LIMIT_OBJ:
             raise HTTPException(status_code=402, detail="Free preview limit reached. Upgrade to continue.")
@@ -640,25 +673,42 @@ def list_objective(
 
     where_sql, params = _build_filters("objective", exam, year, subject)
 
+    where_sql = (
+        where_sql
+        .replace("qtype", "q.qtype")
+        .replace("exam", "q.exam")
+        .replace("year", "q.year")
+        .replace("subject", "q.subject")
+    )
+
     db = db_conn()
     cur = db.cursor()
     cur.execute(
         f"""
-        SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
-               options_json, answer, explanation, sub_questions_json,
-               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json,
-               passage_id, passage_snapshot
-        FROM questions
+        SELECT q.id, q.exam, q.year, q.subject, q.paper, q.section, q.qtype, q.page, q.marks, q.question_text,
+               q.options_json, q.answer, q.explanation, q.sub_questions_json,
+               q.solution_steps_json, q.diagrams_json, q.answer_diagrams_json, q.explanation_diagrams_json, q.tables_json,
+               q.passage_id, q.passage_snapshot,
+               p.title AS passage_title,
+               p.passage_type,
+               p.passage_text,
+               p.metadata_json AS passage_metadata_json
+        FROM questions q
+        LEFT JOIN passages p ON q.passage_id = p.id
         WHERE {where_sql}
-        ORDER BY COALESCE(sort_key, 999999999), id
+        ORDER BY COALESCE(q.sort_key, 999999999), q.id
         LIMIT ? OFFSET ?
         """,
         (*params, limit, offset),
     )
     rows = cur.fetchall()
     db.close()
-    return {"items": [_row_to_question(r) for r in rows], "limit": limit, "offset": offset}
 
+    return {
+        "items": [_row_to_question(r) for r in rows],
+        "limit": limit,
+        "offset": offset,
+    }
 
 # -----------------------------
 # CBT — JAMB full-simulation endpoint
@@ -699,17 +749,22 @@ def cbt_questions(
     cur = db.cursor()
     try:
         cur.execute(
-            """
-            SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
-                   options_json, answer, explanation, sub_questions_json,
-                   solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json,
-                   tables_json, passage_id, passage_snapshot
-            FROM questions
-            WHERE qtype = ? AND exam = ? AND subject = ?
-            ORDER BY id
-            """,
-            ("objective", exam, subject),
-        )
+    """
+    SELECT q.id, q.exam, q.year, q.subject, q.paper, q.section, q.qtype, q.page, q.marks, q.question_text,
+           q.options_json, q.answer, q.explanation, q.sub_questions_json,
+           q.solution_steps_json, q.diagrams_json, q.answer_diagrams_json, q.explanation_diagrams_json,
+           q.tables_json, q.passage_id, q.passage_snapshot,
+           p.title AS passage_title,
+           p.passage_type,
+           p.passage_text,
+           p.metadata_json AS passage_metadata_json
+    FROM questions q
+    LEFT JOIN passages p ON q.passage_id = p.id
+    WHERE q.qtype = ? AND q.exam = ? AND q.subject = ?
+    ORDER BY q.id
+    """,
+    ("objective", exam, subject),
+)
         rows = cur.fetchall()
     finally:
         db.close()
@@ -763,18 +818,23 @@ def list_theory(
     db = db_conn()
     cur = db.cursor()
     cur.execute(
-        f"""
-        SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
-               options_json, answer, explanation, sub_questions_json,
-               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json,
-               passage_id, passage_snapshot
-        FROM questions
-        WHERE {where_sql}
-        ORDER BY COALESCE(sort_key, 999999999), id
-        LIMIT ? OFFSET ?
-        """,
-        (*params, limit, offset),
-    )
+    f"""
+    SELECT q.id, q.exam, q.year, q.subject, q.paper, q.section, q.qtype, q.page, q.marks, q.question_text,
+           q.options_json, q.answer, q.explanation, q.sub_questions_json,
+           q.solution_steps_json, q.diagrams_json, q.answer_diagrams_json, q.explanation_diagrams_json, q.tables_json,
+           q.passage_id, q.passage_snapshot,
+           p.title AS passage_title,
+           p.passage_type,
+           p.passage_text,
+           p.metadata_json AS passage_metadata_json
+    FROM questions q
+    LEFT JOIN passages p ON q.passage_id = p.id
+    WHERE {where_sql.replace('qtype', 'q.qtype').replace('exam', 'q.exam').replace('year', 'q.year').replace('subject', 'q.subject')}
+    ORDER BY q.year DESC, q.exam, q.subject, COALESCE(q.sort_key, 999999999), q.id
+    LIMIT ? OFFSET ?
+    """,
+    (*params, limit, offset),
+)
     rows = cur.fetchall()
     db.close()
     return {"items": [_row_to_question(r) for r in rows], "limit": limit, "offset": offset}
@@ -894,16 +954,21 @@ def get_question(qid: str, user: Optional[Dict[str, Any]] = Depends(get_current_
     db = db_conn()
     cur = db.cursor()
     cur.execute(
-        """
-        SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
-               options_json, answer, explanation, sub_questions_json,
-               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json,
-               passage_id, passage_snapshot
-        FROM questions
-        WHERE id = ?
-        """,
-        (qid,),
-    )
+    """
+    SELECT q.id, q.exam, q.year, q.subject, q.paper, q.section, q.qtype, q.page, q.marks, q.question_text,
+           q.options_json, q.answer, q.explanation, q.sub_questions_json,
+           q.solution_steps_json, q.diagrams_json, q.answer_diagrams_json, q.explanation_diagrams_json, q.tables_json,
+           q.passage_id, q.passage_snapshot,
+           p.title AS passage_title,
+           p.passage_type,
+           p.passage_text,
+           p.metadata_json AS passage_metadata_json
+    FROM questions q
+    LEFT JOIN passages p ON q.passage_id = p.id
+    WHERE q.id = ?
+    """,
+    (qid,),
+)
     row = cur.fetchone()
     db.close()
 
