@@ -175,39 +175,6 @@ function focusViewer() {
   viewer.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-
-function openPracticeLane({ scroll = false } = {}) {
-  const practiceSection = els("practiceSection");
-  const cbtSection = els("cbtSection");
-  const viewer = els("viewer");
-  const result = els("resultSection");
-
-  if (practiceSection) practiceSection.hidden = false;
-  if (cbtSection) cbtSection.hidden = true;
-  if (viewer) viewer.hidden = true;
-  if (result) result.hidden = true;
-
-  setViewerOpen(false);
-  if (scroll) practiceSection?.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-function openCbtLane({ scroll = true } = {}) {
-  const practiceSection = els("practiceSection");
-  const cbtSection = els("cbtSection");
-  const viewer = els("viewer");
-  const result = els("resultSection");
-  const laneStatus = els("cbtLaneStatus");
-
-  if (practiceSection) practiceSection.hidden = true;
-  if (cbtSection) cbtSection.hidden = false;
-  if (viewer) viewer.hidden = true;
-  if (result) result.hidden = true;
-
-  setViewerOpen(false);
-  if (laneStatus) laneStatus.textContent = "CBT screen opened. Session controls are intentionally disabled for this frontend-only lane setup.";
-  if (scroll) cbtSection?.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
 let activeQuestionId = null;
 
 // Viewer navigation + option state
@@ -540,6 +507,8 @@ const state = {
     submitted: false,
     result: null,
     feedbackOpen: false,
+    selectedSubjects: [],   // ["Use of English", subj2, subj3, subj4]
+    availableSubjects: [],  // full list from /filters, used by syncCbtSubjectSelectors
   },
 };
 
@@ -1192,7 +1161,6 @@ function renderSubQuestions(question, items, opts = {}) {
 }
 
 
-// ---- Viewer rendering section ----
 function getPassageDisplayHtml(passageSnapshot) {
   if (!passageSnapshot) return "";
 
@@ -1204,7 +1172,13 @@ function getPassageDisplayHtml(passageSnapshot) {
 
   if (typeof passageSnapshot !== "object") return "";
 
-  const title = String(passageSnapshot.title || passageSnapshot.heading || passageSnapshot.label || "Passage").trim();
+  const title = String(
+    passageSnapshot.title
+    || passageSnapshot.heading
+    || passageSnapshot.label
+    || "Passage"
+  ).trim();
+
   const passageText = String(
     passageSnapshot.passage_text
     || passageSnapshot.text
@@ -1216,9 +1190,12 @@ function getPassageDisplayHtml(passageSnapshot) {
   const metaBits = [];
   if (passageSnapshot.passage_type) metaBits.push(String(passageSnapshot.passage_type));
   if (passageSnapshot.reference) metaBits.push(String(passageSnapshot.reference));
+  if (passageSnapshot.question_range) metaBits.push(String(passageSnapshot.question_range));
 
   const titleHtml = `<div class="passage-title">${escapeHtml(title || "Passage")}</div>`;
-  const metaHtml = metaBits.length ? `<div class="passage-meta">${escapeHtml(metaBits.join(" • "))}</div>` : "";
+  const metaHtml = metaBits.length
+    ? `<div class="passage-meta">${escapeHtml(metaBits.join(" • "))}</div>`
+    : "";
   const bodyHtml = passageText
     ? `<div class="passage-body">${renderTextWithDiagrams(passageText, { mode: "question" })}</div>`
     : "";
@@ -1281,7 +1258,7 @@ function renderQuestion(question) {
   }
 }
 
-function renderQuestionInto(prefix, question, { selectedOptionKey = null, onOptionSelect = null, readOnly = false } = {}) {
+function renderQuestionInto(prefix, question, { selectedOptionKey = null, onOptionSelect = null, readOnly = false, reviewAnswer = null } = {}) {
   const passageEl = els(`${prefix}Passage`);
   const textEl = els(`${prefix}QuestionText`);
   const tablesEl = els(`${prefix}QuestionTables`);
@@ -1328,25 +1305,64 @@ function renderQuestionInto(prefix, question, { selectedOptionKey = null, onOpti
 
   if (optionsEl) {
     optionsEl.innerHTML = "";
+
+    // Review mode: inject status label above options
+    if (reviewAnswer !== null) {
+      const userKey = normalizeCbtAnswerKey(selectedOptionKey);
+      const correctKey = normalizeCbtAnswerKey(reviewAnswer);
+      let statusClass = "unanswered";
+      let statusText = "— Not answered";
+      if (userKey && userKey === correctKey) {
+        statusClass = "correct";
+        statusText = "✓ Correct";
+      } else if (userKey) {
+        statusClass = "wrong";
+        statusText = "✗ Wrong";
+      }
+      const statusEl = document.createElement("div");
+      statusEl.className = `cbt-review-status ${statusClass}`;
+      statusEl.textContent = statusText;
+      optionsEl.appendChild(statusEl);
+    }
+
     const options = question.options && typeof question.options === "object" ? question.options : null;
     if (options) {
       for (const key of Object.keys(options)) {
         const optionEl = document.createElement("div");
         optionEl.className = "opt";
-        if (selectedOptionKey === key) optionEl.classList.add("selected");
         optionEl.dataset.key = key;
         optionEl.innerHTML = `<b>${escapeHtml(key)}</b>. ${escapeHtml(options[key])}`;
-        if (!readOnly) {
+
+        if (reviewAnswer !== null) {
+          // Review mode — apply colour classes, no click handler
+          const userKey = normalizeCbtAnswerKey(selectedOptionKey);
+          const correctKey = normalizeCbtAnswerKey(reviewAnswer);
+          const normKey = normalizeCbtAnswerKey(key);
+
+          if (normKey === correctKey && userKey === correctKey) {
+            optionEl.classList.add("opt-correct");   // picked the right answer
+          } else if (normKey === userKey && userKey !== correctKey) {
+            optionEl.classList.add("opt-wrong");     // picked the wrong answer
+          } else if (normKey === correctKey) {
+            optionEl.classList.add("opt-missed");    // correct answer user didn't pick
+          } else {
+            optionEl.classList.add("disabled");
+          }
+          optionEl.setAttribute("aria-disabled", "true");
+        } else if (readOnly) {
+          if (selectedOptionKey === key) optionEl.classList.add("selected");
+          optionEl.setAttribute("aria-disabled", "true");
+          optionEl.classList.add("disabled");
+        } else {
+          if (selectedOptionKey === key) optionEl.classList.add("selected");
           optionEl.onclick = () => {
             const nextKey = selectedOptionKey === key ? null : key;
             if (typeof onOptionSelect === "function") {
               onOptionSelect(nextKey, question, key);
             }
           };
-        } else {
-          optionEl.setAttribute("aria-disabled", "true");
-          optionEl.classList.add("disabled");
         }
+
         optionsEl.appendChild(optionEl);
       }
     }
@@ -1373,19 +1389,98 @@ function renderAnswerBlock(question) {
   return parts.join("<hr/>");
 }
 
+// ====== CBT JAMB constants ======
+const CBT_ENGLISH_SUBJECT = "Use of English";
+const CBT_DURATION_MS = 120 * 60 * 1000; // 2 hours fixed — matches real JAMB
+// ================================
+
+function getCbtSubjects() {
+  // Always English first, then slots 2–4 (skip empty)
+  const slots = [
+    els("cbtSubject2")?.value || "",
+    els("cbtSubject3")?.value || "",
+    els("cbtSubject4")?.value || "",
+  ].filter(Boolean);
+  return [CBT_ENGLISH_SUBJECT, ...slots];
+}
+
+async function populateCbtSubjectSelectors() {
+  // Fetch all JAMB objective subjects from /filters, exclude Use of English (auto-included)
+  const selects = ["cbtSubject2", "cbtSubject3", "cbtSubject4"].map(id => els(id)).filter(Boolean);
+  if (!selects.length) return;
+
+  let subjects = [];
+  try {
+    const r = await api("/filters?qtype=objective&exam=JAMB");
+    if (r?.subjects && Array.isArray(r.subjects)) {
+      subjects = r.subjects
+        .map(s => String(s || "").trim())
+        .filter(s => s && s !== CBT_ENGLISH_SUBJECT);
+    }
+  } catch (_) {}
+
+  // Store full list on state so syncCbtSubjectSelectors can use it without re-fetching
+  state.cbt.availableSubjects = subjects;
+
+  // Initial population — then sync to enforce mutual exclusivity
+  selects.forEach(sel => {
+    sel.innerHTML = `<option value="">— Select subject —</option>`;
+    subjects.forEach(s => {
+      const opt = document.createElement("option");
+      opt.value = s;
+      opt.textContent = s;
+      sel.appendChild(opt);
+    });
+  });
+
+  syncCbtSubjectSelectors();
+}
+
+function syncCbtSubjectSelectors() {
+  // Rebuild each slot's options excluding subjects already chosen in the other slots.
+  // Preserves the current selection in each slot if it's still valid.
+  const ids = ["cbtSubject2", "cbtSubject3", "cbtSubject4"];
+  const selects = ids.map(id => els(id)).filter(Boolean);
+  const subjects = Array.isArray(state.cbt.availableSubjects) ? state.cbt.availableSubjects : [];
+
+  // Snapshot current selections before rebuilding
+  const current = selects.map(sel => sel.value);
+
+  selects.forEach((sel, i) => {
+    // Subjects chosen in the OTHER two slots
+    const takenByOthers = new Set(
+      current.filter((v, j) => j !== i && v)
+    );
+
+    const prev = current[i];
+    sel.innerHTML = `<option value="">— Select subject —</option>`;
+    subjects.forEach(s => {
+      if (takenByOthers.has(s)) return; // hide subjects already picked elsewhere
+      const opt = document.createElement("option");
+      opt.value = s;
+      opt.textContent = s;
+      sel.appendChild(opt);
+    });
+
+    // Restore selection if still available
+    if (prev && !takenByOthers.has(prev)) sel.value = prev;
+    else sel.value = "";
+  });
+
+  updateCbtSetupMeta();
+}
+
 function updateCbtSetupMeta() {
   const metaEl = els("cbtSetupMeta");
   if (!metaEl) return;
 
-  const bits = [
-    state.filters.exam || "Exam not selected",
-    state.filters.year || "Year not selected",
-    state.filters.subject || "Subject not selected",
-  ];
-  metaEl.textContent = bits.join(" • ");
+  const subjects = getCbtSubjects();
+  if (subjects.length <= 1) {
+    metaEl.textContent = "Select your 3 subjects to begin.";
+    return;
+  }
+  metaEl.textContent = `${subjects.length} subject(s) selected: ${subjects.join(" • ")}`;
 }
-
-const CBT_DEFAULT_SECONDS_PER_QUESTION = 60;
 
 function getCbtQuestionKey(question, fallbackIndex = state.cbt.currentIndex) {
   if (!question) return `cbt-${fallbackIndex}`;
@@ -1409,13 +1504,22 @@ function calculateCbtResult() {
   const totalQuestions = questions.length;
   let answeredQuestions = 0;
   let correctAnswers = 0;
+  const bySubject = {};
 
   for (let index = 0; index < questions.length; index += 1) {
     const question = questions[index];
+    const subject = String(question?.subject || "Unknown").trim();
     const selected = normalizeCbtAnswerKey(getCbtSelectedAnswer(question, index));
     const expected = normalizeCbtAnswerKey(question?.answer);
+
+    if (!bySubject[subject]) bySubject[subject] = { correct: 0, total: 0 };
+    bySubject[subject].total += 1;
+
     if (selected) answeredQuestions += 1;
-    if (selected && expected && selected === expected) correctAnswers += 1;
+    if (selected && expected && selected === expected) {
+      correctAnswers += 1;
+      bySubject[subject].correct += 1;
+    }
   }
 
   const wrongAnswers = Math.max(0, answeredQuestions - correctAnswers);
@@ -1428,6 +1532,7 @@ function calculateCbtResult() {
     wrongAnswers,
     score: correctAnswers,
     percentage,
+    bySubject,
     submittedAt: Date.now(),
   };
 }
@@ -1461,6 +1566,21 @@ function renderCbtResult() {
     statusEl.textContent = unanswered
       ? `${unanswered} question(s) were left unanswered before submission.`
       : "All questions were answered before submission.";
+  }
+
+  // Per-subject breakdown
+  const breakdownEl = els("resultSubjectBreakdown");
+  if (breakdownEl && result.bySubject && Object.keys(result.bySubject).length) {
+    breakdownEl.innerHTML = Object.entries(result.bySubject)
+      .map(([subject, { correct, total }]) => {
+        const pct = total ? Math.round((correct / total) * 100) : 0;
+        return `<div class="panel" style="margin-top:0;">
+          <strong>${escapeHtml(subject)}</strong>
+          <div class="meta" style="margin-top:4px;">${correct} / ${total} correct &nbsp;•&nbsp; ${pct}%</div>
+        </div>`;
+      })
+      .join("");
+    breakdownEl.hidden = false;
   }
 
   resultSection.hidden = false;
@@ -1573,11 +1693,10 @@ function syncCbtTimer() {
   updateCbtSessionMeta();
 }
 
-function startCbtTimer(questionCount = 0) {
+function startCbtTimer() {
   stopCbtTimer();
-  const durationMs = Math.max(1, questionCount) * CBT_DEFAULT_SECONDS_PER_QUESTION * 1000;
-  state.cbt.timerDurationMs = durationMs;
-  state.cbt.timeRemainingMs = durationMs;
+  state.cbt.timerDurationMs = CBT_DURATION_MS;
+  state.cbt.timeRemainingMs = CBT_DURATION_MS;
   state.cbt.timerStartedAt = Date.now();
   state.cbt.timerExpired = false;
   syncCbtTimer();
@@ -1603,7 +1722,7 @@ function renderCbtQuestion() {
   const metaEl = els("cbtQuestionMeta");
   const cbtSection = els("cbtSection");
 
-  if (cbtSection) cbtSection.hidden = false;
+  if (cbtSection) openCbtContainer();
 
   const total = state.cbt.questions.length;
   const question = total ? state.cbt.questions[state.cbt.currentIndex] : null;
@@ -1647,12 +1766,26 @@ function renderCbtQuestion() {
   renderQuestionInto("cbt", question, {
     selectedOptionKey: state.cbt.selectedOptionKey,
     readOnly: isReviewMode,
+    reviewAnswer: isReviewMode ? normalizeCbtAnswerKey(question.answer) : null,
     onOptionSelect: (nextKey, activeQuestion) => {
       if (isReviewMode) return;
       setCbtSelectedAnswer(activeQuestion, nextKey, state.cbt.currentIndex);
       renderCbtQuestion();
     },
   });
+
+  // In review mode, auto-show explanation below the workspace
+  const existingExpl = els("cbtReviewExplanation");
+  if (existingExpl) existingExpl.remove();
+  if (isReviewMode) {
+    const explHtml = renderExplainBlock(question);
+    const explDiv = document.createElement("div");
+    explDiv.id = "cbtReviewExplanation";
+    explDiv.className = "cbt-review-explanation";
+    explDiv.innerHTML = `<div style="font-weight:700; margin-bottom:8px;">Explanation</div>${explHtml}`;
+    const workspace = els("cbtWorkspace");
+    if (workspace) workspace.appendChild(explDiv);
+  }
   updateCbtTimerUi();
   updateCbtSessionMeta();
   updateCbtNavButtons();
@@ -1669,10 +1802,13 @@ function renderCbtQuestion() {
 async function loadCbtSession() {
   updateCbtSetupMeta();
 
-  if (!filtersReady()) {
-    els("cbtSection").hidden = false;
+  const subjects = getCbtSubjects();
+
+  // Must have English + at least one more subject
+  if (subjects.length < 2) {
+    openCbtContainer();
     els("cbtWorkspace").hidden = true;
-    setCbtStatus("Choose Exam, Year, and Subject in Filters before starting CBT.", "bad");
+    setCbtStatus("Select at least 3 more subjects before starting CBT.", "bad");
     return;
   }
 
@@ -1689,34 +1825,38 @@ async function loadCbtSession() {
   state.cbt.timerStartedAt = 0;
   state.cbt.timerExpired = false;
   state.cbt.feedbackOpen = false;
+  state.cbt.selectedSubjects = subjects;
   stopCbtTimer();
   updateCbtTimerUi();
   updateCbtSessionMeta();
   updateCbtNavButtons();
   els("resultSection")?.setAttribute("hidden", "hidden");
-  setCbtStatus("Loading CBT questions…", "ok");
+  setCbtStatus(`Loading ${subjects.length} subject(s)…`, "ok");
 
-  const response = await fetchQuestionPage({
-    mode: "objective",
-    limit: state.pageSize,
-    offset: 0,
-    exam: state.filters.exam,
-    year: state.filters.year,
-    subject: state.filters.subject,
-  });
+  // Fetch all subjects in parallel from /cbt/questions
+  const fetches = subjects.map(subject =>
+    api(`/cbt/questions?subject=${encodeURIComponent(subject)}&exam=JAMB`)
+      .then(r => ({ subject, r }))
+      .catch(() => ({ subject, r: { ok: false, error: "Network error" } }))
+  );
 
+  const results = await Promise.all(fetches);
   state.cbt.loading = false;
 
-  if (!response?.ok) {
-    els("cbtSection").hidden = false;
-    els("cbtWorkspace").hidden = true;
-    setCbtStatus(`Failed to load CBT questions: ${response?.error || "unknown error"}`, "bad");
-    updateCbtNavButtons();
-    return;
+  const loadedSubjects = [];
+  const failedSubjects = [];
+  let allQuestions = [];
+
+  for (const { subject, r } of results) {
+    if (r?.items && Array.isArray(r.items) && r.items.length > 0) {
+      allQuestions = allQuestions.concat(r.items);
+      loadedSubjects.push(`${subject} (${r.items.length}q)`);
+    } else {
+      failedSubjects.push(subject);
+    }
   }
 
-  const items = Array.isArray(response.items) ? response.items : [];
-  state.cbt.questions = items.filter((item) => String(item.type || "").toLowerCase() === "objective");
+  state.cbt.questions = allQuestions;
   state.cbt.currentIndex = 0;
   state.cbt.selectedOptionKey = null;
   state.cbt.answersByQuestionKey = {};
@@ -1725,15 +1865,20 @@ async function loadCbtSession() {
   state.cbt.sessionReady = state.cbt.questions.length > 0;
 
   if (!state.cbt.sessionReady) {
-    els("cbtSection").hidden = false;
+    openCbtContainer();
     els("cbtWorkspace").hidden = true;
-    setCbtStatus("No objective CBT questions matched the selected filters yet.", "bad");
+    setCbtStatus("No questions found for the selected subjects. Check your selection and try again.", "bad");
     updateCbtNavButtons();
     return;
   }
 
-  startCbtTimer(state.cbt.questions.length);
-  setCbtStatus(`Loaded ${state.cbt.questions.length} CBT question(s). Timer started.`, "ok");
+  const statusParts = [];
+  if (loadedSubjects.length) statusParts.push(`Loaded: ${loadedSubjects.join(", ")}`);
+  if (failedSubjects.length) statusParts.push(`No data yet: ${failedSubjects.join(", ")}`);
+  statusParts.push("120-minute timer started.");
+
+  startCbtTimer();
+  setCbtStatus(statusParts.join(" • "), failedSubjects.length ? "ok" : "ok");
   renderCbtQuestion();
 }
 
@@ -1999,7 +2144,6 @@ async function initFiltersUI() {
     save();
     await refreshFilterOptions({ exam: state.filters.exam || undefined, keepSelection: true });
     updatePracticeMetaUI();
-    updateCbtSetupMeta();
     maybeAutoLoadAfterFilterChange();
   };
 
@@ -2011,14 +2155,12 @@ async function initFiltersUI() {
       keepSelection: true
     });
     updatePracticeMetaUI();
-    updateCbtSetupMeta();
     maybeAutoLoadAfterFilterChange();
   };
 
   subjSel.onchange = () => {
     save();
     updatePracticeMetaUI();
-    updateCbtSetupMeta();
     maybeAutoLoadAfterFilterChange();
   };
 
@@ -2031,7 +2173,6 @@ async function initFiltersUI() {
       save();
       await refreshFilterOptions({ keepSelection: true });
       updatePracticeMetaUI();
-      updateCbtSetupMeta();
       if (isFirstTimeUser()) setStartGateVisible(true);
     };
   }
@@ -2294,6 +2435,74 @@ function closeViewer() {
   resetQuestionFeedbackForm();
   setQuestionFeedbackPanelOpen(false);
 }
+
+// ====== CBT Container — sole show/hide authority for the CBT lane ======
+// Never toggle #cbtSection or #resultSection visibility directly outside these two functions.
+
+function resetCbtState() {
+  // Stop timer first — must happen before clearing state
+  stopCbtTimer();
+
+  // Reset all CBT state to clean initial values
+  state.cbt.loading = false;
+  state.cbt.questions = [];
+  state.cbt.currentIndex = 0;
+  state.cbt.selectedOptionKey = null;
+  state.cbt.answersByQuestionKey = {};
+  state.cbt.sessionReady = false;
+  state.cbt.timerDurationMs = 0;
+  state.cbt.timeRemainingMs = 0;
+  state.cbt.timerStartedAt = 0;
+  state.cbt.timerExpired = false;
+  state.cbt.submitted = false;
+  state.cbt.result = null;
+  state.cbt.feedbackOpen = false;
+  state.cbt.selectedSubjects = [];
+
+  // Reset subject selector dropdowns
+  ["cbtSubject2", "cbtSubject3", "cbtSubject4"].forEach(id => {
+    const sel = els(id);
+    if (sel) sel.value = "";
+  });
+
+  // Reset UI elements
+  updateCbtTimerUi();
+  updateCbtSessionMeta();
+  updateCbtNavButtons();
+  updateCbtSetupMeta();
+
+  // Hide workspace and result, reset feedback panel
+  const workspace = els("cbtWorkspace");
+  if (workspace) workspace.hidden = true;
+  const resultSection = els("resultSection");
+  if (resultSection) resultSection.hidden = true;
+  resetCbtQuestionFeedbackForm();
+  setCbtQuestionFeedbackPanelOpen(false, { resetStatus: true });
+}
+function openCbtContainer() {
+  const container = els("cbtContainer");
+  if (!container) return;
+  // Hide the practice lane so it doesn't sit above CBT
+  const practiceSection = els("practiceSection");
+  if (practiceSection) practiceSection.hidden = true;
+  // Close practice viewer if open — CBT is a separate lane
+  const viewer = els("viewer");
+  if (viewer) viewer.hidden = true;
+  container.hidden = false;
+  container.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function closeCbtContainer() {
+  const container = els("cbtContainer");
+  if (!container) return;
+  // Stop any running timer so it doesn't fire auto-submit after the UI is gone
+  stopCbtTimer();
+  container.hidden = true;
+  // Restore the practice lane
+  const practiceSection = els("practiceSection");
+  if (practiceSection) practiceSection.hidden = false;
+}
+// =======================================================================
 
 window.addEventListener("beforeunload", stopCbtTimer);
 
@@ -2786,6 +2995,10 @@ async function logout() {
   state.endReached = false;
   state.pageIndex = 0;
   state.hasLoadedQuestions = false;
+
+  // ✅ Reset CBT session completely — no stale state after logout
+  resetCbtState();
+  closeCbtContainer();
 
   resetSessionProfileState();
   setAuthMsg("Logged out.");
@@ -3523,22 +3736,17 @@ async function init() {
   updatePracticeMetaUI();
   updateCbtSetupMeta();
   updateCbtTimerUi();
-  openPracticeLane({ scroll: false });
   updateCbtSessionMeta();
   updateAdminUI();
   setListPagerUI({ loading: false });
 
-  // First-time gate vs returning user auto-load
+  // Never auto-load questions on page load — user must press Start Practice.
+  // For first-time users: show the start gate to guide them to pick filters.
+  // For returning users with saved filters: just restore the filter state silently.
   if (isFirstTimeUser() && !filtersReady()) {
     setStartGateVisible(true);
   } else {
     setStartGateVisible(false);
-    if (filtersReady()) {
-      state.pageIndex = 0;
-      state.endReached = false;
-      state.paywalled = false;
-      loadList(0);
-    }
   }
 
   // ✅ Safe event wiring (no null-crash)
@@ -3584,22 +3792,45 @@ async function init() {
   if (btnDashboardLogout) btnDashboardLogout.onclick = doLogout;
 
   const btnDashboardStartCbt = els("btnDashboardStartCbt");
-  if (btnDashboardStartCbt) btnDashboardStartCbt.onclick = () => {
-    openCbtLane({ scroll: true });
-    setDashboardMsg("Dedicated CBT screen opened.");
+  if (btnDashboardStartCbt) btnDashboardStartCbt.onclick = async () => {
+    openCbtContainer();
+    await populateCbtSubjectSelectors();
+    updateCbtSetupMeta();
+    setDashboardMsg("JAMB CBT session opened below.");
   };
 
   const btnCbtStartSession = els("btnCbtStartSession");
   if (btnCbtStartSession) btnCbtStartSession.onclick = () => {
-    const laneStatus = els("cbtLaneStatus");
-    if (laneStatus) laneStatus.textContent = "CBT session startup is not implemented in this task. This screen is navigation-only for now.";
+    openCbtContainer();
+    loadCbtSession();
   };
 
   const btnCbtReloadSession = els("btnCbtReloadSession");
   if (btnCbtReloadSession) btnCbtReloadSession.onclick = () => {
-    const laneStatus = els("cbtLaneStatus");
-    if (laneStatus) laneStatus.textContent = "CBT reload is not implemented in this task. This screen is navigation-only for now.";
+    openCbtContainer();
+    loadCbtSession();
   };
+
+  const btnCbtClose = els("btnCbtClose");
+  if (btnCbtClose) {
+    btnCbtClose.onclick = () => {
+      // If a session is actively running (not yet submitted), warn the user
+      if (state.cbt.sessionReady && !state.cbt.submitted) {
+        const confirmed = window.confirm(
+          "Close CBT session?\n\nThe timer will stop and your current session will be lost. This cannot be undone."
+        );
+        if (!confirmed) return;
+      }
+      resetCbtState();
+      closeCbtContainer();
+    };
+  }
+
+  // Wire subject slot selects → sync mutual exclusivity + update meta on change
+  ["cbtSubject2", "cbtSubject3", "cbtSubject4"].forEach(id => {
+    const sel = els(id);
+    if (sel) sel.onchange = syncCbtSubjectSelectors;
+  });
 
   const btnClose = els("btnClose");
   if (btnClose) btnClose.onclick = closeViewer;
@@ -3619,13 +3850,6 @@ async function init() {
     const list = els("list");
     if (list) list.scrollIntoView({ behavior: "smooth", block: "start" });
   };
-
-
-  const btnOpenCbtLane = els("btnOpenCbtLane");
-  if (btnOpenCbtLane) btnOpenCbtLane.onclick = () => openCbtLane({ scroll: true });
-
-  const btnBackToPractice = els("btnBackToPractice");
-  if (btnBackToPractice) btnBackToPractice.onclick = () => openPracticeLane({ scroll: true });
 
   // List pager (separate from question viewer Prev/Next)
   const btnPrevPage = els("btnPrevPage");
@@ -3654,16 +3878,19 @@ async function init() {
   const btnResultBackToCbt = els("btnResultBackToCbt");
   if (btnResultBackToCbt) {
     btnResultBackToCbt.onclick = () => {
-      openCbtLane({ scroll: true });
+      els("resultSection")?.setAttribute("hidden", "hidden");
+      els("cbtSection")?.removeAttribute("hidden");
+      renderCbtQuestion();
+      els("cbtSection")?.scrollIntoView({ behavior: "smooth", block: "start" });
     };
   }
 
   const btnResultStartNew = els("btnResultStartNew");
   if (btnResultStartNew) {
-    btnResultStartNew.onclick = () => {
-      openCbtLane({ scroll: true });
-      const laneStatus = els("cbtLaneStatus");
-      if (laneStatus) laneStatus.textContent = "Start new CBT session is not implemented in this task.";
+    btnResultStartNew.onclick = async () => {
+      updateCbtSetupMeta();
+      await loadCbtSession();
+      openCbtContainer();
     };
   }
 
@@ -3822,6 +4049,10 @@ const btnReveal = els("btnReveal");
   await refreshFoundingStatus();
   await refreshMe();
   updateUpgradeUI(); // ensures btnPay hidden reflects cap immediately
+
+  // ✅ Populate CBT subject selectors (needs auth state to be ready)
+  await populateCbtSubjectSelectors();
+  updateCbtSetupMeta();
 
 }
 
