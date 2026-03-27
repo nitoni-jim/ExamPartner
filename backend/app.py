@@ -578,6 +578,7 @@ def _row_to_question(row, passage_lookup: Optional[Dict[str, Any]] = None) -> Di
         "type": qtype,
         "page": _row_get(row, "page"),
         "marks": _row_get(row, "marks"),
+        "section_instruction": _row_get(row, "section_instruction"),
         "question_text": row["question_text"],
         "options": _jloads(_row_get(row, "options_json")),
         "answer": _row_get(row, "answer"),
@@ -675,6 +676,7 @@ def _build_filters(
 
 
 @app.get("/questions/objective")
+
 def list_objective(
     limit: int = 20,
     offset: int = 0,
@@ -699,8 +701,8 @@ def list_objective(
         f"""
         SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
                options_json, answer, explanation, sub_questions_json,
-               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json,
-               passage_id, passage_snapshot
+               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json,
+               tables_json, section_instruction, passage_id, passage_snapshot
         FROM questions
         WHERE {where_sql}
         ORDER BY COALESCE(sort_key, 999999999), id
@@ -712,7 +714,6 @@ def list_objective(
     passage_lookup = _build_passage_lookup(db, rows)
     db.close()
     return {"items": [_row_to_question(r, passage_lookup) for r in rows], "limit": limit, "offset": offset}
-
 
 # -----------------------------
 # CBT — JAMB full-simulation endpoint
@@ -757,7 +758,7 @@ def cbt_questions(
             SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
                    options_json, answer, explanation, sub_questions_json,
                    solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json,
-                   tables_json, passage_id, passage_snapshot
+                   tables_json, section_instruction, passage_id, passage_snapshot
             FROM questions
             WHERE qtype = ? AND exam = ? AND subject = ?
             ORDER BY id
@@ -821,8 +822,8 @@ def list_theory(
         f"""
         SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
                options_json, answer, explanation, sub_questions_json,
-               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json,
-               passage_id, passage_snapshot
+               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json,
+               tables_json, section_instruction, passage_id, passage_snapshot
         FROM questions
         WHERE {where_sql}
         ORDER BY COALESCE(sort_key, 999999999), id
@@ -834,7 +835,6 @@ def list_theory(
     passage_lookup = _build_passage_lookup(db, rows)
     db.close()
     return {"items": [_row_to_question(r, passage_lookup) for r in rows], "limit": limit, "offset": offset}
-
 
 def _require_admin(user: Optional[Dict[str, Any]]) -> str:
     if not user or not _is_admin_user(user):
@@ -884,8 +884,8 @@ def admin_list_questions(
             f"""
             SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
                    options_json, answer, explanation, sub_questions_json,
-                   solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json,
-                   passage_id, passage_snapshot
+                   solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json,
+                   tables_json, section_instruction, passage_id, passage_snapshot
             FROM questions
             {where_sql}
             ORDER BY year DESC, exam, subject, COALESCE(sort_key, 999999999), id
@@ -899,7 +899,6 @@ def admin_list_questions(
         db.close()
 
     return {"items": [_row_to_question(r, passage_lookup) for r in rows], "total": total, "limit": limit, "offset": offset}
-
 
 @app.get("/admin/feedback")
 def admin_list_feedback(
@@ -954,8 +953,8 @@ def get_question(qid: str, user: Optional[Dict[str, Any]] = Depends(get_current_
         """
         SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
                options_json, answer, explanation, sub_questions_json,
-               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json, tables_json,
-               passage_id, passage_snapshot
+               solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json,
+               tables_json, section_instruction, passage_id, passage_snapshot
         FROM questions
         WHERE id = ?
         """,
