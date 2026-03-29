@@ -680,9 +680,9 @@ def _build_filters(
 def list_objective(
     limit: int = 20,
     offset: int = 0,
-    exam: Optional[str] = Query(default="NECO"),
-    year: Optional[int] = Query(default=2023),
-    subject: Optional[str] = Query(default="Mathematics"),
+    exam: Optional[str] = Query(default=None),
+    year: Optional[int] = Query(default=None),
+    subject: Optional[str] = Query(default=None),
     user: Optional[Dict[str, Any]] = Depends(get_current_user),
 ):
     is_paid = _is_paid_user(user)
@@ -801,9 +801,9 @@ def cbt_questions(
 def list_theory(
     limit: int = 20,
     offset: int = 0,
-    exam: Optional[str] = Query(default="NECO"),
-    year: Optional[int] = Query(default=2023),
-    subject: Optional[str] = Query(default="Mathematics"),
+    exam: Optional[str] = Query(default=None),
+    year: Optional[int] = Query(default=None),
+    subject: Optional[str] = Query(default=None),
     user: Optional[Dict[str, Any]] = Depends(get_current_user),
 ):
     is_paid = _is_paid_user(user)
