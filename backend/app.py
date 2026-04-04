@@ -601,6 +601,8 @@ def _row_to_question(row, passage_lookup: Optional[Dict[str, Any]] = None) -> Di
         "tables": _jloads(_row_get(row, "tables_json")) or {},
         "passage_id": passage_id,
         "passage_snapshot": passage_snapshot,
+        "topic": _row_get(row, "topic"),
+        "subtopic": _row_get(row, "subtopic"),
     }
 
 
@@ -768,7 +770,8 @@ def cbt_questions(
             SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
                    options_json, answer, explanation, sub_questions_json,
                    solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json,
-                   tables_json, section_instruction, passage_id, passage_snapshot
+                   tables_json, section_instruction, passage_id, passage_snapshot,
+                   topic, subtopic
             FROM questions
             WHERE qtype = ? AND exam = ? AND subject = ?
             ORDER BY id
