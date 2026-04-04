@@ -180,9 +180,19 @@ def get_current_user(authorization: Optional[str] = Header(default=None)) -> Opt
 # -----------------------------
 # MODELS
 # -----------------------------
-class AuthReq(BaseModel):
+class LoginReq(BaseModel):
     identifier: str
     password: str
+
+
+class RegisterReq(BaseModel):
+    identifier: str
+    password: str
+    full_name: Optional[str] = None
+
+
+# Keep AuthReq as alias for backwards compatibility
+AuthReq = LoginReq
 
 
 class AuthResp(BaseModel):
@@ -213,10 +223,12 @@ def _hash_pw(password: str, salt: str) -> str:
 
 
 @app.post("/auth/register", response_model=AuthResp)
-def register(body: AuthReq):
+def register(body: RegisterReq):
     identifier = body.identifier.strip().lower()
     if not identifier or len(body.password) < 4:
         raise HTTPException(status_code=400, detail="Invalid identifier/password")
+
+    full_name = (body.full_name or "").strip() or None
 
     salt = secrets.token_hex(16)
     pw_hash = _hash_pw(body.password, salt)
@@ -224,21 +236,18 @@ def register(body: AuthReq):
     db = db_conn()
     cur = db.cursor()
     try:
-        # ✅ Use a real boolean for Postgres (works in SQLite too)
         cur.execute(
-            "INSERT INTO users (identifier, salt, pw_hash, is_paid) VALUES (?, ?, ?, ?)",
-            (identifier, salt, pw_hash, False),
+            "INSERT INTO users (identifier, salt, pw_hash, is_paid, full_name) VALUES (?, ?, ?, ?, ?)",
+            (identifier, salt, pw_hash, False, full_name),
         )
         db.commit()
     except Exception as e:
-        # ✅ Only claim "already exists" when it's truly a unique/duplicate error
         msg = (str(e) or "").lower()
         logger.exception("Register failed for identifier=%s", identifier)
 
         if "unique" in msg or "duplicate" in msg or "already exists" in msg:
             raise HTTPException(status_code=409, detail="User already exists")
 
-        # Any other DB error is NOT "user exists"
         raise HTTPException(status_code=500, detail="Registration failed. Server DB error.")
     finally:
         db.close()
@@ -280,7 +289,7 @@ def me(user: Optional[Dict[str, Any]] = Depends(get_current_user)):
     db = db_conn()
     cur = db.cursor()
     cur.execute(
-        "SELECT is_paid, paid_until, plan, is_founding, email, is_admin FROM users WHERE identifier = ?",
+        "SELECT is_paid, paid_until, plan, is_founding, email, is_admin, full_name FROM users WHERE identifier = ?",
         (identifier,),
     )
     row = cur.fetchone()
@@ -292,6 +301,7 @@ def me(user: Optional[Dict[str, Any]] = Depends(get_current_user)):
     paid_until = _row_get(row, "paid_until")
     return {
         "identifier": identifier,
+        "full_name": _row_get(row, "full_name"),
         # legacy flag (kept for compatibility)
         "is_paid": bool(_row_get(row, "is_paid")),
         # preferred flag for access gating
