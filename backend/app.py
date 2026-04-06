@@ -510,8 +510,24 @@ def _jloads(x: Optional[str]):
         return None
 
 
-def _normalize_explanation(qtype: Optional[str], raw_explanation: Optional[str]):
+_THEORY_STRING_EXPLANATION_SUBJECTS = frozenset({
+    "English Language",
+    "Literature-in-English",
+    "Oral English",
+})
+
+
+def _normalize_explanation(qtype: Optional[str], raw_explanation: Optional[str], subject: Optional[str] = None):
+    """
+    v12.2: Theory explanations are arrays (one item = one marking point),
+    EXCEPT for English Language, Literature-in-English, and Oral English
+    which retain string format.  Objective explanations remain arrays.
+    """
     if qtype == "objective":
+        return _jloads(raw_explanation) if raw_explanation else []
+    if qtype == "theory":
+        if (subject or "").strip() in _THEORY_STRING_EXPLANATION_SUBJECTS:
+            return raw_explanation or ""
         return _jloads(raw_explanation) if raw_explanation else []
     return raw_explanation or ""
 
@@ -592,7 +608,7 @@ def _row_to_question(row, passage_lookup: Optional[Dict[str, Any]] = None) -> Di
         "question_text": row["question_text"],
         "options": _jloads(_row_get(row, "options_json")),
         "answer": _row_get(row, "answer"),
-        "explanation": _normalize_explanation(qtype, _row_get(row, "explanation")),
+        "explanation": _normalize_explanation(qtype, _row_get(row, "explanation"), _row_get(row, "subject")),
         "sub_questions": _jloads(_row_get(row, "sub_questions_json")),
         "solution_steps": _jloads(_row_get(row, "solution_steps_json")),
         "diagrams": _jloads(_row_get(row, "diagrams_json")) or [],
@@ -601,8 +617,6 @@ def _row_to_question(row, passage_lookup: Optional[Dict[str, Any]] = None) -> Di
         "tables": _jloads(_row_get(row, "tables_json")) or {},
         "passage_id": passage_id,
         "passage_snapshot": passage_snapshot,
-        "topic": _row_get(row, "topic"),
-        "subtopic": _row_get(row, "subtopic"),
     }
 
 
@@ -661,6 +675,22 @@ def _is_paid_user(user: Optional[Dict[str, Any]]) -> bool:
     # legacy fallback
     return bool(_row_get(row, "is_paid"))
 
+
+
+def _extract_theory_q_number(question_id: str) -> int:
+    """
+    Extract the numeric question number from a theory question ID.
+    e.g. 'WAEC_2020_MATH_Q10' -> 10, 'WAEC_2020_MATH_Q2' -> 2
+    Falls back to a large sentinel so un-matched IDs sort last.
+    """
+    import re
+    m = re.search(r"_Q(\d+)$", str(question_id or ""))
+    return int(m.group(1)) if m else 10 ** 9
+
+
+def _sort_theory_rows(rows) -> list:
+    """Sort theory question rows by numeric Q-number, not lexicographic ID."""
+    return sorted(rows, key=lambda r: _extract_theory_q_number(_row_get(r, "id") or ""))
 
 
 def _build_filters(
@@ -770,8 +800,7 @@ def cbt_questions(
             SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
                    options_json, answer, explanation, sub_questions_json,
                    solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json,
-                   tables_json, section_instruction, passage_id, passage_snapshot,
-                   topic, subtopic
+                   tables_json, section_instruction, passage_id, passage_snapshot
             FROM questions
             WHERE qtype = ? AND exam = ? AND subject = ?
             ORDER BY id
@@ -839,12 +868,14 @@ def list_theory(
                tables_json, section_instruction, passage_id, passage_snapshot
         FROM questions
         WHERE {where_sql}
-        ORDER BY COALESCE(sort_key, 999999999), id
+        ORDER BY year, exam, subject, id
         LIMIT ? OFFSET ?
         """,
         (*params, limit, offset),
     )
     rows = cur.fetchall()
+    # v12.2: sort theory by numeric Q-number (Q1 < Q2 < Q10, not lexicographic)
+    rows = _sort_theory_rows(rows)
     passage_lookup = _build_passage_lookup(db, rows)
     db.close()
     return {"items": [_row_to_question(r, passage_lookup) for r in rows], "limit": limit, "offset": offset}
