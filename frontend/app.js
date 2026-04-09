@@ -1,6 +1,6 @@
 
 
-// ExamPartner MVP client (auth + browse + Paystack upgrade) + filters + admin mini tools
+// ExamPartner client (auth + study + CBT + Paystack upgrade) + filters + admin tools
 
 const els = (id) => document.getElementById(id);
 const apiBaseNoSlash = () => (state.apiBase || "").replace(/\/$/, "");
@@ -30,6 +30,13 @@ const QUESTION_FEEDBACK_CATEGORIES = Object.freeze([
   "explanation issue",
   "other",
 ]);
+
+// v12.2: extract numeric Q-number from theory question IDs (e.g. "WAEC_2020_MATH_Q10" -> 10)
+// Falls back to MAX_SAFE_INTEGER so unmatched IDs sort last.
+function extractTheoryQNumber(id) {
+  const match = String(id || "").match(/_Q(\d+)$/);
+  return match ? parseInt(match[1], 10) : Number.MAX_SAFE_INTEGER;
+}
 
 function diagramSrc(name) {
   const raw = String(name || "").trim();
@@ -61,10 +68,22 @@ function createDiagramImage(name, extraClass = "") {
   const img = document.createElement("img");
   img.loading = "lazy";
   img.alt = name;
+
+  // ✅ Add proper classes
   img.className = `diagram-img ${extraClass}`.trim();
+
   img.src = diagramSrc(name);
   img.dataset.diagramName = name;
   img.dataset.zoomableDiagram = "true";
+
+  // ✅ CRITICAL: control size inline (fallback if CSS not applied)
+  img.style.maxWidth = "100%";
+  img.style.maxHeight = "220px";
+  img.style.objectFit = "contain";
+  img.style.display = "block";
+  img.style.margin = "10px auto";
+  img.style.cursor = "zoom-in";
+
   return img;
 }
 
@@ -181,7 +200,7 @@ let activeQuestionId = null;
 let currentListIds = [];      // IDs from the current rendered list
 let currentIndex = -1;        // index of activeQuestionId within currentListIds
 let selectedOptionKey = null; // visual-only option highlight
-let practiceOpenRequestSeq = 0;
+let studyOpenRequestSeq = 0;
 
 function highlightQuestionCard(qid) {
   const items = document.querySelectorAll(".item");
@@ -288,19 +307,39 @@ function renderDiagramsHtml(diagrams) {
   return `<div class="subq-diagrams">${imgs}</div>`;
 }
 
-// Escape + preserve line breaks + allow explicit diagram placeholders:
-// Use: [[diagram:FILE.png]] anywhere in question_text / explanation / steps text
-// ====== Rendering helpers ======
+// Allowed inline HTML tags that may appear in question/passage text.
+// Only these exact tags (no attributes) are rendered — everything else is escaped.
+const ALLOWED_INLINE_TAGS = ["u", "i", "em", "b", "strong", "sup", "sub"];
+const ALLOWED_TAG_RE = new RegExp(
+  `<(/?(${ALLOWED_INLINE_TAGS.join("|")}))>`,
+  "gi"
+);
+
 function renderTextWithDiagrams(rawText, ctx = {}) {
-  const safe = escapeHtml(String(rawText || ""));
-  const withBreaks = safe.replace(/\n/g, "<br>");
+  const raw = String(rawText || "");
+
+  // Step 1: Extract allowed tags using placeholders so escapeHtml can't touch them.
+  const extracted = [];
+  const withPlaceholders = raw.replace(ALLOWED_TAG_RE, (match) => {
+    const idx = extracted.length;
+    extracted.push(match.toLowerCase()); // normalise to lowercase
+    return `\x00TAG${idx}\x00`;
+  });
+
+  // Step 2: Escape everything else.
+  const safe = escapeHtml(withPlaceholders);
+
+  // Step 3: Restore allowed tags and convert newlines to <br>.
+  const withTagsBack = safe
+    .replace(/\x00TAG(\d+)\x00/g, (_, i) => extracted[parseInt(i, 10)])
+    .replace(/\n/g, "<br>");
 
   const question = ctx.question || null;
   const tables = ctx.tables || question?.tables || {};
   const mode = ctx.mode || "question"; // "question" | "reveal" | "explain"
 
   // 1) Inject TABLE placeholders: [[table:T1]] or [[table:T1:answer]]
-  let out = withBreaks.replace(/\[\[table:([^\]:\]]+)(?::(answer))?\]\]/gi, (_m, key, answerFlag) => {
+  let out = withTagsBack.replace(/\[\[table:([^\]:\]]+)(?::(answer))?\]\]/gi, (_m, key, answerFlag) => {
     const k = String(key || "").trim();
     if (!k) return "";
 
@@ -429,9 +468,9 @@ function scrollToExplainBox() {
 
 
 // ====== CONFIG ======
-const PAYSTACK_AMOUNT_NGN = 1000; // ₦1,000
+const PAYSTACK_AMOUNT_NGN = 1000;      // ₦1,000 (Founding — limited to 500 students)
 const PAYSTACK_CURRENCY = "NGN";
-const PAYSTACK_CORE_AMOUNT_NGN = 10000; // ₦10,000 (Core annual)
+const PAYSTACK_CORE_AMOUNT_NGN = 2000;  // ₦2,000 (Core — 1 year)
 // ====================
 
 // ---- Filter presets ----
@@ -486,6 +525,7 @@ const state = {
     year: localStorage.getItem("filter_year") || "",
     subject: localStorage.getItem("filter_subject") || "",
   },
+  freeYear: null,        // oldest available year for the current subject (free access)
 
   adminKey: sessionStorage.getItem(ADMIN_KEY_STORAGE) || "",
   adminView: "dashboard",
@@ -499,6 +539,7 @@ const state = {
     selectedOptionKey: null,
     answersByQuestionKey: {},
     sessionReady: false,
+    freeYear: null,        // oldest year loaded for free users
     timerDurationMs: 0,
     timeRemainingMs: 0,
     timerStartedAt: 0,
@@ -509,6 +550,10 @@ const state = {
     feedbackOpen: false,
     selectedSubjects: [],   // ["Use of English", subj2, subj3, subj4]
     availableSubjects: [],  // full list from /filters, used by syncCbtSubjectSelectors
+    currentSubject: null,   // active tab subject name
+    subjectMap: {},         // { "Mathematics": [0,1,...39], ... } — built after load
+    subjectTimeMap: {},     // { "Mathematics": totalMs, ... } — accumulated time per subject
+    subjectEnteredAt: 0,    // timestamp when user entered current subject
   },
 };
 
@@ -646,7 +691,7 @@ function getQuestionFeedbackDraft() {
     question_id: String(state.currentQuestion?.id || activeQuestionId || "").trim(),
     category: String(els("questionFeedbackCategory")?.value || "").trim(),
     message: String(els("questionFeedbackMessage")?.value || "").trim(),
-    source_area: "practice",
+    source_area: "study",
   };
 }
 
@@ -716,7 +761,7 @@ async function submitQuestionFeedback(payload) {
     question_id: String(payload?.question_id || "").trim(),
     category: String(payload?.category || "").trim(),
     message: String(payload?.message || "").trim(),
-    source_area: String(payload?.source_area || "practice").trim() || "practice",
+    source_area: String(payload?.source_area || "study").trim() || "study",
   };
 
   const response = await api("/feedback/question", {
@@ -930,23 +975,18 @@ function setPaidChip(paid) {
 
 
 
-function updatePracticeMetaUI() {
-  const el = els("practiceMeta");
+
+function updateStudyMetaUI() {
+  const el = els("studyMeta");
   if (!el) return;
 
-  // If nothing is selected yet, keep the brand umbrella message
-  const hasAny = !!(state.filters.exam || state.filters.year || state.filters.subject);
-  if (!hasAny) {
-    el.textContent = "NECO / WAEC / JAMB • Past Questions • Explanations";
+  if (!state.filters.exam || !state.filters.subject) {
+    el.textContent = "Past Questions • Study Mode";
     return;
   }
 
-  const exam = state.filters.exam || "All Exams";
-  const subject = state.filters.subject || "All Subjects";
-  const year = state.filters.year || "All Years";
-  el.textContent = `${exam} • ${subject} • ${year}`;
+  el.textContent = `${state.filters.exam} ${state.filters.year || ""} • ${state.filters.subject}`.trim();
 }
-
 
 
 function saveApiBase() {
@@ -1040,6 +1080,16 @@ function cleanPreviewText(s) {
   return s.trim();
 }
 
+function stripLeadingQuestionNumber(text) {
+  const raw = String(text || "").trim();
+
+  // Removes:
+  // 1. Question
+  // 12. Question
+  // 45) Question
+  // 7 - Question
+  return raw.replace(/^\s*\d+\s*([.)-])\s*/, "");
+}
 function trimText(s, n = 140) {
   s = (s || "").trim();
   if (s.length <= n) return s;
@@ -1074,12 +1124,13 @@ function renderExplanation(explanationArray, question = null) {
 
   return `<div style="margin:6px 0 0; line-height:1.6;">
     ${explanationArray.map(item => {
+      const rendered = renderTextWithDiagrams(String(item || ""), { question, mode: "explain" });
       if (item.startsWith("Option")) {
-        return `<p style="margin:6px 0;"><strong>${escapeHtml(item)}</strong></p>`;
+        return `<p style="margin:6px 0;"><strong>${rendered}</strong></p>`;
       } else if (item.startsWith("Memory hook")) {
-        return `<p style="margin:6px 0;"><em>${escapeHtml(item)}</em></p>`;
+        return `<p style="margin:6px 0;"><em>${rendered}</em></p>`;
       } else {
-        return `<p style="margin:6px 0;">${escapeHtml(item)}</p>`;
+        return `<p style="margin:6px 0;">${rendered}</p>`;
       }
     }).join("")}
   </div>`;
@@ -1161,6 +1212,7 @@ function renderSubQuestions(question, items, opts = {}) {
 }
 
 
+// ---- Viewer rendering section ----
 function getPassageDisplayHtml(passageSnapshot) {
   if (!passageSnapshot) return "";
 
@@ -1172,13 +1224,7 @@ function getPassageDisplayHtml(passageSnapshot) {
 
   if (typeof passageSnapshot !== "object") return "";
 
-  const title = String(
-    passageSnapshot.title
-    || passageSnapshot.heading
-    || passageSnapshot.label
-    || "Passage"
-  ).trim();
-
+  const title = String(passageSnapshot.title || passageSnapshot.heading || passageSnapshot.label || "Passage").trim();
   const passageText = String(
     passageSnapshot.passage_text
     || passageSnapshot.text
@@ -1190,12 +1236,9 @@ function getPassageDisplayHtml(passageSnapshot) {
   const metaBits = [];
   if (passageSnapshot.passage_type) metaBits.push(String(passageSnapshot.passage_type));
   if (passageSnapshot.reference) metaBits.push(String(passageSnapshot.reference));
-  if (passageSnapshot.question_range) metaBits.push(String(passageSnapshot.question_range));
 
   const titleHtml = `<div class="passage-title">${escapeHtml(title || "Passage")}</div>`;
-  const metaHtml = metaBits.length
-    ? `<div class="passage-meta">${escapeHtml(metaBits.join(" • "))}</div>`
-    : "";
+  const metaHtml = metaBits.length ? `<div class="passage-meta">${escapeHtml(metaBits.join(" • "))}</div>` : "";
   const bodyHtml = passageText
     ? `<div class="passage-body">${renderTextWithDiagrams(passageText, { mode: "question" })}</div>`
     : "";
@@ -1204,8 +1247,44 @@ function getPassageDisplayHtml(passageSnapshot) {
   return `${titleHtml}${metaHtml}${bodyHtml}`;
 }
 
-function renderQuestion(question) {
+  function renderQuestion(question) {
   const qPassageEl = els("qPassage");
+  const qTextEl = els("qText");
+  const qTablesEl = els("qTables");
+  const qDiagramsEl = els("qDiagrams");
+  const qSubQuestionsEl = els("qSubQuestions");
+  const qSectionInstructionEl = els("qSectionInstruction");
+  const qExplainEl = els("qExplain");
+
+  // ✅ SECTION INSTRUCTION (FIXED)
+  if (qSectionInstructionEl) {
+    const instruction = (question.section_instruction || "").trim();
+
+    if (instruction) {
+      qSectionInstructionEl.hidden = false;
+      qSectionInstructionEl.innerHTML = `
+        <div style="
+          margin-bottom:10px;
+          padding:10px;
+          border-left:4px solid #3b82f6;
+          background:rgba(59,130,246,0.08);
+          font-style:italic;
+          line-height:1.5;
+        ">
+          ${renderTextWithDiagrams(instruction, {
+            question,
+            tables: question.tables || {},
+            mode: "question"
+          })}
+        </div>
+      `;
+    } else {
+      qSectionInstructionEl.hidden = true;
+      qSectionInstructionEl.innerHTML = "";
+    }
+  }
+
+  // Passage
   const passageHtml = getPassageDisplayHtml(question.passage_snapshot);
   if (qPassageEl) {
     qPassageEl.hidden = !passageHtml;
@@ -1213,52 +1292,85 @@ function renderQuestion(question) {
   }
 
   // Question text
-  const qTextEl = els("qText");
   const hasInlineTableRef = /\[\[table:[A-Za-z0-9_]+\]\]/.test(question.question_text || "");
 
   if (qTextEl) {
-    qTextEl.innerHTML = `<div>${renderTextWithDiagrams(question.question_text || "", { question, tables: question.tables || {}, mode: "question" })}</div>`;
+    qTextEl.innerHTML = `<div>${renderTextWithDiagrams(question.question_text || "", {
+      question,
+      tables: question.tables || {},
+      mode: "question"
+    })}</div>`;
   }
 
-  // Render question tables only when they are NOT already embedded inline
-  const qTablesEl = els("qTables");
+  // Tables
   if (qTablesEl) {
     if (hasInlineTableRef) {
       qTablesEl.innerHTML = "";
       qTablesEl.hidden = true;
     } else {
-      qTablesEl.hidden = false;
-      renderTablesInto(qTablesEl, question.tables || {}, question.table_refs || null, "question");
+      const hasTables = question.tables && Object.keys(question.tables).length > 0;
+      qTablesEl.hidden = !hasTables;
+
+      if (hasTables) {
+        renderTablesInto(qTablesEl, question.tables, question.table_refs || null, "question");
+      } else {
+        qTablesEl.innerHTML = "";
+      }
     }
   }
 
-  // Main question diagrams (separate field)
-  renderDiagramsInto(els("qDiagrams"), question.diagrams || [], { variant: "block" });
+  // Diagrams
+  if (qDiagramsEl) {
+    const hasDiagrams = Array.isArray(question.diagrams) && question.diagrams.length > 0;
+    qDiagramsEl.hidden = !hasDiagrams;
 
-  // Sub-questions (question-only view; answers hidden until reveal/explain)
-  const subBox = els("qSubQuestions");
-  if (subBox) {
-    if (question.sub_questions && Array.isArray(question.sub_questions) && question.sub_questions.length) {
-      subBox.hidden = false;
-      subBox.innerHTML = `
+    if (hasDiagrams) {
+      renderDiagramsInto(qDiagramsEl, question.diagrams, { variant: "block" });
+    } else {
+      qDiagramsEl.innerHTML = "";
+    }
+  }
+
+  // Sub-questions
+  if (qSubQuestionsEl) {
+    if (Array.isArray(question.sub_questions) && question.sub_questions.length) {
+      qSubQuestionsEl.hidden = false;
+      qSubQuestionsEl.innerHTML = `
         <div style="font-weight:700; margin:12px 0 6px;">Sub-questions</div>
-        ${renderSubQuestions(question, question.sub_questions, { showAnswers: false, showExplanations: false, showDiagrams: true })}
+        ${renderSubQuestions(question, question.sub_questions, {
+          showAnswers: false,
+          showExplanations: false,
+          showDiagrams: true,
+          mode: "question"
+        })}
       `;
     } else {
-      subBox.hidden = true;
-      subBox.innerHTML = "";
+      qSubQuestionsEl.hidden = true;
+      qSubQuestionsEl.innerHTML = "";
     }
   }
 
-  // Reset explanation box
-  const exp = els("qExplain");
-  if (exp) {
-    exp.hidden = true;
-    exp.innerHTML = "";
+  // Reset explanation
+  if (qExplainEl) {
+    qExplainEl.hidden = true;
+    qExplainEl.innerHTML = "";
   }
 }
 
-function renderQuestionInto(prefix, question, { selectedOptionKey = null, onOptionSelect = null, readOnly = false, reviewAnswer = null } = {}) {
+ function renderQuestionInto(
+  prefix,
+  question,
+  {
+    selectedOptionKey = null,
+    onOptionSelect = null,
+    readOnly = false,
+    reviewAnswer = null,
+    stripQuestionNumber = false,
+    questionNumber = null,   // CBT position number to prepend (1-based)
+    stripSectionRange = false, // CBT: strip "Questions N–M are/: " from section instruction
+  } = {}
+) {
+  const sectionInstructionEl = els(`${prefix}SectionInstruction`);
   const passageEl = els(`${prefix}Passage`);
   const textEl = els(`${prefix}QuestionText`);
   const tablesEl = els(`${prefix}QuestionTables`);
@@ -1266,36 +1378,110 @@ function renderQuestionInto(prefix, question, { selectedOptionKey = null, onOpti
   const subQuestionsEl = els(`${prefix}SubQuestions`);
   const optionsEl = els(`${prefix}Options`);
 
+  function stripLeadingQuestionNumber(text) {
+    const raw = String(text || "").trim();
+    return raw.replace(/^\s*\d+\s*([.)-])\s*/, "");
+  }
+
+  function stripQuestionRangeFromInstruction(text) {
+    // Removes leading "Questions N–M are " / "Questions N–M: " / "Question N is "
+    // e.g. "Questions 27–30 are based on..." → "based on..."
+    return String(text || "").trim()
+      .replace(/^Questions?\s+\d+[\u2013\u2014-]\d+\s*(are|is|:)\s*/i, "")
+      .replace(/^Questions?\s+\d+\s*(is|are|:)\s*/i, "")
+      .trim();
+  }
+
+  // Normalize once
+  const userKey = normalizeCbtAnswerKey(selectedOptionKey);
+  const correctKey = normalizeCbtAnswerKey(reviewAnswer);
+
+  // Section instruction
+  if (sectionInstructionEl) {
+    const rawInstruction = question.section_instruction || "";
+    const instruction = (stripSectionRange && rawInstruction)
+      ? stripQuestionRangeFromInstruction(rawInstruction)
+      : rawInstruction;
+    sectionInstructionEl.hidden = !instruction;
+
+    sectionInstructionEl.innerHTML = instruction
+      ? `<div class="section-instruction">
+          ${renderTextWithDiagrams(instruction, {
+            question,
+            tables: question.tables || {},
+            mode: "question"
+          })}
+        </div>`
+      : "";
+  }
+
+  // Passage
   const passageHtml = getPassageDisplayHtml(question.passage_snapshot);
   if (passageEl) {
     passageEl.hidden = !passageHtml;
     passageEl.innerHTML = passageHtml;
   }
 
+  // Question text
   const hasInlineTableRef = /\[\[table:[A-Za-z0-9_]+\]\]/.test(question.question_text || "");
+  const strippedText = stripQuestionNumber
+    ? stripLeadingQuestionNumber(question.question_text || "")
+    : (question.question_text || "");
+
+  // Prepend CBT position number if provided
+  const questionTextToRender = (questionNumber !== null)
+    ? `${questionNumber}. ${strippedText}`
+    : strippedText;
 
   if (textEl) {
-    textEl.innerHTML = `<div>${renderTextWithDiagrams(question.question_text || "", { question, tables: question.tables || {}, mode: "question" })}</div>`;
+    textEl.innerHTML = `<div>${renderTextWithDiagrams(questionTextToRender, {
+      question,
+      tables: question.tables || {},
+      mode: "question"
+    })}</div>`;
   }
 
+  // Tables
   if (tablesEl) {
     if (hasInlineTableRef) {
       tablesEl.innerHTML = "";
       tablesEl.hidden = true;
     } else {
-      tablesEl.hidden = false;
-      renderTablesInto(tablesEl, question.tables || {}, question.table_refs || null, "question");
+      const hasTables = question.tables && Object.keys(question.tables).length > 0;
+      tablesEl.hidden = !hasTables;
+
+      if (hasTables) {
+        renderTablesInto(tablesEl, question.tables, question.table_refs || null, "question");
+      } else {
+        tablesEl.innerHTML = "";
+      }
     }
   }
 
-  renderDiagramsInto(diagramsEl, question.diagrams || [], { variant: "block" });
+  // Diagrams
+  if (diagramsEl) {
+    const hasDiagrams = Array.isArray(question.diagrams) && question.diagrams.length > 0;
+    diagramsEl.hidden = !hasDiagrams;
 
+    if (hasDiagrams) {
+      renderDiagramsInto(diagramsEl, question.diagrams, { variant: "block" });
+    } else {
+      diagramsEl.innerHTML = "";
+    }
+  }
+
+  // Sub-questions
   if (subQuestionsEl) {
-    if (question.sub_questions && Array.isArray(question.sub_questions) && question.sub_questions.length) {
+    if (Array.isArray(question.sub_questions) && question.sub_questions.length) {
       subQuestionsEl.hidden = false;
       subQuestionsEl.innerHTML = `
         <div style="font-weight:700; margin:12px 0 6px;">Sub-questions</div>
-        ${renderSubQuestions(question, question.sub_questions, { showAnswers: false, showExplanations: false, showDiagrams: true })}
+        ${renderSubQuestions(question, question.sub_questions, {
+          showAnswers: false,
+          showExplanations: false,
+          showDiagrams: true,
+          mode: "question"
+        })}
       `;
     } else {
       subQuestionsEl.hidden = true;
@@ -1303,15 +1489,15 @@ function renderQuestionInto(prefix, question, { selectedOptionKey = null, onOpti
     }
   }
 
+  // Options
   if (optionsEl) {
     optionsEl.innerHTML = "";
 
-    // Review mode: inject status label above options
+    // Review status
     if (reviewAnswer !== null) {
-      const userKey = normalizeCbtAnswerKey(selectedOptionKey);
-      const correctKey = normalizeCbtAnswerKey(reviewAnswer);
       let statusClass = "unanswered";
       let statusText = "— Not answered";
+
       if (userKey && userKey === correctKey) {
         statusClass = "correct";
         statusText = "✓ Correct";
@@ -1319,6 +1505,7 @@ function renderQuestionInto(prefix, question, { selectedOptionKey = null, onOpti
         statusClass = "wrong";
         statusText = "✗ Wrong";
       }
+
       const statusEl = document.createElement("div");
       statusEl.className = `cbt-review-status ${statusClass}`;
       statusEl.textContent = statusText;
@@ -1326,37 +1513,41 @@ function renderQuestionInto(prefix, question, { selectedOptionKey = null, onOpti
     }
 
     const options = question.options && typeof question.options === "object" ? question.options : null;
+
     if (options) {
       for (const key of Object.keys(options)) {
+        const normKey = normalizeCbtAnswerKey(key);
+
         const optionEl = document.createElement("div");
         optionEl.className = "opt";
         optionEl.dataset.key = key;
-        optionEl.innerHTML = `<b>${escapeHtml(key)}</b>. ${escapeHtml(options[key])}`;
+
+        optionEl.innerHTML = `<b>${escapeHtml(key)}</b>. ${renderTextWithDiagrams(options[key], {
+          question,
+          mode: "question"
+        })}`;
 
         if (reviewAnswer !== null) {
-          // Review mode — apply colour classes, no click handler
-          const userKey = normalizeCbtAnswerKey(selectedOptionKey);
-          const correctKey = normalizeCbtAnswerKey(reviewAnswer);
-          const normKey = normalizeCbtAnswerKey(key);
-
           if (normKey === correctKey && userKey === correctKey) {
-            optionEl.classList.add("opt-correct");   // picked the right answer
+            optionEl.classList.add("opt-correct");
           } else if (normKey === userKey && userKey !== correctKey) {
-            optionEl.classList.add("opt-wrong");     // picked the wrong answer
+            optionEl.classList.add("opt-wrong");
           } else if (normKey === correctKey) {
-            optionEl.classList.add("opt-missed");    // correct answer user didn't pick
+            optionEl.classList.add("opt-missed");
           } else {
             optionEl.classList.add("disabled");
           }
+
           optionEl.setAttribute("aria-disabled", "true");
         } else if (readOnly) {
-          if (selectedOptionKey === key) optionEl.classList.add("selected");
-          optionEl.setAttribute("aria-disabled", "true");
+          if (normKey === userKey) optionEl.classList.add("selected");
           optionEl.classList.add("disabled");
+          optionEl.setAttribute("aria-disabled", "true");
         } else {
-          if (selectedOptionKey === key) optionEl.classList.add("selected");
+          if (normKey === userKey) optionEl.classList.add("selected");
+
           optionEl.onclick = () => {
-            const nextKey = selectedOptionKey === key ? null : key;
+            const nextKey = userKey === normKey ? null : key;
             if (typeof onOptionSelect === "function") {
               onOptionSelect(nextKey, question, key);
             }
@@ -1368,7 +1559,6 @@ function renderQuestionInto(prefix, question, { selectedOptionKey = null, onOpti
     }
   }
 }
-
 function renderAnswerBlock(question) {
   const parts = [];
 
@@ -1500,28 +1690,53 @@ function normalizeCbtAnswerKey(value) {
 }
 
 function calculateCbtResult() {
+  const ENGLISH_SUBJECT = CBT_ENGLISH_SUBJECT;
+  const ENGLISH_MULTIPLIER = 100 / 60;
+  const OTHER_MULTIPLIER = 2.5;
+
   const questions = Array.isArray(state.cbt.questions) ? state.cbt.questions : [];
   const totalQuestions = questions.length;
   let answeredQuestions = 0;
   let correctAnswers = 0;
   const bySubject = {};
+  const byTopic = {}; // key: "Subject||Topic" → { subject, topic, correct, total }
 
   for (let index = 0; index < questions.length; index += 1) {
     const question = questions[index];
     const subject = String(question?.subject || "Unknown").trim();
+    const topic = String(question?.topic || "").trim();
     const selected = normalizeCbtAnswerKey(getCbtSelectedAnswer(question, index));
     const expected = normalizeCbtAnswerKey(question?.answer);
 
-    if (!bySubject[subject]) bySubject[subject] = { correct: 0, total: 0 };
+    // bySubject
+    if (!bySubject[subject]) bySubject[subject] = { correct: 0, total: 0, weightedScore: 0, weightedMax: 0 };
+    const multiplier = subject === ENGLISH_SUBJECT ? ENGLISH_MULTIPLIER : OTHER_MULTIPLIER;
     bySubject[subject].total += 1;
+    bySubject[subject].weightedMax += multiplier;
+
+    // byTopic
+    if (topic) {
+      const topicKey = `${subject}||${topic}`;
+      if (!byTopic[topicKey]) byTopic[topicKey] = { subject, topic, correct: 0, total: 0 };
+      byTopic[topicKey].total += 1;
+    }
 
     if (selected) answeredQuestions += 1;
     if (selected && expected && selected === expected) {
       correctAnswers += 1;
       bySubject[subject].correct += 1;
+      bySubject[subject].weightedScore += multiplier;
+      if (topic) {
+        const topicKey = `${subject}||${topic}`;
+        if (byTopic[topicKey]) byTopic[topicKey].correct += 1;
+      }
     }
   }
 
+  const jambScore = Math.round(
+    Object.values(bySubject).reduce((sum, s) => sum + s.weightedScore, 0)
+  );
+  const jambScoreMax = 400;
   const wrongAnswers = Math.max(0, answeredQuestions - correctAnswers);
   const percentage = totalQuestions ? Math.round((correctAnswers / totalQuestions) * 100) : 0;
 
@@ -1532,7 +1747,10 @@ function calculateCbtResult() {
     wrongAnswers,
     score: correctAnswers,
     percentage,
+    jambScore,
+    jambScoreMax,
     bySubject,
+    byTopic,
     submittedAt: Date.now(),
   };
 }
@@ -1554,33 +1772,130 @@ function renderCbtResult() {
   if (answeredEl) answeredEl.textContent = String(result.answeredQuestions);
   if (correctEl) correctEl.textContent = String(result.correctAnswers);
   if (wrongEl) wrongEl.textContent = String(result.wrongAnswers);
-  if (badgeEl) badgeEl.textContent = `Score ${result.score} / ${result.totalQuestions} (${result.percentage}%)`;
+  if (badgeEl) badgeEl.textContent = String(result.jambScore);
 
-  const filterBits = [state.filters.exam, state.filters.year, state.filters.subject].filter(Boolean);
+  const filterBits = state.cbt.selectedSubjects?.length
+    ? state.cbt.selectedSubjects
+    : [state.filters.exam, state.filters.year, state.filters.subject].filter(Boolean);
   if (metaEl) metaEl.textContent = filterBits.length
-    ? `Submitted ${filterBits.join(" • ")} CBT session.`
+    ? `Submitted: ${filterBits.join(" • ")}`
     : "Submitted CBT session.";
 
   if (statusEl) {
     const unanswered = Math.max(0, result.totalQuestions - result.answeredQuestions);
     statusEl.textContent = unanswered
-      ? `${unanswered} question(s) were left unanswered before submission.`
-      : "All questions were answered before submission.";
+      ? `${unanswered} question(s) left unanswered.`
+      : "All questions were answered.";
   }
 
-  // Per-subject breakdown
+  // Task A — Subject performance bars
   const breakdownEl = els("resultSubjectBreakdown");
   if (breakdownEl && result.bySubject && Object.keys(result.bySubject).length) {
-    breakdownEl.innerHTML = Object.entries(result.bySubject)
-      .map(([subject, { correct, total }]) => {
-        const pct = total ? Math.round((correct / total) * 100) : 0;
-        return `<div class="panel" style="margin-top:0;">
-          <strong>${escapeHtml(subject)}</strong>
-          <div class="meta" style="margin-top:4px;">${correct} / ${total} correct &nbsp;•&nbsp; ${pct}%</div>
-        </div>`;
-      })
-      .join("");
+    const subjectEntries = Object.entries(result.bySubject);
+    breakdownEl.innerHTML = `
+      <h3 style="margin:0 0 14px;">Subject Performance</h3>
+      ${subjectEntries.map(([subject, { correct, total, weightedScore, weightedMax }]) => {
+        const jamb = Math.round(weightedScore * 10) / 10;
+        const pct = weightedMax > 0 ? Math.round((weightedScore / weightedMax) * 100) : 0;
+        const barColor = pct >= 70 ? "#34d399" : pct >= 50 ? "#fbbf24" : "#f87171";
+        return `
+          <div style="margin-bottom:16px;">
+            <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;">
+              <span style="font-weight:600; font-size:14px;">${escapeHtml(subject)}</span>
+              <span style="font-size:13px; color:#a5b4fc; font-variant-numeric:tabular-nums;">
+                <strong>${jamb}</strong>/100 &nbsp;•&nbsp; ${correct}/${total} correct
+              </span>
+            </div>
+            <div style="height:10px; border-radius:999px; background:rgba(255,255,255,0.07); overflow:hidden;">
+              <div style="height:100%; width:${pct}%; background:${barColor}; border-radius:999px; transition:width 600ms ease;"></div>
+            </div>
+          </div>
+        `;
+      }).join("")}
+    `;
     breakdownEl.hidden = false;
+  }
+
+  // Task B — Weak topics
+  const weakTopicsEl = els("resultWeakTopics");
+  if (weakTopicsEl && result.byTopic && Object.keys(result.byTopic).length) {
+    const WEAK_THRESHOLD = 0.6;
+    const weakTopics = Object.values(result.byTopic)
+      .filter(t => t.total >= 2 && (t.correct / t.total) < WEAK_THRESHOLD)
+      .sort((a, b) => (a.correct / a.total) - (b.correct / b.total));
+
+    if (weakTopics.length) {
+      const bySubjectMap = {};
+      weakTopics.forEach(t => {
+        if (!bySubjectMap[t.subject]) bySubjectMap[t.subject] = [];
+        bySubjectMap[t.subject].push(t);
+      });
+      weakTopicsEl.innerHTML = `
+        <h3 style="margin:0 0 4px;">⚠ Weak Areas</h3>
+        <div class="hint" style="margin-bottom:14px;">Topics where you scored below 60% — focus your revision here.</div>
+        ${Object.entries(bySubjectMap).map(([subject, topics]) => `
+          <div style="margin-bottom:16px;">
+            <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:#a5b4fc; margin-bottom:8px;">${escapeHtml(subject)}</div>
+            ${topics.map(t => {
+              const pct = Math.round((t.correct / t.total) * 100);
+              return `
+                <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; background:rgba(239,68,68,0.07); border:1px solid rgba(239,68,68,0.18); border-radius:10px; margin-bottom:6px;">
+                  <span style="font-size:13px; font-weight:600;">${escapeHtml(t.topic)}</span>
+                  <span style="font-size:12px; color:#fca5a5; font-variant-numeric:tabular-nums;">${t.correct}/${t.total} correct (${pct}%)</span>
+                </div>
+              `;
+            }).join("")}
+          </div>
+        `).join("")}
+      `;
+      weakTopicsEl.hidden = false;
+    } else {
+      weakTopicsEl.hidden = true;
+    }
+  }
+
+  // Task C — Time analysis
+  const timeAnalysisEl = els("resultTimeAnalysis");
+  if (timeAnalysisEl) {
+    const timeMap = state.cbt.subjectTimeMap || {};
+    const subjects = Object.keys(timeMap).filter(s => timeMap[s] > 0);
+    if (subjects.length) {
+      const totalMs = Object.values(timeMap).reduce((a, b) => a + b, 0);
+      timeAnalysisEl.innerHTML = `
+        <h3 style="margin:0 0 4px;">⏱ Time Analysis</h3>
+        <div class="hint" style="margin-bottom:14px;">Time spent per subject during the session.</div>
+        ${subjects.map(subject => {
+          const ms = timeMap[subject];
+          const mins = Math.floor(ms / 60000);
+          const secs = Math.floor((ms % 60000) / 1000);
+          const pct = totalMs > 0 ? Math.round((ms / totalMs) * 100) : 0;
+          const timeStr = mins > 0 ? `${mins} min ${secs} sec` : `${secs} sec`;
+          return `
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; background:rgba(99,102,241,0.07); border:1px solid rgba(99,102,241,0.15); border-radius:10px; margin-bottom:6px;">
+              <span style="font-size:13px; font-weight:600;">${escapeHtml(subject)}</span>
+              <span style="font-size:12px; color:#a5b4fc; font-variant-numeric:tabular-nums;">${timeStr} (${pct}%)</span>
+            </div>
+          `;
+        }).join("")}
+      `;
+      timeAnalysisEl.hidden = false;
+    } else {
+      timeAnalysisEl.hidden = true;
+    }
+  }
+
+  // Conversion nudge for free users
+  const nudgeEl = els("cbtConversionNudge");
+  if (nudgeEl) {
+    if (!state.isPaid) {
+      const freeYr = state.cbt.freeYear || state.freeYear || "";
+      nudgeEl.textContent = freeYr
+        ? `You completed the ${freeYr} free year. Unlock all years to keep improving.`
+        : "You've completed your free CBT session. Unlock all years to keep improving.";
+      nudgeEl.hidden = false;
+    } else {
+      nudgeEl.hidden = true;
+    }
   }
 
   resultSection.hidden = false;
@@ -1591,6 +1906,7 @@ function submitCurrentCbtSession({ reason = "manual" } = {}) {
 
   resetCbtQuestionFeedbackForm();
   setCbtQuestionFeedbackPanelOpen(false, { resetStatus: true });
+  flushSubjectTime();
   stopCbtTimer();
   syncCbtTimer();
   state.cbt.submitted = true;
@@ -1627,9 +1943,10 @@ function setCbtSelectedAnswer(question, answerKey, fallbackIndex = state.cbt.cur
 
 function formatCountdown(ms) {
   const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
+  const hours   = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function stopCbtTimer() {
@@ -1640,12 +1957,44 @@ function stopCbtTimer() {
 }
 
 function updateCbtTimerUi() {
-  const timerEl = els("cbtTimer");
-  if (!timerEl) return;
+  const ms = state.cbt.timeRemainingMs;
+  const timeStr = formatCountdown(ms);
+  const isRunning = state.cbt.sessionReady && !state.cbt.submitted;
 
-  timerEl.textContent = formatCountdown(state.cbt.timeRemainingMs);
-  timerEl.classList.toggle("is-warning", state.cbt.timeRemainingMs > 0 && state.cbt.timeRemainingMs <= 5 * 60 * 1000);
-  timerEl.classList.toggle("is-expired", state.cbt.timeRemainingMs <= 0);
+  // Inline timer badge inside workspace
+  const timerEl = els("cbtTimer");
+  if (timerEl) {
+    timerEl.textContent = timeStr;
+    timerEl.classList.toggle("is-warning", ms > 0 && ms <= 15 * 60 * 1000);
+    timerEl.classList.toggle("is-expired", ms <= 0);
+  }
+
+  // Sticky bar
+  const stickyBar = els("cbtStickyBar");
+  const stickyTime = els("cbtStickyTime");
+  const stickyPos  = els("cbtStickyPosition");
+  const stickySub  = els("cbtStickySubject");
+
+  if (!stickyBar) return;
+
+  const showSticky = isRunning && !!state.cbt.timerStartedAt;
+  stickyBar.hidden = !showSticky;
+  document.body.classList.toggle("cbt-sticky-active", showSticky);
+
+  if (!showSticky) return;
+
+  if (stickyTime) stickyTime.textContent = timeStr;
+
+  const total = state.cbt.questions.length;
+  const pos = state.cbt.currentIndex + 1;
+  if (stickyPos) stickyPos.textContent = `Question ${pos} of ${total}`;
+
+  const currentQ = state.cbt.questions[state.cbt.currentIndex];
+  if (stickySub) stickySub.textContent = currentQ?.subject || "";
+
+  stickyBar.classList.toggle("is-warning", ms > 5 * 60 * 1000 && ms <= 15 * 60 * 1000);
+  stickyBar.classList.toggle("is-danger",  ms > 0 && ms <= 5 * 60 * 1000);
+  stickyBar.classList.toggle("is-expired", ms <= 0);
 }
 
 function updateCbtSessionMeta() {
@@ -1698,6 +2047,7 @@ function startCbtTimer() {
   state.cbt.timerDurationMs = CBT_DURATION_MS;
   state.cbt.timeRemainingMs = CBT_DURATION_MS;
   state.cbt.timerStartedAt = Date.now();
+  state.cbt.subjectEnteredAt = Date.now();
   state.cbt.timerExpired = false;
   syncCbtTimer();
   state.cbt.timerIntervalId = setInterval(syncCbtTimer, 1000);
@@ -1717,9 +2067,7 @@ function updateCbtNavButtons() {
 
 function renderCbtQuestion() {
   const workspace = els("cbtWorkspace");
-  const titleEl = els("cbtQuestionTitle");
-  const positionEl = els("cbtQuestionPosition");
-  const metaEl = els("cbtQuestionMeta");
+  const orientationEl = els("cbtOrientationLabel");
   const cbtSection = els("cbtSection");
 
   if (cbtSection) openCbtContainer();
@@ -1727,15 +2075,15 @@ function renderCbtQuestion() {
   const total = state.cbt.questions.length;
   const question = total ? state.cbt.questions[state.cbt.currentIndex] : null;
 
-  if (!workspace || !titleEl || !positionEl || !metaEl) return;
+  if (!workspace) return;
 
   if (!question) {
     workspace.hidden = true;
     setCbtQuestionFeedbackPanelOpen(false, { resetStatus: true });
     resetCbtQuestionFeedbackForm();
-    titleEl.textContent = "CBT Question";
-    positionEl.textContent = "Question 0 of 0";
-    metaEl.textContent = "";
+    if (orientationEl) orientationEl.textContent = "—";
+    renderCbtSubjectTabs();
+    renderCbtQuestionPalette();
     updateCbtTimerUi();
     updateCbtSessionMeta();
     updateCbtNavButtons();
@@ -1744,19 +2092,33 @@ function renderCbtQuestion() {
 
   const isReviewMode = !!state.cbt.submitted;
   workspace.hidden = false;
-  titleEl.textContent = question.id || `Question ${state.cbt.currentIndex + 1}`;
-  positionEl.textContent = `Question ${state.cbt.currentIndex + 1} of ${total}`;
 
-  const meta = [];
-  if (question.type) meta.push(question.type);
-  if (question.paper) meta.push(question.paper);
-  if (question.section && question.type !== "objective") meta.push(question.section);
-  if (question.marks) meta.push(`${question.marks} marks`);
-  if (question.page) meta.push(`page ${question.page}`);
-  if (question.exam) meta.push(question.exam);
-  if (question.year) meta.push(String(question.year));
-  if (question.subject) meta.push(question.subject);
-  metaEl.textContent = meta.join(" • ");
+  // Sync currentSubject with the actual question being shown
+  const questionSubject = String(question.subject || "").trim();
+  if (questionSubject && state.cbt.currentSubject !== questionSubject) {
+    state.cbt.currentSubject = questionSubject;
+  }
+
+  // Orientation label: "Chemistry | Q3/40" using per-subject position
+  if (orientationEl) {
+    const subjectIndices = state.cbt.subjectMap[questionSubject] || [];
+    const posInSubject = subjectIndices.indexOf(state.cbt.currentIndex) + 1;
+    const subjectTotal = subjectIndices.length;
+    orientationEl.textContent = posInSubject > 0
+      ? `${questionSubject} | Q${posInSubject}/${subjectTotal}`
+      : `${questionSubject} | Q${state.cbt.currentIndex + 1}/${total}`;
+  }
+
+  // Update sticky bar position label too
+  const stickyPos = els("cbtStickyPosition");
+  if (stickyPos) {
+    const subjectIndices = state.cbt.subjectMap[questionSubject] || [];
+    const posInSubject = subjectIndices.indexOf(state.cbt.currentIndex) + 1;
+    const subjectTotal = subjectIndices.length;
+    stickyPos.textContent = posInSubject > 0
+      ? `Q${posInSubject}/${subjectTotal}`
+      : `Q${state.cbt.currentIndex + 1}/${total}`;
+  }
 
   state.cbt.selectedOptionKey = getCbtSelectedAnswer(question, state.cbt.currentIndex);
   if (!state.cbt.feedbackOpen || isReviewMode) {
@@ -1767,6 +2129,13 @@ function renderCbtQuestion() {
     selectedOptionKey: state.cbt.selectedOptionKey,
     readOnly: isReviewMode,
     reviewAnswer: isReviewMode ? normalizeCbtAnswerKey(question.answer) : null,
+    stripQuestionNumber: true,
+    questionNumber: (() => {
+      const subjectIndices = state.cbt.subjectMap[questionSubject] || [];
+      const pos = subjectIndices.indexOf(state.cbt.currentIndex) + 1;
+      return pos > 0 ? pos : state.cbt.currentIndex + 1;
+    })(),
+    stripSectionRange: true,
     onOptionSelect: (nextKey, activeQuestion) => {
       if (isReviewMode) return;
       setCbtSelectedAnswer(activeQuestion, nextKey, state.cbt.currentIndex);
@@ -1777,15 +2146,22 @@ function renderCbtQuestion() {
   // In review mode, auto-show explanation below the workspace
   const existingExpl = els("cbtReviewExplanation");
   if (existingExpl) existingExpl.remove();
+  const existingToggle = els("btnCbtToggleExplanation");
+  if (existingToggle) existingToggle.remove();
+
   if (isReviewMode) {
     const explHtml = renderExplainBlock(question);
     const explDiv = document.createElement("div");
     explDiv.id = "cbtReviewExplanation";
     explDiv.className = "cbt-review-explanation";
     explDiv.innerHTML = `<div style="font-weight:700; margin-bottom:8px;">Explanation</div>${explHtml}`;
-    const workspace = els("cbtWorkspace");
     if (workspace) workspace.appendChild(explDiv);
   }
+
+  // Render subject tabs and question palette (updates active state and answer counts)
+  renderCbtSubjectTabs();
+  renderCbtQuestionPalette();
+
   updateCbtTimerUi();
   updateCbtSessionMeta();
   updateCbtNavButtons();
@@ -1795,9 +2171,164 @@ function renderCbtQuestion() {
 
   const statusBits = [];
   if (isReviewMode) statusBits.push("Review mode — answers are locked after submission.");
-  if (state.cbt.result) statusBits.push(`Current score ${state.cbt.result.score}/${state.cbt.result.totalQuestions}.`);
+  if (state.cbt.result) statusBits.push(`Score: ${state.cbt.result.jambScore}/${state.cbt.result.jambScoreMax}`);
   if (statusBits.length) setCbtStatus(statusBits.join(" "), isReviewMode ? "ok" : "");
 }
+
+// ====== CBT Subject & Question Navigation ======
+
+function buildCbtSubjectMap() {
+  // Groups question indices by subject, preserving load order.
+  const map = {};
+  state.cbt.questions.forEach((q, idx) => {
+    const subj = String(q.subject || "Unknown").trim();
+    if (!map[subj]) map[subj] = [];
+    map[subj].push(idx);
+  });
+  return map;
+}
+
+function goToCbtQuestion(index) {
+  const total = state.cbt.questions.length;
+  if (index < 0 || index >= total) return;
+  state.cbt.currentIndex = index;
+  // Update currentSubject if crossing into a different subject's range
+  const question = state.cbt.questions[index];
+  if (question) {
+    const subj = String(question.subject || "").trim();
+    if (subj) state.cbt.currentSubject = subj;
+  }
+  renderCbtQuestion();
+}
+
+function flushSubjectTime() {
+  const subject = state.cbt.currentSubject;
+  const enteredAt = state.cbt.subjectEnteredAt;
+  if (!subject || !enteredAt) return;
+  const elapsed = Date.now() - enteredAt;
+  if (!state.cbt.subjectTimeMap[subject]) state.cbt.subjectTimeMap[subject] = 0;
+  state.cbt.subjectTimeMap[subject] += elapsed;
+  state.cbt.subjectEnteredAt = Date.now();
+}
+
+function switchCbtSubject(subject) {
+  const indices = state.cbt.subjectMap[subject];
+  if (!indices || !indices.length) return;
+  flushSubjectTime();
+  state.cbt.currentSubject = subject;
+  state.cbt.subjectEnteredAt = Date.now();
+  state.cbt.currentIndex = indices[0];
+  renderCbtQuestion();
+}
+
+function renderCbtSubjectTabs() {
+  const tabBar = els("cbtSubjectTabs");
+  if (!tabBar) return;
+
+  const subjects = Object.keys(state.cbt.subjectMap);
+  if (!subjects.length) {
+    tabBar.hidden = true;
+    return;
+  }
+
+  tabBar.hidden = false;
+  tabBar.innerHTML = "";
+
+  subjects.forEach(subject => {
+    const indices = state.cbt.subjectMap[subject] || [];
+    const answeredCount = indices.filter(i => {
+      const q = state.cbt.questions[i];
+      return q && getCbtSelectedAnswer(q, i);
+    }).length;
+    const total = indices.length;
+    const isActive = subject === state.cbt.currentSubject;
+    const allAnswered = answeredCount === total && total > 0;
+    const someAnswered = answeredCount > 0;
+
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = [
+      "cbt-tab",
+      isActive ? "active" : "",
+      allAnswered ? "all-answered" : someAnswered ? "some-answered" : "",
+    ].filter(Boolean).join(" ");
+
+    tab.setAttribute("aria-selected", isActive ? "true" : "false");
+    tab.setAttribute("role", "tab");
+
+    tab.innerHTML = `
+      <span class="cbt-tab-name">${escapeHtml(subject)}</span>
+      <span class="cbt-tab-count">${answeredCount}/${total}</span>
+    `;
+
+    tab.onclick = () => switchCbtSubject(subject);
+
+    tabBar.appendChild(tab);
+  });
+
+  // Update palette whenever tabs re-render
+  renderCbtQuestionPalette();
+}
+
+function renderCbtQuestionPalette() {
+  const palette = els("cbtQuestionPalette");
+  if (!palette) return;
+
+  const subject = state.cbt.currentSubject;
+  const indices = subject ? (state.cbt.subjectMap[subject] || []) : [];
+
+  if (!indices.length) {
+    palette.hidden = true;
+    return;
+  }
+
+  palette.hidden = false;
+  palette.innerHTML = "";
+
+  const isReviewMode = !!state.cbt.submitted;
+
+  indices.forEach((absoluteIndex, posInSubject) => {
+    const question = state.cbt.questions[absoluteIndex];
+    if (!question) return;
+
+    const isCurrent = absoluteIndex === state.cbt.currentIndex;
+    const selectedAnswer = getCbtSelectedAnswer(question, absoluteIndex);
+    const hasAnswer = !!selectedAnswer;
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.setAttribute("aria-label", `Question ${posInSubject + 1}`);
+
+    let stateClass = "";
+    if (isReviewMode) {
+      const expected = normalizeCbtAnswerKey(question.answer);
+      const selected = normalizeCbtAnswerKey(selectedAnswer);
+      if (!selected) {
+        stateClass = "is-unanswered-review";
+      } else if (selected === expected) {
+        stateClass = "is-correct";
+      } else {
+        stateClass = "is-wrong";
+      }
+    } else {
+      stateClass = hasAnswer ? "is-answered" : "";
+    }
+
+    btn.className = ["cbt-palette-btn", isCurrent ? "is-current" : "", stateClass]
+      .filter(Boolean).join(" ");
+
+    btn.textContent = String(posInSubject + 1);
+    btn.onclick = () => {
+      resetCbtQuestionFeedbackForm();
+      setCbtQuestionFeedbackPanelOpen(false, { resetStatus: true });
+      goToCbtQuestion(absoluteIndex);
+    };
+
+    palette.appendChild(btn);
+  });
+}
+
+// ===============================================
 
 async function loadCbtSession() {
   updateCbtSetupMeta();
@@ -1847,15 +2378,19 @@ async function loadCbtSession() {
   const failedSubjects = [];
   let allQuestions = [];
 
+  let cbtFreeYear = null;
   for (const { subject, r } of results) {
     if (r?.items && Array.isArray(r.items) && r.items.length > 0) {
       allQuestions = allQuestions.concat(r.items);
       loadedSubjects.push(`${subject} (${r.items.length}q)`);
+      // Capture free_year from first successful response
+      if (cbtFreeYear === null && r.free_year != null) cbtFreeYear = r.free_year;
     } else {
       failedSubjects.push(subject);
     }
   }
 
+  state.cbt.freeYear = cbtFreeYear;
   state.cbt.questions = allQuestions;
   state.cbt.currentIndex = 0;
   state.cbt.selectedOptionKey = null;
@@ -1863,6 +2398,8 @@ async function loadCbtSession() {
   state.cbt.submitted = false;
   state.cbt.result = null;
   state.cbt.sessionReady = state.cbt.questions.length > 0;
+  state.cbt.subjectMap = buildCbtSubjectMap();
+  state.cbt.currentSubject = Object.keys(state.cbt.subjectMap)[0] || null;
 
   if (!state.cbt.sessionReady) {
     openCbtContainer();
@@ -1889,9 +2426,7 @@ function moveCbtQuestion(step) {
   if (nextIndex === state.cbt.currentIndex) return;
   resetCbtQuestionFeedbackForm();
   setCbtQuestionFeedbackPanelOpen(false, { resetStatus: true });
-  state.cbt.currentIndex = nextIndex;
-  state.cbt.selectedOptionKey = getCbtSelectedAnswer(state.cbt.questions[nextIndex], nextIndex);
-  renderCbtQuestion();
+  goToCbtQuestion(nextIndex);
 }
 
 function renderExplainBlock(question) {
@@ -1981,6 +2516,71 @@ function _safeSetSelectValue(sel, value) {
   const v = value || "";
   const exists = Array.from(sel.options).some((o) => o.value === v);
   sel.value = exists ? v : "";
+}
+
+// Fetch all years + free_year from the backend for the current exam/subject
+async function fetchStudyYears({ exam = null, subject = null } = {}) {
+  const params = new URLSearchParams();
+  if (exam) params.set("exam", exam);
+  if (subject) params.set("subject", subject);
+  const qs = params.toString();
+  return api(`/study/years${qs ? "?" + qs : ""}`, { method: "GET" });
+}
+
+// Populate the year <select> with lock icons on paid-only years.
+// Free users see all years but locked ones trigger upgrade prompt on click.
+function renderYearFilterWithLocks(yearSel, allYears, freeYear, isPaid) {
+  if (!yearSel) return;
+  const current = yearSel.value;
+  yearSel.innerHTML = "";
+
+  // "All years" option (only for paid users)
+  const allOpt = document.createElement("option");
+  allOpt.value = "";
+  allOpt.textContent = isPaid ? "All years" : "All years";
+  yearSel.appendChild(allOpt);
+
+  for (const y of allYears) {
+    const opt = document.createElement("option");
+    opt.value = String(y);
+    const isLocked = !isPaid && freeYear !== null && y !== freeYear;
+    opt.textContent = isLocked ? `${y} 🔒` : String(y);
+    opt.dataset.locked = isLocked ? "1" : "0";
+    yearSel.appendChild(opt);
+  }
+
+  // Restore previous selection if valid
+  const exists = Array.from(yearSel.options).some((o) => o.value === current);
+  yearSel.value = exists ? current : "";
+}
+
+// Call after year filter changes — intercept locked year selection
+function handleYearFilterClick(yearSel) {
+  if (!yearSel) return;
+  const sel = yearSel.options[yearSel.selectedIndex];
+  if (sel && sel.dataset.locked === "1") {
+    // Revert to free year
+    const freeYearStr = state.freeYear ? String(state.freeYear) : "";
+    yearSel.value = freeYearStr;
+    state.filters.year = freeYearStr;
+    showUpgradePrompt("Unlock all years with a Core or Founding subscription.");
+    return true; // was locked
+  }
+  return false;
+}
+
+function showUpgradePrompt(message) {
+  // Show paywall panel with custom message, or fall back to status
+  const pw = els("paywall");
+  if (pw) {
+    const pwText = pw.querySelector(".paywall-text");
+    if (pwText && message) pwText.textContent = message;
+    pw.removeAttribute("hidden");
+    pw.classList.add("is-open");
+    pw.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } else {
+    setStatus(message || "Upgrade to access all years.", "bad");
+  }
 }
 function saveFilterCache(data) {
   try {
@@ -2103,12 +2703,30 @@ async function refreshFilterOptions({ exam, year, qtype, keepSelection = true } 
 
   // Add empty option at top
   const exams = ["", ...data.exams.map(String)];
-  const years = ["", ...data.years.map((y) => String(y))];
   const subjects = ["", ...data.subjects.map(String)];
 
   fillSelect(examSel, exams);
-  fillSelect(yearSel, years);
   fillSelect(subjSel, subjects);
+
+  // Year filter: fetch free_year from /study/years and render with locks
+  try {
+    const yearsData = await fetchStudyYears({
+      exam: exam ?? prev.exam ?? null,
+      subject: prev.subject ?? null,
+    });
+    if (yearsData?.ok && Array.isArray(yearsData.years)) {
+      state.freeYear = yearsData.free_year ?? null;
+      const isPaid = yearsData.is_paid ?? state.isPaid;
+      renderYearFilterWithLocks(yearSel, yearsData.years, state.freeYear, isPaid);
+    } else {
+      // Fallback to plain years from filters
+      const years = ["", ...data.years.map((y) => String(y))];
+      fillSelect(yearSel, years);
+    }
+  } catch {
+    const years = ["", ...data.years.map((y) => String(y))];
+    fillSelect(yearSel, years);
+  }
 
   // Restore previous selection if still valid, else keep first available
   _safeSetSelectValue(examSel, prev.exam);
@@ -2143,24 +2761,26 @@ async function initFiltersUI() {
   examSel.onchange = async () => {
     save();
     await refreshFilterOptions({ exam: state.filters.exam || undefined, keepSelection: true });
-    updatePracticeMetaUI();
+    updateStudyMetaUI();
     maybeAutoLoadAfterFilterChange();
   };
 
   yearSel.onchange = async () => {
+    // Intercept locked year — revert and show upgrade prompt
+    if (handleYearFilterClick(yearSel)) return;
     save();
     await refreshFilterOptions({
       exam: state.filters.exam || undefined,
       year: state.filters.year ? parseInt(state.filters.year, 10) : undefined,
       keepSelection: true
     });
-    updatePracticeMetaUI();
+    updateStudyMetaUI();
     maybeAutoLoadAfterFilterChange();
   };
 
   subjSel.onchange = () => {
     save();
-    updatePracticeMetaUI();
+    updateStudyMetaUI();
     maybeAutoLoadAfterFilterChange();
   };
 
@@ -2172,7 +2792,7 @@ async function initFiltersUI() {
       subjSel.value = "";
       save();
       await refreshFilterOptions({ keepSelection: true });
-      updatePracticeMetaUI();
+      updateStudyMetaUI();
       if (isFirstTimeUser()) setStartGateVisible(true);
     };
   }
@@ -2301,7 +2921,6 @@ function renderList(items) {
 
       <div class="qtext">${escapeHtml(trimText(cleanPreviewText(q.question_text), 140))}</div>
 
-  <div class="meta">${escapeHtml(meta.join(" • "))}</div>
 `;
 
 
@@ -2317,7 +2936,7 @@ function renderList(items) {
 
 
 async function openQuestion(id) {
-  const requestSeq = ++practiceOpenRequestSeq;
+  const requestSeq = ++studyOpenRequestSeq;
 
   try {
     activeQuestionId = id;
@@ -2344,7 +2963,7 @@ async function openQuestion(id) {
     });
 
     const q = await fetchQuestion(id);
-    if (requestSeq !== practiceOpenRequestSeq) return;
+    if (requestSeq !== studyOpenRequestSeq) return;
     if (!q?.id) throw new Error(q?.error || "Question not found.");
 
     // ✅ Keep current question in state so Reveal/Explain (wired once in init) can use it
@@ -2355,22 +2974,12 @@ async function openQuestion(id) {
 
     focusViewer();
 
-    const meta = [];
-    if (q.type) meta.push(q.type);
-    if (q.paper) meta.push(q.paper);
-    if (q.section && q.type !== "objective") meta.push(q.section);
-    if (q.marks) meta.push(`${q.marks} marks`);
-    if (q.page) meta.push(`page ${q.page}`);
-
-    const tag = [];
-    if (q.exam) tag.push(q.exam);
-    if (q.year) tag.push(String(q.year));
-    if (q.subject) tag.push(q.subject);
-    if (tag.length) meta.push(tag.join(" "));
-
-    if (q.diagrams && q.diagrams.length) meta.push(`diagrams: ${q.diagrams.join(", ")}`);
-
-    els("qMeta").textContent = meta.join(" • ");
+    // Study meta: clean "JAMB 2025 • Chemistry" format only
+    const metaParts = [
+      [q.exam, q.year].filter(Boolean).join(" "),
+      q.subject,
+    ].filter(Boolean);
+    els("qMeta").textContent = metaParts.join(" • ");
 
     // ✅ Render question in the new flow (question-only first)
     renderQuestion(q);
@@ -2385,7 +2994,7 @@ async function openQuestion(id) {
         const d = document.createElement("div");
         d.className = "opt";
         d.dataset.key = k;
-        d.innerHTML = `<b>${escapeHtml(k)}</b>. ${escapeHtml(q.options[k])}`;
+        d.innerHTML = `<b>${escapeHtml(k)}</b>. ${renderTextWithDiagrams(q.options[k], { question: q, mode: "question" })}`;
 
         // visual-only option selection
         d.onclick = () => {
@@ -2418,7 +3027,7 @@ async function openQuestion(id) {
 
 
 function closeViewer() {
-  practiceOpenRequestSeq += 1;
+  studyOpenRequestSeq += 1;
   state.currentQuestion = null;
   els("viewer").hidden = true;
   setViewerOpen(false);
@@ -2458,6 +3067,10 @@ function resetCbtState() {
   state.cbt.result = null;
   state.cbt.feedbackOpen = false;
   state.cbt.selectedSubjects = [];
+  state.cbt.currentSubject = null;
+  state.cbt.subjectMap = {};
+  state.cbt.subjectTimeMap = {};
+  state.cbt.subjectEnteredAt = 0;
 
   // Reset subject selector dropdowns
   ["cbtSubject2", "cbtSubject3", "cbtSubject4"].forEach(id => {
@@ -2471,9 +3084,13 @@ function resetCbtState() {
   updateCbtNavButtons();
   updateCbtSetupMeta();
 
-  // Hide workspace and result, reset feedback panel
+  // Hide workspace, palette, tabs and result; reset feedback panel
   const workspace = els("cbtWorkspace");
   if (workspace) workspace.hidden = true;
+  const palette = els("cbtQuestionPalette");
+  if (palette) palette.hidden = true;
+  const tabBar = els("cbtSubjectTabs");
+  if (tabBar) tabBar.hidden = true;
   const resultSection = els("resultSection");
   if (resultSection) resultSection.hidden = true;
   resetCbtQuestionFeedbackForm();
@@ -2482,10 +3099,10 @@ function resetCbtState() {
 function openCbtContainer() {
   const container = els("cbtContainer");
   if (!container) return;
-  // Hide the practice lane so it doesn't sit above CBT
-  const practiceSection = els("practiceSection");
-  if (practiceSection) practiceSection.hidden = true;
-  // Close practice viewer if open — CBT is a separate lane
+  // Hide the study lane so it doesn't sit above CBT
+  const studySection = els("studySection");
+  if (studySection) studySection.hidden = true;
+  // Close study viewer if open — CBT is a separate lane
   const viewer = els("viewer");
   if (viewer) viewer.hidden = true;
   container.hidden = false;
@@ -2498,9 +3115,9 @@ function closeCbtContainer() {
   // Stop any running timer so it doesn't fire auto-submit after the UI is gone
   stopCbtTimer();
   container.hidden = true;
-  // Restore the practice lane
-  const practiceSection = els("practiceSection");
-  if (practiceSection) practiceSection.hidden = false;
+  // Restore the study lane
+  const studySection = els("studySection");
+  if (studySection) studySection.hidden = false;
 }
 // =======================================================================
 
@@ -2613,9 +3230,9 @@ function computeAccessUiState(profile) {
 
   let payMessage = "";
   if (!authenticated) payMessage = "Login to upgrade.";
-  else if (!foundingOpen && !isFounding) payMessage = "Founding is closed. Please use Core.";
+  else if (!foundingOpen && !isFounding) payMessage = "Founding is full (500 students). Please use Core.";
   else if (isCoreActive) payMessage = "Core is active ✅ No renewal needed now.";
-  else if (isActive && canRenewFounding) payMessage = "Founding access is active ✅ You can renew ₦1,000 to extend 30 days.";
+  else if (isActive && canRenewFounding) payMessage = "Founding access is active ✅ You can renew ₦1,000 to extend 1 year.";
   else if (isActive) payMessage = "You are already paid ✅";
 
   return {
@@ -2886,7 +3503,7 @@ function applyProfile(profile) {
   if (btnLogout) btnLogout.hidden = false;
 
   setAuthMsg(`Logged in as: ${state.me.identifier}`);
-  setDashboardMsg("Dashboard ready. JAMB CBT will be available here soon.");
+  setDashboardMsg("You're ready. Start your JAMB CBT below.");
   updatePayEmailUI();
 
   const btnHist = els("btnToggleHistory");
@@ -2955,11 +3572,11 @@ async function loadProfile() {
   return state.me || null;
 }
 
-async function register(identifier, password) {
+async function register(identifier, password, fullName = "") {
   saveApiBase();
   const r = await api("/auth/register", {
     method: "POST",
-    body: JSON.stringify({ identifier, password })
+    body: JSON.stringify({ identifier, password, full_name: fullName || null })
   });
 
   if (r?.token) {
@@ -3052,16 +3669,43 @@ async function loadPaymentHistory() {
 }
 
 async function doRegister() {
-  const identifier = els("identifier").value.trim();
-  const password = els("password").value;
+  const fullName    = (els("regFullName")?.value || "").trim();
+  const identifier  = (els("regIdentifier")?.value || "").trim();
+  const password    = els("regPassword")?.value || "";
+  const confirmPw   = els("regConfirmPassword")?.value || "";
 
-  setAuthMsg("Registering…");
-  const r = await register(identifier, password);
+  if (!fullName) {
+    setAuthMsg("Please enter your full name.");
+    els("regFullName")?.focus();
+    return;
+  }
+
+  if (!identifier) {
+    setAuthMsg("Please enter your phone number or email.");
+    els("regIdentifier")?.focus();
+    return;
+  }
+
+  if (password.length < 4) {
+    setAuthMsg("Password must be at least 4 characters.");
+    els("regPassword")?.focus();
+    return;
+  }
+
+  if (password !== confirmPw) {
+    setAuthMsg("Passwords do not match. Please try again.");
+    els("regConfirmPassword")?.focus();
+    return;
+  }
+
+  setAuthMsg("Creating account…");
+  const r = await register(identifier, password, fullName);
 
   if (r?.token) {
-    setAuthMsg("Registered ✅");
+    setAuthMsg("Account created ✅ You can now login.");
+    showLoginView();
   } else {
-    setAuthMsg(`Register failed: ${r?.error || "unknown error"}`);
+    setAuthMsg(`Registration failed: ${r?.error || "unknown error"}`);
   }
 }
 
@@ -3077,6 +3721,22 @@ async function doLogin() {
   } else {
     setAuthMsg(`Login failed: ${r?.error || "unknown error"}`);
   }
+}
+
+function showLoginView() {
+  const registerView = els("registerView");
+  if (registerView) registerView.style.display = "none";
+  setAuthMsg("");
+}
+
+function showRegisterView() {
+  const registerView = els("registerView");
+  if (registerView) {
+    registerView.style.display = "block";
+    registerView.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+  setAuthMsg("");
+  requestAnimationFrame(() => els("regFullName")?.focus());
 }
 
  async function doLogout() {
@@ -3137,6 +3797,11 @@ async function loadList(targetPageIndex = state.pageIndex) {
     setStatus("End reached. No more questions.", "ok");
     setListPagerUI({ loading: false });
     return;
+  }
+
+  // v12.2: sort theory questions by numeric Q-number (Q1 < Q2 < Q10, not lexicographic)
+  if (mode === "theory") {
+    items.sort((a, b) => extractTheoryQNumber(a.id) - extractTheoryQNumber(b.id));
   }
 
   // success
@@ -3205,6 +3870,10 @@ function updateDashboardUI() {
 
   const isLoggedIn = !!state.authenticated && !!state.me;
   section.hidden = !isLoggedIn;
+
+  // Hide JAMB CTA banner once logged in
+  const jambCta = els("jambCtaSection");
+  if (jambCta) jambCta.hidden = isLoggedIn;
 
   if (logoutBtn) logoutBtn.hidden = !isLoggedIn;
   if (cbtBtn) cbtBtn.hidden = !isLoggedIn;
@@ -3733,14 +4402,25 @@ async function init() {
   setupPaymentHistoryToggle();
   setupSupportUi();
 
-  updatePracticeMetaUI();
+  updateStudyMetaUI();
   updateCbtSetupMeta();
   updateCbtTimerUi();
   updateCbtSessionMeta();
   updateAdminUI();
   setListPagerUI({ loading: false });
 
-  // Never auto-load questions on page load — user must press Start Practice.
+  // Wire CBT result upgrade nudge button
+  const btnCbtUpgradeNudge = els("btnCbtUpgradeNudge");
+  if (btnCbtUpgradeNudge) {
+    btnCbtUpgradeNudge.onclick = () => {
+      const planSection = els("planSection") || els("dashboardSection");
+      if (planSection) {
+        planSection.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    };
+  }
+
+  // Never auto-load questions on page load — user must press Start Study.
   // For first-time users: show the start gate to guide them to pick filters.
   // For returning users with saved filters: just restore the filter state silently.
   if (isFirstTimeUser() && !filtersReady()) {
@@ -3757,6 +4437,12 @@ async function init() {
 
   const btnLogin = els("btnLogin");
   if (btnLogin) btnLogin.onclick = doLogin;
+
+  const btnShowRegister = els("btnShowRegister");
+  if (btnShowRegister) btnShowRegister.onclick = showRegisterView;
+
+  const btnShowLogin = els("btnShowLogin");
+  if (btnShowLogin) btnShowLogin.onclick = showLoginView;
 
   const identifierInput = els("identifier");
   if (identifierInput) {
@@ -3835,8 +4521,8 @@ async function init() {
   const btnClose = els("btnClose");
   if (btnClose) btnClose.onclick = closeViewer;
 
-  const btnPractice = els("btnPractice");
-  if (btnPractice) btnPractice.onclick = () => {
+  const btnStudy = els("btnStudy");
+  if (btnStudy) btnStudy.onclick = () => {
     if (!filtersReady()) {
       setStartGateVisible(true);
       return;
@@ -3873,15 +4559,38 @@ async function init() {
   if (btnCbtNext) btnCbtNext.onclick = () => moveCbtQuestion(1);
 
   const btnCbtSubmit = els("btnCbtSubmit");
-  if (btnCbtSubmit) btnCbtSubmit.onclick = () => submitCurrentCbtSession({ reason: "manual" });
+  if (btnCbtSubmit) {
+    btnCbtSubmit.onclick = () => {
+      if (!state.cbt.sessionReady || state.cbt.submitted) return;
+
+      const total = state.cbt.questions.length;
+      const answered = Object.keys(state.cbt.answersByQuestionKey).length;
+      const unanswered = Math.max(0, total - answered);
+
+      if (unanswered > 0) {
+        const confirmed = window.confirm(
+          `You have ${unanswered} unanswered question(s) out of ${total}.\n\n` +
+          `Click OK to submit and see your results.\n` +
+          `Click Cancel to go back and complete your answers.`
+        );
+        if (!confirmed) return;
+      }
+
+      submitCurrentCbtSession({ reason: "manual" });
+    };
+  }
 
   const btnResultBackToCbt = els("btnResultBackToCbt");
   if (btnResultBackToCbt) {
     btnResultBackToCbt.onclick = () => {
       els("resultSection")?.setAttribute("hidden", "hidden");
-      els("cbtSection")?.removeAttribute("hidden");
-      renderCbtQuestion();
-      els("cbtSection")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      const workspace = els("cbtWorkspace");
+      if (workspace) workspace.hidden = false;
+      openCbtContainer();
+      // Jump to first question of first subject for review
+      const firstSubject = Object.keys(state.cbt.subjectMap)[0];
+      if (firstSubject) switchCbtSubject(firstSubject);
+      else renderCbtQuestion();
     };
   }
 
@@ -3946,6 +4655,33 @@ async function init() {
 
   // ✅ D) Wire Reveal/Explain ONCE here (uses state.currentQuestion)
   
+function highlightStudyAnswers(question) {
+  const optBox = els("qOptions");
+  if (!optBox || !question?.options) return;
+
+  const correctKey = normalizeCbtAnswerKey(question.answer);
+  const userKey = normalizeCbtAnswerKey(selectedOptionKey);
+
+  optBox.querySelectorAll(".opt").forEach(optEl => {
+    const normKey = normalizeCbtAnswerKey(optEl.dataset.key);
+
+    optEl.classList.remove("selected", "opt-correct", "opt-wrong", "opt-missed", "disabled");
+    optEl.removeAttribute("aria-disabled");
+    optEl.onclick = null;
+
+    if (normKey === correctKey && userKey === correctKey) {
+      optEl.classList.add("opt-correct");
+    } else if (normKey === userKey && userKey !== correctKey) {
+      optEl.classList.add("opt-wrong");
+    } else if (normKey === correctKey) {
+      optEl.classList.add("opt-missed");
+    } else {
+      optEl.classList.add("disabled");
+    }
+    optEl.setAttribute("aria-disabled", "true");
+  });
+}
+
 const btnReveal = els("btnReveal");
   if (btnReveal) {
     btnReveal.onclick = () => {
@@ -3957,6 +4693,7 @@ const btnReveal = els("btnReveal");
 
       exp.hidden = false;
       exp.innerHTML = renderAnswerBlock(q);
+      highlightStudyAnswers(q);
       scrollToExplainBox();
     };
   }
@@ -4044,6 +4781,19 @@ const btnReveal = els("btnReveal");
   }
 
   setupIdleTimeout();
+
+  // JAMB CTA button — scroll to login and focus identifier input
+  const btnJambCtaLogin = els("btnJambCtaLogin");
+  if (btnJambCtaLogin) {
+    btnJambCtaLogin.onclick = () => {
+      const accountSection = els("accountSection");
+      if (accountSection) accountSection.scrollIntoView({ behavior: "smooth", block: "start" });
+      requestAnimationFrame(() => {
+        const identifierInput = els("identifier");
+        if (identifierInput) identifierInput.focus();
+      });
+    };
+  }
 
   // ✅ load founding cap + me before first render of upgrade UI
   await refreshFoundingStatus();
