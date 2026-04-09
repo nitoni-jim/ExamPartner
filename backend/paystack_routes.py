@@ -392,11 +392,11 @@ def mark_user_paid_by_identifier(
     status = (pay_data.get("status") or "success").strip()
 
     # Plan thresholds (kobo)
-    FOUNDING_AMOUNT_KOBO = 1000 * 100
-    CORE_AMOUNT_KOBO = 10000 * 100
-    FOUNDING_CAP = 100
-    FOUNDING_DAYS = 30
-    CORE_DAYS = 365
+    FOUNDING_AMOUNT_KOBO = 1000 * 100   # ₦1,000
+    CORE_AMOUNT_KOBO = 2000 * 100       # ₦2,000
+    FOUNDING_CAP = 500                  # limited to 500 users
+    FOUNDING_DAYS = 365                 # 1 year (same as Core)
+    CORE_DAYS = 365                     # 1 year
 
     # Decide plan from amount
     if amount_kobo >= CORE_AMOUNT_KOBO:
@@ -465,7 +465,7 @@ def mark_user_paid_by_identifier(
 
             if founding_count >= FOUNDING_CAP:
                 # Founding is closed for new users. (Frontend should hide it, but keep backend safe.)
-                raise HTTPException(status_code=403, detail="Founding access is closed. Please upgrade to Core.")
+                raise HTTPException(status_code=403, detail="Founding is full (500 students). Please upgrade to Core.")
 
             # qualify as founder
             cur.execute(f"UPDATE users SET is_founding = " + ("TRUE" if _using_postgres() else "1") + f", plan = {ph} WHERE id = {ph}", ("founding", user_id))
