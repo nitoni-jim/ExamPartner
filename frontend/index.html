@@ -13,6 +13,70 @@
     .diagrams { margin: 12px 0; display: flex; flex-wrap: wrap; gap: 12px; }
     .diagram-img { max-width: 100%; height: auto; border: 1px solid rgba(0,0,0,0.12); border-radius: 12px; }
 
+    /* CBT review mode — option highlighting */
+    .opt.opt-correct {
+      border-color: #22c55e !important;
+      background: rgba(34, 197, 94, 0.12) !important;
+      color: #bbf7d0;
+    }
+    .opt.opt-wrong {
+      border-color: #ef4444 !important;
+      background: rgba(239, 68, 68, 0.12) !important;
+      color: #fecaca;
+    }
+    .opt.opt-missed {
+      /* Correct answer the user did NOT pick */
+      border-color: #22c55e !important;
+      background: rgba(34, 197, 94, 0.07) !important;
+      color: #bbf7d0;
+      opacity: 0.85;
+    }
+    .cbt-review-status {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      padding: 6px 10px;
+      border-radius: 8px;
+      display: inline-block;
+    }
+    .cbt-review-status.correct  { background: rgba(34,197,94,0.15);  color: #86efac; }
+    .cbt-review-status.wrong    { background: rgba(239,68,68,0.15);   color: #fca5a5; }
+    .cbt-review-status.unanswered { background: rgba(255,255,255,0.07); color: #9ca3af; }
+    .cbt-review-explanation {
+      margin-top: 14px;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(0,0,0,0.18);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    /* CBT subject selector */
+    .cbt-subject-locked {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 10px;
+      background: rgba(96, 165, 250, 0.10);
+      border: 1px solid rgba(96, 165, 250, 0.25);
+      font-weight: 600;
+      font-size: 14px;
+      color: #93c5fd;
+    }
+
+    .cbt-subject-select {
+      width: 100%;
+      height: 38px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(0,0,0,0.24);
+      color: #e5e7eb;
+      padding: 0 10px;
+      font: inherit;
+    }
+
     .filters-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
     .filters-row label { font-size: 12px; opacity: 0.85; }
     .filters-row select, .filters-row button { height: 38px; }
@@ -248,9 +312,309 @@
         width: 100%;
       }
     }
+    /* ====== CBT Subject Tabs ====== */
+    .cbt-tab-bar {
+      display: flex;
+      gap: 4px;
+      padding: 0 0 12px 0;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      margin-bottom: 14px;
+    }
+
+    .cbt-tab-bar::-webkit-scrollbar { display: none; }
+
+    .cbt-tab {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      padding: 8px 14px;
+      border-radius: 10px 10px 0 0;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-bottom: 2px solid transparent;
+      background: rgba(255,255,255,0.03);
+      color: rgba(148, 163, 184, 0.85);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+      flex-shrink: 0;
+    }
+
+    .cbt-tab:hover {
+      background: rgba(255,255,255,0.07);
+      color: #e0e7ff;
+    }
+
+    .cbt-tab.active {
+      background: rgba(99, 102, 241, 0.14);
+      border-color: rgba(99, 102, 241, 0.3);
+      border-bottom-color: #6366f1;
+      color: #a5b4fc;
+    }
+
+    .cbt-tab.some-answered .cbt-tab-count {
+      color: #fbbf24;
+    }
+
+    .cbt-tab.all-answered .cbt-tab-count {
+      color: #34d399;
+    }
+
+    .cbt-tab-name {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .cbt-tab-count {
+      font-size: 11px;
+      font-weight: 700;
+      opacity: 0.8;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ====== CBT Question Palette ====== */
+    .cbt-palette {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 12px 0 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      margin-bottom: 14px;
+    }
+
+    .cbt-palette-btn {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(255,255,255,0.04);
+      color: rgba(148, 163, 184, 0.9);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .cbt-palette-btn:hover {
+      background: rgba(255,255,255,0.10);
+      color: #e0e7ff;
+    }
+
+    /* Current question */
+    .cbt-palette-btn.is-current {
+      background: rgba(99, 102, 241, 0.22);
+      border-color: #6366f1;
+      color: #a5b4fc;
+      box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
+    }
+
+    /* Answered (live session) */
+    .cbt-palette-btn.is-answered {
+      background: rgba(52, 211, 153, 0.14);
+      border-color: rgba(52, 211, 153, 0.35);
+      color: #6ee7b7;
+    }
+
+    /* Review mode states */
+    .cbt-palette-btn.is-correct {
+      background: rgba(34, 197, 94, 0.18);
+      border-color: rgba(34, 197, 94, 0.45);
+      color: #86efac;
+    }
+
+    .cbt-palette-btn.is-wrong {
+      background: rgba(239, 68, 68, 0.18);
+      border-color: rgba(239, 68, 68, 0.45);
+      color: #fca5a5;
+    }
+
+    .cbt-palette-btn.is-unanswered-review {
+      background: rgba(255,255,255,0.03);
+      border-color: rgba(255,255,255,0.08);
+      color: rgba(100, 116, 139, 0.8);
+    }
+
+    @media (max-width: 480px) {
+      .cbt-palette-btn { width: 32px; height: 32px; font-size: 11px; }
+      .cbt-palette { gap: 4px; }
+    }
+    /* =================================== */
+
+    /* CBT orientation bar */
+    .cbt-orientation-bar {
+      display: flex;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+    .cbt-orientation-label {
+      font-size: 13px;
+      font-weight: 700;
+      color: rgba(165, 180, 252, 0.85);
+      letter-spacing: 0.02em;
+    }
+    /* ====================================== */
+
+    /* ====== Sticky CBT timer bar ====== */
+    #cbtStickyBar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 20px;
+      background: rgba(11, 16, 32, 0.96);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 2px 16px rgba(0,0,0,0.35);
+    }
+
+    #cbtStickyBar[hidden] {
+      display: none;
+    }
+
+    .cbt-sticky-timer {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-variant-numeric: tabular-nums;
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      color: #e0e7ff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    #cbtStickyBar.is-warning .cbt-sticky-timer {
+      color: #fde68a;
+    }
+
+    #cbtStickyBar.is-danger .cbt-sticky-timer {
+      color: #fca5a5;
+      animation: cbt-pulse 1s ease-in-out infinite;
+    }
+
+    #cbtStickyBar.is-expired .cbt-sticky-timer {
+      color: #f87171;
+      animation: cbt-pulse 0.6s ease-in-out infinite;
+    }
+
+    @keyframes cbt-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
+    }
+
+    .cbt-sticky-right {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .cbt-sticky-position {
+      font-size: 13px;
+      font-weight: 600;
+      color: rgba(199, 210, 254, 0.85);
+      white-space: nowrap;
+    }
+
+    .cbt-sticky-subject {
+      font-size: 12px;
+      color: rgba(148, 163, 184, 0.7);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 180px;
+    }
+
+    body.cbt-sticky-active {
+      padding-top: 52px;
+    }
+
+    @media (max-width: 560px) {
+      .cbt-sticky-subject { display: none; }
+      .cbt-sticky-timer { font-size: 18px; }
+      #cbtStickyBar { padding: 8px 14px; }
+      body.cbt-sticky-active { padding-top: 48px; }
+    }
+    /* ====================================== */
+
+    /* JAMB CBT CTA banner */
+    .jamb-cta-banner {
+      background: linear-gradient(135deg, rgba(37,99,235,0.18) 0%, rgba(124,58,237,0.14) 100%);
+      border: 1px solid rgba(99,102,241,0.35);
+      border-radius: 18px;
+      padding: 20px 24px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 10px;
+    }
+    .jamb-cta-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(239,68,68,0.18);
+      border: 1px solid rgba(239,68,68,0.35);
+      color: #fca5a5;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 4px 10px;
+      border-radius: 999px;
+      margin-bottom: 8px;
+    }
+    .jamb-cta-features {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .jamb-cta-feature {
+      font-size: 12px;
+      color: #a5b4fc;
+      background: rgba(99,102,241,0.10);
+      border: 1px solid rgba(99,102,241,0.20);
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
+    .jamb-cta-btn { white-space: nowrap; flex-shrink: 0; }
+    @media (max-width: 560px) {
+      .jamb-cta-banner { flex-direction: column; align-items: flex-start; }
+      .jamb-cta-btn { width: 100%; text-align: center; }
+    }
+
   </style>
 </head>
 <body>
+  <!-- Sticky CBT timer bar — shown only during an active CBT session -->
+  <div id="cbtStickyBar" hidden>
+    <div class="cbt-sticky-timer">
+      <span>⏱</span>
+      <span id="cbtStickyTime">02:00:00</span>
+    </div>
+    <div class="cbt-sticky-right">
+      <span id="cbtStickySubject" class="cbt-sticky-subject"></span>
+      <span id="cbtStickyPosition" class="cbt-sticky-position">Question 0 of 0</span>
+    </div>
+  </div>
+
   <header class="topbar">
     <div class="brand">
       <div class="logo">N</div>
@@ -300,11 +664,30 @@
       </div>
     </section>
 
+    <section class="card" id="jambCtaSection">
+      <div class="jamb-cta-banner">
+        <div>
+          <div class="jamb-cta-badge">🔴 JAMB 2025 Soon</div>
+          <h2 class="h2-tight" style="margin:0 0 6px;">JAMB CBT — Full Simulation</h2>
+          <p class="hint" style="margin:0;">Simulate the real JAMB UTME experience with timed, randomised questions across all 4 subjects.</p>
+          <div class="jamb-cta-features">
+            <span class="jamb-cta-feature">✓ 4 subjects in one session</span>
+            <span class="jamb-cta-feature">✓ 120-minute countdown timer</span>
+            <span class="jamb-cta-feature">✓ Randomised past questions</span>
+            <span class="jamb-cta-feature">✓ Instant score &amp; review</span>
+          </div>
+        </div>
+        <button id="btnJambCtaLogin" class="btn jamb-cta-btn" type="button">
+          Register &amp; Upgrade to Access CBT
+        </button>
+      </div>
+    </section>
+
     <section class="card" id="dashboardSection" hidden>
       <div class="row space">
         <div>
             <h2 class="h2-tight">Dashboard</h2>
-           <div class="hint">Manage your account and quickly access practice and CBT features.</div>
+           <div class="hint">Manage your account and quickly access Study and CBT features.</div>
         </div>
       </div>
 
@@ -322,7 +705,7 @@
         </div>
         <div class="panel">
           <h3>Quick actions</h3>
-          <p class="hint">Use this dashboard as your learner landing point after login. Practice remains available below.</p>
+          <p class="hint"> Start a CBT exam or continue practicing below..</p>
           <div class="row">
             <button id="btnDashboardStartCbt" class="btn" type="button">Start JAMB CBT</button>
             <button id="btnDashboardLogout" class="btn ghost" type="button">Logout</button>
@@ -352,18 +735,46 @@
 
       <div class="grid2">
         <div class="panel">
-          <h3>Login / Register</h3>
-          <div class="hint">Use phone or email as your identifier.</div>
+          <!-- LOGIN -->
+          <div id="loginView">
+            <h3>Login</h3>
+            <div class="hint">Use your phone number or email to sign in.</div>
 
-          <label for="identifier">Phone or Email</label>
-          <input id="identifier" type="text" placeholder="example@email.com or 0803..." />
+            <label for="identifier">Phone or Email</label>
+            <input id="identifier" type="text" placeholder="example@email.com or 0803..." autocomplete="username" />
 
-          <label for="password">Password</label>
-          <input id="password" type="password" placeholder="••••" />
+            <label for="password">Password</label>
+            <input id="password" type="password" placeholder="••••" autocomplete="current-password" />
 
-          <div class="row">
-            <button id="btnRegister" class="btn">Register</button>
-            <button id="btnLogin" class="btn ghost">Login</button>
+            <div class="row" style="margin-top:10px;">
+              <button id="btnLogin" class="btn" type="button">Login</button>
+            </div>
+            <div style="margin-top:10px;">
+              <span class="hint">Don't have an account? </span><button id="btnShowRegister" style="background:none; border:none; padding:0; color:#93c5fd; font:inherit; font-size:13px; text-decoration:underline; cursor:pointer;" type="button">Create account</button>
+            </div>
+          </div>
+
+          <!-- CREATE ACCOUNT (collapsed by default) -->
+          <div id="registerView" style="display:none; margin-top:16px; border-top:1px solid rgba(255,255,255,0.08); padding-top:16px;">
+            <h3>Create account</h3>
+            <div class="hint">Register to access Study and JAMB CBT.</div>
+
+            <label for="regFullName">Full Name</label>
+            <input id="regFullName" type="text" placeholder="e.g. Chidi Okeke" autocomplete="name" />
+
+            <label for="regIdentifier">Phone or Email</label>
+            <input id="regIdentifier" type="text" placeholder="example@email.com or 0803..." autocomplete="username" />
+
+            <label for="regPassword">Password</label>
+            <input id="regPassword" type="password" placeholder="At least 4 characters" autocomplete="new-password" />
+
+            <label for="regConfirmPassword">Confirm Password</label>
+            <input id="regConfirmPassword" type="password" placeholder="Repeat your password" autocomplete="new-password" />
+
+            <div class="row" style="margin-top:10px;">
+              <button id="btnRegister" class="btn" type="button">Create account</button>
+              <button id="btnShowLogin" class="btn ghost" type="button">Cancel</button>
+            </div>
           </div>
 
           <label class="label" id="payEmailLabel" hidden>Receipt email</label>
@@ -415,18 +826,18 @@
           <div class="row">
             <div class="access" id="foundingOffer" hidden>
               <strong>Founding Students – Limited Offer</strong><br>
-              Full access for 30 days • ₦1,000<br>
-              <span class="hint">Core plan: ₦10,000 for 1 year • AI Tutor features later as Pro</span>
+              Full access for 1 year • ₦1,000 • Limited to 500 students<br>
+              <span class="hint">Core plan: ₦2,000 for 1 year</span>
             </div>
 
             <button id="btnPay" type="button" class="btn" hidden>
-               Pay ₦1,000 (Card / Transfer / USSD / OPay)
+               Pay ₦1,000 – Founding (Card / Transfer / USSD / OPay)
             </button>
             <button id="btnCheckPaid" class="btn ghost" hidden>Refresh Paid Status</button>
           </div>
 
           <div class="row" style="margin-top:8px;">
-            <button id="btnPayCore" type="button" class="btn ghost" hidden>Pay ₦10,000 (Core — 1 year)</button>
+            <button id="btnPayCore" type="button" class="btn ghost" hidden>Pay ₦2,000 (Core — 1 year)</button>
           </div>
 
           <div class="hint" style="margin-top:8px;">
@@ -534,16 +945,15 @@
       </div>
     </section>
 
-    <section class="card" id="practiceSection">
+    <section class="card" id="studySection">
       <div class="row space">
         <div>
-          <h2 class="h2-tight">📘 Practice Questions</h2>
-          <div id="practiceMeta" class="hint">NECO / WAEC / JAMB • Past Questions • Explanations</div>
+          <h2 class="h2-tight">📘 Study Questions</h2>
+          <div id="studyMeta" class="hint">NECO / WAEC / JAMB • Past Questions • Study Mode</div>
         </div>
 
         <div class="row" style="gap:10px; flex-wrap:wrap; align-items:center;">
-          <button id="btnPractice" class="btn" type="button">Start Practice</button>
-          <button id="btnOpenCbtLane" class="btn ghost" type="button">Open CBT Screen</button>
+          <button id="btnStudy" class="btn" type="button">Start Study</button>
 
           <select id="mode">
             <option value="objective">Objective</option>
@@ -563,7 +973,7 @@
         <button id="btnNextPage" class="btn ghost" type="button">Next Page ▶</button>
         <div id="paywall" class="paywall">
           <div class="paywall-title">Preview limit reached</div>
-          <div class="paywall-text">Upgrade to continue accessing all available questions and explanations.</div>
+          <div class="paywall-text">Upgrade to access all years and subjects.</div>
         </div>
       </div>
 
@@ -588,101 +998,13 @@
       </div>
 
       <div id="startGate" class="gate" hidden>
-        <div class="gate-title">Start your practice</div>
+        <div class="gate-title">Start your study</div>
         <div class="gate-sub">
           Choose an <b>Exam</b>, <b>Year</b>, and <b>Subject</b> in <b>Filters</b>. Your questions will load automatically.
         </div>
       </div>
 
       <div id="list" class="list"></div>
-    </section>
-
-    <section class="card" id="cbtSection" hidden>
-      <div class="row space" style="margin-bottom:12px;">
-        <div>
-          <h2 class="h2-tight">JAMB CBT Screen</h2>
-          <div class="hint">Dedicated CBT container (frontend structure only). Question loading and timer will be added in a later step.</div>
-        </div>
-        <button id="btnBackToPractice" class="btn ghost" type="button">← Back to Practice</button>
-      </div>
-
-      <div id="cbtLaneStatus" class="status">CBT screen is ready. No CBT session logic is enabled yet.</div>
-
-      <div class="grid2" hidden>
-        <div class="panel">
-          <h3>CBT Session Setup</h3>
-          <p class="hint">Uses your current Exam, Year, and Subject filters to load objective questions into a separate CBT session.</p>
-          <div id="cbtSetupMeta" class="meta" style="margin-top:10px;">Select Exam, Year, and Subject in Filters before starting.</div>
-          <div class="row" style="margin-top:12px;">
-            <button id="btnCbtStartSession" class="btn" type="button">Start CBT Session</button>
-            <button id="btnCbtReloadSession" class="btn ghost" type="button">Reload Questions</button>
-          </div>
-          <div id="cbtStatus" class="hint" style="margin-top:10px;"></div>
-        </div>
-        <div class="panel">
-          <h3>Candidate Workspace</h3>
-          <p class="hint">Answer questions, track your time, and submit to see your results.</p>
-          <div id="cbtCandidateMeta" class="meta" style="margin-top:10px;">Start a CBT session to begin the timer and save answers as you move.</div>
-        </div>
-      </div>
-
-      <div id="cbtWorkspace" class="viewer cbt-workspace" hidden>
-        <div class="row space cbt-header-row">
-          <h3 id="cbtQuestionTitle">CBT Question</h3>
-          <div class="cbt-header-badges">
-            <div id="cbtTimer" class="badge cbt-timer">00:00</div>
-            <div id="cbtQuestionPosition" class="badge">Question 0 of 0</div>
-          </div>
-        </div>
-
-        <div id="cbtSessionMeta" class="meta"></div>
-
-        <div id="cbtQuestionMeta" class="meta"></div>
-        <div id="cbtPassage" class="passage" hidden></div>
-        <div id="cbtQuestionText" class="qtext"></div>
-        <div id="cbtQuestionTables" class="tables" hidden></div>
-        <div id="cbtQuestionDiagrams" class="diagrams"></div>
-        <div id="cbtSubQuestions" class="subqs" hidden></div>
-        <div id="cbtOptions" class="options"></div>
-
-        <div class="divider"></div>
-
-        <div class="viewer-actions">
-          <button id="btnCbtPrev" class="btn ghost" type="button">◀ Previous</button>
-          <button id="btnCbtSubmit" class="btn" type="button">Submit CBT</button>
-          <button id="btnCbtNext" class="btn ghost" type="button">Next ▶</button>
-
-          <div class="viewer-actions-spacer"></div>
-
-          <button id="btnCbtReportQuestion" class="btn ghost" type="button" aria-expanded="false" aria-controls="cbtQuestionFeedbackPanel">Report Question</button>
-        </div>
-
-        <div id="cbtQuestionFeedbackPanel" class="question-feedback-panel" hidden>
-          <div class="question-feedback-header">
-            <div>
-              <strong>Report this CBT question</strong>
-              <div class="hint">Send a quick issue report without leaving your CBT session.</div>
-            </div>
-          </div>
-
-          <form id="cbtQuestionFeedbackForm" class="question-feedback-form">
-            <label for="cbtQuestionFeedbackCategory">Category</label>
-            <select id="cbtQuestionFeedbackCategory" required>
-              <option value="">Select a category</option>
-            </select>
-
-            <label for="cbtQuestionFeedbackMessage">Message</label>
-            <textarea id="cbtQuestionFeedbackMessage" placeholder="Briefly describe the issue with this CBT question." required></textarea>
-
-            <div class="question-feedback-actions">
-              <button id="btnSubmitCbtQuestionFeedback" class="btn" type="submit">Submit Report</button>
-              <button id="btnCancelCbtQuestionFeedback" class="btn ghost" type="button">Cancel</button>
-            </div>
-
-            <div id="cbtQuestionFeedbackStatus" class="support-feedback-status" aria-live="polite"></div>
-          </form>
-        </div>
-      </div>
     </section>
 
     <section id="viewer" class="card" hidden>
@@ -692,6 +1014,7 @@
       </div>
 
       <div id="qMeta" class="meta"></div>
+      <div id="qSectionInstruction" class="section-instruction" hidden></div>
       <div id="qPassage" class="passage" hidden></div>
       <div id="qText" class="qtext"></div>
       <!-- ✅ NEW: tables render here -->
@@ -760,11 +1083,124 @@
       </div>
     </div>
 
-    <section class="card" id="resultSection" hidden>
+    <div id="cbtContainer" hidden>
+    <section class="card" id="cbtSection">
       <div class="row space">
         <div>
-            <h2 class="h2-tight">Results</h2>
-           <div class="hint">View your score, performance breakdown, and overall results.</div>
+          <h2 class="h2-tight">JAMB CBT</h2>
+             <div class="hint">Answer JAMB questions one at a time, just like the real exam.</div>
+        </div>
+        <button id="btnCbtClose" class="btn ghost" type="button">Close CBT</button>
+      </div>
+
+      <div class="grid2">
+        <div class="panel">
+          <h3>CBT Session Setup</h3>
+          <p class="hint">JAMB UTME — 4 subjects, 180 questions, 120 minutes. Use of English is compulsory and auto-included.</p>
+
+          <div style="margin-top:12px;">
+            <div class="hint" style="margin-bottom:4px;">Subject 1 (Compulsory)</div>
+            <div class="cbt-subject-locked">Use of English &nbsp;<span class="pill">60 questions</span></div>
+          </div>
+
+          <div style="margin-top:10px;">
+            <label for="cbtSubject2" class="hint">Subject 2</label>
+            <select id="cbtSubject2" class="cbt-subject-select">
+              <option value="">— Select subject —</option>
+            </select>
+          </div>
+
+          <div style="margin-top:8px;">
+            <label for="cbtSubject3" class="hint">Subject 3</label>
+            <select id="cbtSubject3" class="cbt-subject-select">
+              <option value="">— Select subject —</option>
+            </select>
+          </div>
+
+          <div style="margin-top:8px;">
+            <label for="cbtSubject4" class="hint">Subject 4</label>
+            <select id="cbtSubject4" class="cbt-subject-select">
+              <option value="">— Select subject —</option>
+            </select>
+          </div>
+
+          <div id="cbtSetupMeta" class="meta" style="margin-top:12px;">Select your 3 subjects to begin.</div>
+
+          <div class="row" style="margin-top:12px;">
+            <button id="btnCbtStartSession" class="btn" type="button">Start CBT Session</button>
+            <button id="btnCbtReloadSession" class="btn ghost" type="button">Reload Questions</button>
+          </div>
+          <div id="cbtStatus" class="hint" style="margin-top:10px;"></div>
+        </div>
+        <div class="panel">
+          <h3>Candidate Workspace</h3>
+          <p class="hint">180 questions across 4 subjects. Timer starts when your session loads. Answers are saved as you move between questions.</p>
+          <div id="cbtCandidateMeta" class="meta" style="margin-top:10px;">Start a CBT session to begin the timer and save answers as you move.</div>
+        </div>
+      </div>
+
+      <div id="cbtSubjectTabs" class="cbt-tab-bar" hidden role="tablist" aria-label="JAMB Subjects"></div>
+
+      <div id="cbtQuestionPalette" class="cbt-palette" hidden></div>
+
+      <div id="cbtWorkspace" class="viewer cbt-workspace" hidden>
+        <div class="cbt-orientation-bar">
+          <div id="cbtOrientationLabel" class="cbt-orientation-label">—</div>
+        </div>
+
+        <div id="cbtSectionInstruction" class="section-instruction" hidden></div>
+        <div id="cbtPassage" class="passage" hidden></div>
+        <div id="cbtQuestionText" class="qtext"></div>
+        <div id="cbtQuestionTables" class="tables" hidden></div>
+        <div id="cbtQuestionDiagrams" class="diagrams"></div>
+        <div id="cbtSubQuestions" class="subqs" hidden></div>
+        <div id="cbtOptions" class="options"></div>
+
+        <div class="divider"></div>
+
+        <div class="viewer-actions">
+          <button id="btnCbtPrev" class="btn ghost" type="button">◀ Previous</button>
+          <button id="btnCbtSubmit" class="btn" type="button">Submit CBT</button>
+          <button id="btnCbtNext" class="btn ghost" type="button">Next ▶</button>
+
+          <div class="viewer-actions-spacer"></div>
+
+          <button id="btnCbtReportQuestion" class="btn ghost" type="button" aria-expanded="false" aria-controls="cbtQuestionFeedbackPanel">Report Question</button>
+        </div>
+
+        <div id="cbtQuestionFeedbackPanel" class="question-feedback-panel" hidden>
+          <div class="question-feedback-header">
+            <div>
+              <strong>Report this CBT question</strong>
+              <div class="hint">Send a quick issue report without leaving your CBT session.</div>
+            </div>
+          </div>
+
+          <form id="cbtQuestionFeedbackForm" class="question-feedback-form">
+            <label for="cbtQuestionFeedbackCategory">Category</label>
+            <select id="cbtQuestionFeedbackCategory" required>
+              <option value="">Select a category</option>
+            </select>
+
+            <label for="cbtQuestionFeedbackMessage">Message</label>
+            <textarea id="cbtQuestionFeedbackMessage" placeholder="Briefly describe the issue with this CBT question." required></textarea>
+
+            <div class="question-feedback-actions">
+              <button id="btnSubmitCbtQuestionFeedback" class="btn" type="submit">Submit Report</button>
+              <button id="btnCancelCbtQuestionFeedback" class="btn ghost" type="button">Cancel</button>
+            </div>
+
+            <div id="cbtQuestionFeedbackStatus" class="support-feedback-status" aria-live="polite"></div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="resultSection">
+      <div class="row space">
+        <div>
+          <h2 class="h2-tight">Results</h2>
+          <div class="hint">View your score, performance breakdown, and overall results.</div>
         </div>
       </div>
 
@@ -772,24 +1208,47 @@
         <div class="panel">
           <h3>Result Summary</h3>
           <div id="resultSummaryMeta" class="meta">Submit a CBT session to see your summary.</div>
-          <div id="resultScoreBadge" class="badge" style="margin-top:12px; display:inline-flex;">Score 0 / 0 (0%)</div>
+
+          <!-- JAMB total score hero -->
+          <div style="margin-top:16px; text-align:center; padding:16px; background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.2); border-radius:14px;">
+            <div style="font-size:11px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#a5b4fc; margin-bottom:6px;">JAMB Score</div>
+            <div id="resultScoreBadge" style="font-size:48px; font-weight:900; color:#e0e7ff; line-height:1; font-variant-numeric:tabular-nums;">0</div>
+            <div style="font-size:14px; color:#6b7280; margin-top:4px;">out of 400</div>
+          </div>
+
           <div id="resultStatus" class="hint" style="margin-top:12px;"></div>
         </div>
+
         <div class="panel">
           <h3>Performance Breakdown</h3>
           <div id="resultBreakdown" class="grid2" style="margin-top:12px;">
             <div class="panel"><strong>Total Questions</strong><div id="resultTotalQuestions" class="meta">0</div></div>
-            <div class="panel"><strong>Answered Questions</strong><div id="resultAnsweredQuestions" class="meta">0</div></div>
-            <div class="panel"><strong>Correct Answers</strong><div id="resultCorrectAnswers" class="meta">0</div></div>
-            <div class="panel"><strong>Wrong Answers</strong><div id="resultWrongAnswers" class="meta">0</div></div>
+            <div class="panel"><strong>Answered</strong><div id="resultAnsweredQuestions" class="meta">0</div></div>
+            <div class="panel"><strong>Correct</strong><div id="resultCorrectAnswers" class="meta">0</div></div>
+            <div class="panel"><strong>Wrong</strong><div id="resultWrongAnswers" class="meta">0</div></div>
           </div>
           <div class="row" style="margin-top:12px;">
-            <button id="btnResultBackToCbt" class="btn ghost" type="button">Back to CBT</button>
-            <button id="btnResultStartNew" class="btn" type="button">Start New CBT Session</button>
+            <button id="btnResultBackToCbt" class="btn" type="button">Review Answers</button>
+            <button id="btnResultStartNew" class="btn ghost" type="button">New Session</button>
           </div>
         </div>
       </div>
+
+      <!-- Subject performance bars -->
+      <div id="resultSubjectBreakdown" style="margin-top:20px;" hidden></div>
+
+      <!-- Weak topics -->
+      <div id="resultWeakTopics" style="margin-top:20px;" hidden></div>
+
+      <!-- Time analysis -->
+      <div id="resultTimeAnalysis" style="margin-top:20px;" hidden></div>
+
+      <!-- Conversion nudge for free users -->
+      <div id="cbtConversionNudge" style="margin-top:20px; padding:14px 16px; border-radius:12px; background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.22); font-size:14px; color:#a5b4fc; text-align:center;" hidden>
+        Unlock all years to keep improving. <button id="btnCbtUpgradeNudge" class="btn" type="button" style="margin-left:10px; padding:6px 14px; font-size:13px;">Upgrade</button>
+      </div>
     </section>
+    </div><!-- #cbtContainer -->
 
     <section class="card" id="feedbackSection" hidden>
       <div class="row space">
