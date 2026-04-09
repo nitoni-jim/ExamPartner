@@ -40,8 +40,8 @@ DIAGRAMS_DIR.mkdir(parents=True, exist_ok=True)
 cors_origins_raw = os.getenv("CORS_ORIGINS", "http://127.0.0.1:5173,http://127.0.0.1:5500")
 CORS_ORIGINS = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
 
-FREE_SAMPLE_LIMIT_OBJ = int(os.getenv("FREE_SAMPLE_LIMIT_OBJ", "10"))
-FREE_SAMPLE_LIMIT_THEORY = int(os.getenv("FREE_SAMPLE_LIMIT_THEORY", "2"))
+# Free access: oldest year per subject only (no flat question caps)
+# Access is enforced per-subject in list_objective, list_theory, and cbt_questions.
 ADMIN_IDENTIFIERS = {
     item.strip().lower()
     for item in os.getenv("ADMIN_IDENTIFIERS", "admin@exampartner.com").split(",")
@@ -105,7 +105,7 @@ def founding_status():
     Returns whether Founding (₦1,000) is still open for NEW users.
     Existing founders can still renew; frontend can decide that.
     """
-    FOUNDING_CAP = int(os.getenv("FOUNDING_CAP", "100"))
+    FOUNDING_CAP = int(os.getenv("FOUNDING_CAP", "500"))
     using_pg = bool(os.getenv("DATABASE_URL"))
 
     db = db_conn()
@@ -487,6 +487,53 @@ def filters(
     }
 
 
+@app.get("/study/years")
+def study_years(
+    exam: Optional[str] = Query(default=None),
+    subject: Optional[str] = Query(default=None),
+    user: Optional[Dict[str, Any]] = Depends(get_current_user),
+):
+    """
+    Returns all available years for a subject, plus the oldest (free) year.
+    Frontend uses this to render the year selector with lock icons for paid years.
+    """
+    where: List[str] = ["year IS NOT NULL"]
+    params: List[Any] = []
+
+    if exam:
+        where.append("exam = ?")
+        params.append(exam)
+    if subject:
+        where.append("subject = ?")
+        params.append(subject)
+
+    where_sql = "WHERE " + " AND ".join(where)
+
+    db = db_conn()
+    cur = db.cursor()
+    cur.execute(
+        f"SELECT DISTINCT year FROM questions {where_sql} AND TRIM(CAST(year AS TEXT)) <> ''",
+        tuple(params) if params else None,
+    )
+    rows = cur.fetchall()
+    all_years = sorted(
+        [int(r["year"]) for r in rows if r.get("year") is not None],
+        reverse=True,
+    )
+
+    free_year = _get_free_year_for_subject(db, exam, subject)
+    db.close()
+
+    is_paid = (_is_paid_user(user) or _is_admin_user(user)) if user else False
+
+    return {
+        "ok": True,
+        "years": all_years,
+        "free_year": free_year,
+        "is_paid": is_paid,
+    }
+
+
 # -----------------------------
 # QUESTIONS
 # -----------------------------
@@ -672,8 +719,38 @@ def _is_paid_user(user: Optional[Dict[str, Any]]) -> bool:
         now = datetime.now(timezone.utc)
         return paid_until > now
 
+
     # legacy fallback
     return bool(_row_get(row, "is_paid"))
+
+
+def _get_free_year_for_subject(db, exam: Optional[str], subject: Optional[str]) -> Optional[int]:
+    """
+    Returns the oldest available year for a given exam+subject combination.
+    This is the only year free users may access.
+    If no exam or subject filter is given, returns the global oldest year.
+    """
+    cur = db.cursor()
+    where: List[str] = ["year IS NOT NULL"]
+    params: List[Any] = []
+
+    if exam:
+        where.append("exam = ?")
+        params.append(exam)
+    if subject:
+        where.append("subject = ?")
+        params.append(subject)
+
+    where_sql = "WHERE " + " AND ".join(where)
+    cur.execute(
+        f"SELECT MIN(year) AS oldest FROM questions {where_sql}",
+        tuple(params) if params else None,
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    val = _row_get(row, "oldest")
+    return int(val) if val is not None else None
 
 
 
@@ -718,7 +795,7 @@ def _build_filters(
 
 
 @app.get("/questions/objective")
-
+@app.get("/questions/study")  # Study mode alias (Practice renamed to Study)
 def list_objective(
     limit: int = 20,
     offset: int = 0,
@@ -727,17 +804,25 @@ def list_objective(
     subject: Optional[str] = Query(default=None),
     user: Optional[Dict[str, Any]] = Depends(get_current_user),
 ):
-    is_paid = _is_paid_user(user)
-    # ✅ Objective preview cap (unpaid): max 10 total
+    is_paid = _is_paid_user(user) or _is_admin_user(user)
+
+    # Free access: oldest year per subject only.
+    # If user has not filtered to a specific year, enforce the oldest available year.
+    db = db_conn()
     if not is_paid:
-        if offset >= FREE_SAMPLE_LIMIT_OBJ:
-            raise HTTPException(status_code=402, detail="Free preview limit reached. Upgrade to continue.")
-        remaining = FREE_SAMPLE_LIMIT_OBJ - offset
-        limit = min(limit, remaining)
+        free_year = _get_free_year_for_subject(db, exam, subject)
+        if free_year is not None:
+            if year is not None and year != free_year:
+                db.close()
+                raise HTTPException(
+                    status_code=402,
+                    detail=f"Free access is limited to {free_year}. Upgrade to access all years.",
+                )
+            # Lock to the free year even if no year filter was supplied
+            year = free_year
 
     where_sql, params = _build_filters("objective", exam, year, subject)
 
-    db = db_conn()
     cur = db.cursor()
     cur.execute(
         f"""
@@ -755,7 +840,12 @@ def list_objective(
     rows = cur.fetchall()
     passage_lookup = _build_passage_lookup(db, rows)
     db.close()
-    return {"items": [_row_to_question(r, passage_lookup) for r in rows], "limit": limit, "offset": offset}
+    return {
+        "items": [_row_to_question(r, passage_lookup) for r in rows],
+        "limit": limit,
+        "offset": offset,
+        "free_year": year if not is_paid else None,
+    }
 
 # -----------------------------
 # CBT — JAMB full-simulation endpoint
@@ -778,13 +868,10 @@ def cbt_questions(
       years only appear once per session).
     - Caps at 60 for Use of English, 40 for all other subjects.
     - Requires paid access or admin.
-    - Never reuses practice viewer preview caps or paywall logic.
+    - Never reuses study viewer access logic or year-lock rules.
     """
     if not user:
         raise HTTPException(status_code=401, detail="Authentication required for CBT.")
-
-    if not (_is_paid_user(user) or _is_admin_user(user)):
-        raise HTTPException(status_code=402, detail="CBT requires an active subscription.")
 
     subject = (subject or "").strip()
     exam = (exam or "JAMB").strip()
@@ -792,21 +879,49 @@ def cbt_questions(
     if not subject:
         raise HTTPException(status_code=400, detail="subject is required.")
 
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required for CBT.")
+
+    is_paid = _is_paid_user(user) or _is_admin_user(user)
+
     db = db_conn()
+    # Free users: restrict to oldest available year for this subject
+    year_filter: Optional[int] = None
+    if not is_paid:
+        free_year = _get_free_year_for_subject(db, exam, subject)
+        if free_year is None:
+            db.close()
+            raise HTTPException(status_code=404, detail="No questions found for this subject.")
+        year_filter = free_year
+
     cur = db.cursor()
     try:
-        cur.execute(
-            """
-            SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
-                   options_json, answer, explanation, sub_questions_json,
-                   solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json,
-                   tables_json, section_instruction, passage_id, passage_snapshot
-            FROM questions
-            WHERE qtype = ? AND exam = ? AND subject = ?
-            ORDER BY id
-            """,
-            ("objective", exam, subject),
-        )
+        if year_filter is not None:
+            cur.execute(
+                """
+                SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
+                       options_json, answer, explanation, sub_questions_json,
+                       solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json,
+                       tables_json, section_instruction, passage_id, passage_snapshot
+                FROM questions
+                WHERE qtype = ? AND exam = ? AND subject = ? AND year = ?
+                ORDER BY id
+                """,
+                ("objective", exam, subject, year_filter),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT id, exam, year, subject, paper, section, qtype, page, marks, question_text,
+                       options_json, answer, explanation, sub_questions_json,
+                       solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json,
+                       tables_json, section_instruction, passage_id, passage_snapshot
+                FROM questions
+                WHERE qtype = ? AND exam = ? AND subject = ?
+                ORDER BY id
+                """,
+                ("objective", exam, subject),
+            )
         rows = cur.fetchall()
         passage_lookup = _build_passage_lookup(db, rows)
     finally:
@@ -836,6 +951,7 @@ def cbt_questions(
         "subject": subject,
         "total_available": total_available,
         "returned": len(capped),
+        "free_year": year_filter,  # None for paid users, oldest year for free users
     }
 
 
@@ -848,17 +964,23 @@ def list_theory(
     subject: Optional[str] = Query(default=None),
     user: Optional[Dict[str, Any]] = Depends(get_current_user),
 ):
-    is_paid = _is_paid_user(user)
-    # ✅ Theory preview cap (unpaid): max 2 total
+    is_paid = _is_paid_user(user) or _is_admin_user(user)
+
+    # Free access: oldest year per subject only.
+    db = db_conn()
     if not is_paid:
-        if offset >= FREE_SAMPLE_LIMIT_THEORY:
-            raise HTTPException(status_code=402, detail="Free preview limit reached. Upgrade to continue.")
-        remaining = FREE_SAMPLE_LIMIT_THEORY - offset
-        limit = min(limit, remaining)
+        free_year = _get_free_year_for_subject(db, exam, subject)
+        if free_year is not None:
+            if year is not None and year != free_year:
+                db.close()
+                raise HTTPException(
+                    status_code=402,
+                    detail=f"Free access is limited to {free_year}. Upgrade to access all years.",
+                )
+            year = free_year
 
     where_sql, params = _build_filters("theory", exam, year, subject)
 
-    db = db_conn()
     cur = db.cursor()
     cur.execute(
         f"""
@@ -878,7 +1000,12 @@ def list_theory(
     rows = _sort_theory_rows(rows)
     passage_lookup = _build_passage_lookup(db, rows)
     db.close()
-    return {"items": [_row_to_question(r, passage_lookup) for r in rows], "limit": limit, "offset": offset}
+    return {
+        "items": [_row_to_question(r, passage_lookup) for r in rows],
+        "limit": limit,
+        "offset": offset,
+        "free_year": year if not is_paid else None,
+    }
 
 def _require_admin(user: Optional[Dict[str, Any]]) -> str:
     if not user or not _is_admin_user(user):
