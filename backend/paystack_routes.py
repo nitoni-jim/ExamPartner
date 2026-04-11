@@ -376,8 +376,8 @@ def mark_user_paid_by_identifier(
 ) -> None:
     """
     Apply access based on the transaction amount:
-    - ₦1,000  => Founding (30 days)  [first 100 users only]
-    - ₦10,000 => Core (365 days)
+    - ₦1,000  => Founding (365 days) [first 500 users only]
+    - ₦2,000+ => Core (365 days)
     Extends paid_until from max(now, paid_until).
     Founding status (is_founding) is assigned once and never removed.
     """
@@ -519,6 +519,85 @@ def mark_user_paid_by_identifier(
     finally:
         db.close()
 
+def admin_grant_access_by_identifier(
+    identifier: str,
+    plan: str,
+    duration_days: Optional[int] = None,
+) -> dict:
+    """
+    Admin-only manual access grant.
+    Sets the complete membership state so no manual SQL is needed.
+    """
+    identifier = (identifier or "").strip().lower()
+    plan = (plan or "").strip().lower()
+
+    if not identifier:
+        raise HTTPException(status_code=400, detail="Missing identifier")
+
+    if plan not in ("founding", "core"):
+        raise HTTPException(status_code=400, detail="Invalid plan. Use 'founding' or 'core'.")
+
+    if duration_days is None:
+        duration_days = 365
+
+    ph = "%s" if _using_postgres() else "?"
+
+    db = get_db()
+    try:
+        cur = db.cursor()
+
+        cur.execute(f"SELECT id, is_founding, paid_until FROM users WHERE lower(identifier) = {ph}", (identifier,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        try:
+            user_id = int(row["id"])
+            existing_is_founding = bool(row["is_founding"] or False)
+            paid_until = row["paid_until"]
+        except Exception:
+            user_id = int(row[0])
+            existing_is_founding = bool(row[1]) if len(row) > 1 else False
+            paid_until = row[2] if len(row) > 2 else None
+
+        now = datetime.now(timezone.utc)
+
+        if isinstance(paid_until, str):
+            try:
+                paid_until_dt = datetime.fromisoformat(paid_until.replace("Z", "+00:00"))
+            except Exception:
+                paid_until_dt = None
+        else:
+            paid_until_dt = paid_until
+
+        base = paid_until_dt if (paid_until_dt and paid_until_dt > now) else now
+        new_paid_until = base + timedelta(days=int(duration_days))
+        paid_until_store = new_paid_until if _using_postgres() else new_paid_until.isoformat()
+
+        if plan == "founding":
+            cur.execute(
+                f"UPDATE users SET is_paid = {ph}, is_founding = {ph}, plan = {ph}, paid_until = {ph} WHERE id = {ph}",
+                (True, True, "founding", paid_until_store, user_id),
+            )
+        else:
+            cur.execute(
+                f"UPDATE users SET is_paid = {ph}, is_founding = {ph}, plan = {ph}, paid_until = {ph} WHERE id = {ph}",
+                (True, existing_is_founding, "core", paid_until_store, user_id),
+            )
+
+        db.commit()
+
+        return {
+            "ok": True,
+            "identifier": identifier,
+            "plan": plan,
+            "is_founding": True if plan == "founding" else existing_is_founding,
+            "paid_until": new_paid_until.isoformat(),
+        }
+    finally:
+        db.close()
+
+
 # -----------------------------
 # API models
 # -----------------------------
@@ -532,6 +611,12 @@ class AdminRefundReq(BaseModel):
     amount_kobo: Optional[int] = None
     customer_note: Optional[str] = None
     merchant_note: Optional[str] = None
+
+
+class AdminGrantAccessReq(BaseModel):
+    identifier: str
+    plan: str  # founding | core
+    duration_days: Optional[int] = None
 
 
 # -----------------------------
@@ -639,7 +724,11 @@ def verify_payment(req: VerifyReq):
 
     customer = tx.get("customer") or {}
     customer_email = (customer.get("email") or "").strip().lower()
-    final_identifier = customer_email or email
+    metadata = tx.get("metadata") or {}
+    meta_identifier = (metadata.get("identifier") or "").strip().lower()
+
+    # beneficiary first, payer email second, request email last
+    final_identifier = meta_identifier or customer_email or email
 
     persist_payment_payload_by_identifier(final_identifier, ref, source="paystack:verify", pay_data=tx)
 
@@ -703,7 +792,8 @@ async def paystack_webhook(request: Request):
 
     metadata = tx.get("metadata") or {}
     meta_identifier = (metadata.get("identifier") or "").strip().lower()
-    final_identifier = email or meta_identifier
+    # beneficiary first
+    final_identifier = meta_identifier or email
 
     if final_identifier:
         persist_payment_payload_by_identifier(final_identifier, reference, source=f"webhook:{event_type}", pay_data=tx)
@@ -743,7 +833,8 @@ def admin_reconcile(reference: str, request: Request):
     email = (customer.get("email") or "").strip().lower()
     metadata = tx.get("metadata") or {}
     meta_identifier = (metadata.get("identifier") or "").strip().lower()
-    final_identifier = email or meta_identifier
+    # beneficiary first
+    final_identifier = meta_identifier or email
 
     if final_identifier:
         persist_payment_payload_by_identifier(final_identifier, ref, source="admin:reconcile", pay_data=tx)
@@ -830,21 +921,59 @@ def admin_audit(request: Request, limit: int = 20):
     return {"ok": True, "limit": limit, "items": items}
 
 
-@router.post("/admin/mark-paid")
-def admin_mark_paid(request: Request, email: str):
+@router.post("/admin/grant-access")
+def admin_grant_access(req: AdminGrantAccessReq, request: Request):
     require_admin(request)
-    identifier = (email or "").strip().lower()
-    if not identifier:
-        raise HTTPException(status_code=400, detail="Missing email")
 
-    db = get_db()
-    try:
-        cur = db.cursor()
-        # ✅ boolean
-        cur.execute("UPDATE users SET is_paid = ? WHERE lower(identifier) = ?", (True, identifier))
-        db.commit()
-    finally:
-        db.close()
+    result = admin_grant_access_by_identifier(
+        identifier=req.identifier,
+        plan=req.plan,
+        duration_days=req.duration_days,
+    )
 
-    audit_admin_action(request, action="admin_mark_paid", reference=identifier, payload={"email": identifier})
-    return {"ok": True, "email": identifier}
+    audit_admin_action(
+        request,
+        action="admin_grant_access",
+        reference=(req.identifier or "").strip().lower(),
+        payload={
+            "identifier": (req.identifier or "").strip().lower(),
+            "plan": (req.plan or "").strip().lower(),
+            "duration_days": req.duration_days or 365,
+        },
+    )
+
+    return result
+
+
+@router.post("/admin/mark-paid")
+def admin_mark_paid(
+    request: Request,
+    identifier: str = Query(...),
+    plan: str = Query("core"),
+    duration_days: int = Query(365),
+):
+    """
+    Backward-compatible admin route — now delegates to admin_grant_access_by_identifier
+    for full membership state update (is_paid, is_founding, plan, paid_until).
+    Example: /payments/admin/mark-paid?identifier=0703...&plan=founding
+    """
+    require_admin(request)
+
+    result = admin_grant_access_by_identifier(
+        identifier=identifier,
+        plan=plan,
+        duration_days=duration_days,
+    )
+
+    audit_admin_action(
+        request,
+        action="admin_mark_paid",
+        reference=(identifier or "").strip().lower(),
+        payload={
+            "identifier": (identifier or "").strip().lower(),
+            "plan": (plan or "").strip().lower(),
+            "duration_days": duration_days,
+        },
+    )
+
+    return result
