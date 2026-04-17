@@ -1,0 +1,149 @@
+"""
+routes/auth.py — authentication routes for ExamPartner.
+"""
+import hashlib
+import secrets
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+
+from config import db_conn, logger
+from models.schemas import AuthReq, AuthResp, LoginReq, RegisterReq
+from services.access_control import is_admin_identifier, is_admin_user, is_paid_user
+from services.auth_utils import get_current_user, make_token
+from services.question_utils import row_get
+
+router = APIRouter(tags=["auth"])
+
+
+def _hash_pw(password: str, salt: str) -> str:
+    return hashlib.sha256((salt + ":" + password).encode("utf-8")).hexdigest()
+
+
+@router.post("/auth/register", response_model=AuthResp)
+def register(body: RegisterReq):
+    identifier = body.identifier.strip().lower()
+    if not identifier or len(body.password) < 4:
+        raise HTTPException(status_code=400, detail="Invalid identifier/password")
+
+    full_name = (body.full_name or "").strip() or None
+    salt = secrets.token_hex(16)
+    pw_hash = _hash_pw(body.password, salt)
+
+    db = db_conn()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO users (identifier, salt, pw_hash, is_paid, full_name) VALUES (?, ?, ?, ?, ?)",
+            (identifier, salt, pw_hash, False, full_name),
+        )
+        db.commit()
+    except Exception as e:
+        msg = (str(e) or "").lower()
+        logger.exception("Register failed for identifier=%s", identifier)
+        if "unique" in msg or "duplicate" in msg or "already exists" in msg:
+            raise HTTPException(status_code=409, detail="User already exists")
+        raise HTTPException(status_code=500, detail="Registration failed. Server DB error.")
+    finally:
+        db.close()
+
+    token = make_token(identifier)
+    return {
+        "token": token,
+        "identifier": identifier,
+        "is_paid": False,
+        "is_admin": is_admin_identifier(identifier),
+    }
+
+
+@router.post("/auth/login", response_model=AuthResp)
+def login(body: AuthReq):
+    identifier = body.identifier.strip().lower()
+    db = db_conn()
+    cur = db.cursor()
+    cur.execute(
+        "SELECT identifier, salt, pw_hash, is_paid, is_admin FROM users WHERE identifier = ?",
+        (identifier,),
+    )
+    row = cur.fetchone()
+    db.close()
+
+    if not row:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    salt = row["salt"]
+    pw_hash = row["pw_hash"]
+    if _hash_pw(body.password, salt) != pw_hash:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = make_token(identifier)
+    return {
+        "token": token,
+        "identifier": identifier,
+        "is_paid": bool(row["is_paid"]),
+        "is_admin": is_admin_identifier(identifier) or bool(row_get(row, "is_admin") or False),
+    }
+
+
+@router.get("/me")
+def me(user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    identifier = user.get("sub")
+    if not identifier:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = db_conn()
+    cur = db.cursor()
+    cur.execute(
+        "SELECT is_paid, paid_until, plan, is_founding, email, is_admin, full_name FROM users WHERE identifier = ?",
+        (identifier,),
+    )
+    row = cur.fetchone()
+    db.close()
+
+    if not row:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    is_paid_active = is_paid_user({"sub": identifier})
+    paid_until = row_get(row, "paid_until")
+
+    return {
+        "identifier": identifier,
+        "full_name": row_get(row, "full_name"),
+        "is_paid": bool(row_get(row, "is_paid")),
+        "is_paid_active": bool(is_paid_active),
+        "paid_until": paid_until.isoformat() if paid_until else None,
+        "plan": row_get(row, "plan") or "free",
+        "is_founding": bool(row_get(row, "is_founding") or False),
+        "email": row_get(row, "email"),
+        "is_admin": is_admin_identifier(identifier) or bool(row_get(row, "is_admin") or False),
+    }
+
+
+@router.post("/me/email")
+def update_email(
+    payload: Dict[str, str],
+    user: Optional[Dict[str, Any]] = Depends(get_current_user),
+):
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    identifier = user.get("sub")
+    if not identifier:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    email = (payload.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+    if "@" not in email:
+        raise HTTPException(status_code=400, detail="Invalid email")
+
+    db = db_conn()
+    cur = db.cursor()
+    cur.execute("UPDATE users SET email = ? WHERE identifier = ?", (email, identifier))
+    db.commit()
+    db.close()
+
+    return {"ok": True, "email": email}
