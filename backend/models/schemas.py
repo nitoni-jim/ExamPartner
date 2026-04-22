@@ -1,7 +1,7 @@
 """
 models/schemas.py — Pydantic request/response models for ExamPartner.
 """
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel
 
 
@@ -38,3 +38,16 @@ class QuestionFeedbackReq(BaseModel):
     category: str
     message: str
     source_area: Optional[str] = None
+
+
+class StudyTopicsResponse(BaseModel):
+    exam: str
+    subject: str
+    topics: List[str]
+
+
+class StudySubtopicsResponse(BaseModel):
+    exam: str
+    subject: str
+    topic: str
+    subtopics: List[str]
