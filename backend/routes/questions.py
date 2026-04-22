@@ -15,6 +15,8 @@ from services.question_service import (
     get_single_question,
     get_study_years,
     get_theory_questions,
+    get_topics,
+    get_subtopics,
 )
 
 router = APIRouter(tags=["questions"])
@@ -39,6 +41,23 @@ def study_years(
     return get_study_years(exam=exam, subject=subject, is_paid=paid)
 
 
+@router.get("/study/topics")
+def study_topics(
+    exam: Optional[str] = Query(default=None),
+    subject: Optional[str] = Query(default=None),
+):
+    return get_topics(exam=exam, subject=subject)
+
+
+@router.get("/study/subtopics")
+def study_subtopics(
+    exam: Optional[str] = Query(default=None),
+    subject: Optional[str] = Query(default=None),
+    topic: Optional[str] = Query(default=None),
+):
+    return get_subtopics(exam=exam, subject=subject, topic=topic)
+
+
 @router.get("/questions/objective")
 @router.get("/questions/study")
 def list_objective(
@@ -47,13 +66,15 @@ def list_objective(
     exam: Optional[str] = Query(default=None),
     year: Optional[int] = Query(default=None),
     subject: Optional[str] = Query(default=None),
+    topic: Optional[str] = Query(default=None),
+    subtopic: Optional[str] = Query(default=None),
     user: Optional[Dict[str, Any]] = Depends(get_current_user),
 ):
     paid = is_paid_user(user) or is_admin_user(user)
     return get_objective_questions(
         limit=limit, offset=offset,
         exam=exam, year=year, subject=subject,
-        is_paid=paid,
+        is_paid=paid, topic=topic, subtopic=subtopic,
     )
 
 
@@ -64,13 +85,15 @@ def list_theory(
     exam: Optional[str] = Query(default=None),
     year: Optional[int] = Query(default=None),
     subject: Optional[str] = Query(default=None),
+    topic: Optional[str] = Query(default=None),
+    subtopic: Optional[str] = Query(default=None),
     user: Optional[Dict[str, Any]] = Depends(get_current_user),
 ):
     paid = is_paid_user(user) or is_admin_user(user)
     return get_theory_questions(
         limit=limit, offset=offset,
         exam=exam, year=year, subject=subject,
-        is_paid=paid,
+        is_paid=paid, topic=topic, subtopic=subtopic,
     )
 
 
