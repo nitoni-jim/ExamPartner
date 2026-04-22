@@ -151,6 +151,8 @@ def row_to_question(row: Any, passage_lookup: Optional[Dict[str, Any]] = None) -
         "tables": jloads(row_get(row, "tables_json")) or {},
         "passage_id": passage_id,
         "passage_snapshot": passage_snapshot,
+        "topic": row_get(row, "topic"),
+        "subtopic": row_get(row, "subtopic"),
     }
 
 
@@ -163,6 +165,8 @@ def build_filters(
     exam: Optional[str],
     year: Optional[int],
     subject: Optional[str],
+    topic: Optional[str] = None,
+    subtopic: Optional[str] = None,
 ) -> Tuple[str, List[Any]]:
     where = ["qtype = ?"]
     params: List[Any] = [qtype]
@@ -176,6 +180,12 @@ def build_filters(
     if subject:
         where.append("subject = ?")
         params.append(subject)
+    if topic:
+        where.append("topic = ?")
+        params.append(topic)
+    if subtopic:
+        where.append("subtopic = ?")
+        params.append(subtopic)
 
     return " AND ".join(where), params
 
@@ -201,5 +211,6 @@ QUESTION_SELECT_COLS = """
     id, exam, year, subject, paper, section, qtype, page, marks, question_text,
     options_json, answer, explanation, sub_questions_json,
     solution_steps_json, diagrams_json, answer_diagrams_json, explanation_diagrams_json,
-    tables_json, section_instruction, passage_id, passage_snapshot
+    tables_json, section_instruction, passage_id, passage_snapshot,
+    topic, subtopic
 """.strip()
