@@ -134,6 +134,8 @@ def get_objective_questions(
     year: Optional[int],
     subject: Optional[str],
     is_paid: bool,
+    topic: Optional[str] = None,
+    subtopic: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Returns a page of objective questions, applying the free-year gate for unpaid users.
@@ -150,7 +152,7 @@ def get_objective_questions(
                 )
             year = free_year
 
-    where_sql, params = build_filters("objective", exam, year, subject)
+    where_sql, params = build_filters("objective", exam, year, subject, topic, subtopic)
     cur = db.cursor()
     cur.execute(
         f"""
@@ -181,6 +183,8 @@ def get_theory_questions(
     year: Optional[int],
     subject: Optional[str],
     is_paid: bool,
+    topic: Optional[str] = None,
+    subtopic: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Returns a page of theory questions, applying the free-year gate for unpaid users.
@@ -197,7 +201,7 @@ def get_theory_questions(
                 )
             year = free_year
 
-    where_sql, params = build_filters("theory", exam, year, subject)
+    where_sql, params = build_filters("theory", exam, year, subject, topic, subtopic)
     cur = db.cursor()
     cur.execute(
         f"""
@@ -219,6 +223,83 @@ def get_theory_questions(
         "limit": limit,
         "offset": offset,
         "free_year": year if not is_paid else None,
+    }
+
+
+def get_topics(
+    exam: Optional[str],
+    subject: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Returns distinct non-empty topics for an exam+subject combination,
+    sourced directly from the questions table.
+    """
+    where = ["topic IS NOT NULL", "TRIM(topic) <> ''"]
+    params: List[Any] = []
+
+    if exam:
+        where.append("exam = ?")
+        params.append(exam)
+    if subject:
+        where.append("subject = ?")
+        params.append(subject)
+
+    where_sql = "WHERE " + " AND ".join(where)
+
+    db = db_conn()
+    cur = db.cursor()
+    cur.execute(
+        f"SELECT DISTINCT topic FROM questions {where_sql} ORDER BY topic",
+        tuple(params) if params else None,
+    )
+    topics = [r["topic"] for r in cur.fetchall() if r.get("topic")]
+    db.close()
+
+    return {
+        "exam": exam or "",
+        "subject": subject or "",
+        "topics": topics,
+    }
+
+
+def get_subtopics(
+    exam: Optional[str],
+    subject: Optional[str],
+    topic: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Returns distinct non-empty subtopics for an exam+subject+topic combination,
+    sourced directly from the questions table.
+    """
+    where = ["subtopic IS NOT NULL", "TRIM(subtopic) <> ''"]
+    params: List[Any] = []
+
+    if exam:
+        where.append("exam = ?")
+        params.append(exam)
+    if subject:
+        where.append("subject = ?")
+        params.append(subject)
+    if topic:
+        where.append("topic = ?")
+        params.append(topic)
+
+    where_sql = "WHERE " + " AND ".join(where)
+
+    db = db_conn()
+    cur = db.cursor()
+    cur.execute(
+        f"SELECT DISTINCT subtopic FROM questions {where_sql} ORDER BY subtopic",
+        tuple(params) if params else None,
+    )
+    subtopics = [r["subtopic"] for r in cur.fetchall() if r.get("subtopic")]
+    db.close()
+
+    return {
+        "exam": exam or "",
+        "subject": subject or "",
+        "topic": topic or "",
+        "subtopics": subtopics,
     }
 
 
