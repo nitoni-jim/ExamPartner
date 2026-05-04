@@ -9,13 +9,13 @@ An active device is one where revoked_at IS NULL.
 All enforcement is backend-side — the Android app cannot bypass this.
 """
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 
 from config import db_conn
-from services.access_control import is_paid_user
+from services.access_control import is_admin_identifier, is_paid_user
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +29,8 @@ DEVICE_LIMIT_ERROR = (
     "This account has reached its device limit. "
     "Please remove an old device or contact support."
 )
+
+DEVICE_REMOVAL_COOLDOWN_DAYS = 30
 
 
 def _now_iso() -> str:
@@ -47,6 +49,50 @@ def _get_user_id(cur, identifier: str) -> Optional[str]:
     if not row:
         return None
     return str(row["id"] if hasattr(row, "keys") else row[0])
+
+
+# ---------------------------------------------------------------------------
+# Cooldown helpers
+# ---------------------------------------------------------------------------
+
+def _check_removal_cooldown(cur, user_id: str, identifier: str) -> None:
+    """
+    Raises 429 if the user has removed a device within the last 30 days.
+    Admins bypass this check entirely.
+    """
+    if is_admin_identifier(identifier):
+        return  # admins bypass cooldown
+
+    cur.execute(
+        "SELECT MAX(revoked_at) AS last_revoked FROM user_devices WHERE user_id = ?",
+        (user_id,),
+    )
+    row = cur.fetchone()
+    last_revoked = row.get("last_revoked") if hasattr(row, "get") else row[0]
+
+    if not last_revoked:
+        return  # no previous revocations — allow
+
+    # Parse ISO timestamp
+    try:
+        if isinstance(last_revoked, str):
+            last_revoked_dt = datetime.fromisoformat(last_revoked.replace("Z", "+00:00"))
+        else:
+            last_revoked_dt = last_revoked
+        if last_revoked_dt.tzinfo is None:
+            last_revoked_dt = last_revoked_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return  # unparseable — allow rather than block
+
+    now = datetime.now(timezone.utc)
+    cooldown_until = last_revoked_dt + timedelta(days=DEVICE_REMOVAL_COOLDOWN_DAYS)
+
+    if now < cooldown_until:
+        date_str = cooldown_until.strftime("%d %B %Y")
+        raise HTTPException(
+            status_code=429,
+            detail=f"You can change devices again on {date_str}.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +265,9 @@ def revoke_device(identifier: str, device_id: str) -> None:
             if other:
                 raise HTTPException(status_code=403, detail="You can only remove your own devices")
             raise HTTPException(status_code=404, detail="Device not found or already removed")
+
+        # Enforce 30-day cooldown — admins bypass
+        _check_removal_cooldown(cur, user_id, identifier)
 
         cur.execute(
             "UPDATE user_devices SET revoked_at = ? WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL",
