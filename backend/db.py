@@ -85,6 +85,258 @@ FEEDBACK_POSTGRES_COLUMNS = [
     ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
 ]
 
+# ----------------------------
+# topics — canonical curriculum grouping
+# ----------------------------
+TOPICS_COLUMNS = [
+    ("topic_id", "TEXT PRIMARY KEY"),
+    ("exam", "TEXT"),
+    ("subject", "TEXT NOT NULL"),
+    ("topic", "TEXT NOT NULL"),
+    ("sort_order", "INTEGER NOT NULL DEFAULT 0"),
+    ("is_active", "TEXT"),          # stored as "1"/"0" for SQLite, TRUE/FALSE for PG
+    ("metadata_json", "TEXT"),
+    ("created_at", "TEXT"),
+    ("updated_at", "TEXT"),
+]
+
+TOPICS_SQLITE_COLUMNS = [
+    *TOPICS_COLUMNS[:-2],
+    ("created_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+    ("updated_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+]
+
+TOPICS_POSTGRES_COLUMNS = [
+    *TOPICS_COLUMNS[:-2],
+    ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+    ("updated_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+]
+
+# ----------------------------
+# subtopics — syllabus structure
+# ----------------------------
+SUBTOPICS_COLUMNS = [
+    ("subtopic_id", "TEXT PRIMARY KEY"),
+    ("topic_id", "TEXT"),
+    ("exam", "TEXT"),
+    ("subject", "TEXT NOT NULL"),
+    ("topic", "TEXT NOT NULL"),
+    ("subtopic", "TEXT NOT NULL"),
+    ("lesson_note_id", "TEXT"),
+    ("sort_order", "INTEGER NOT NULL DEFAULT 0"),
+    ("is_active", "TEXT"),          # stored as "1"/"0" for SQLite, TRUE/FALSE for PG
+    ("metadata_json", "TEXT"),
+    ("created_at", "TEXT"),
+    ("updated_at", "TEXT"),
+]
+
+SUBTOPICS_SQLITE_COLUMNS = [
+    *SUBTOPICS_COLUMNS[:-2],
+    ("created_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+    ("updated_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+]
+
+SUBTOPICS_POSTGRES_COLUMNS = [
+    *SUBTOPICS_COLUMNS[:-2],
+    ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+    ("updated_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+]
+
+# ----------------------------
+# lesson_notes — lesson content
+# ----------------------------
+LESSON_NOTES_COLUMNS = [
+    ("lesson_note_id", "TEXT PRIMARY KEY"),
+    ("subtopic_id", "TEXT"),
+    ("exam", "TEXT"),
+    ("subject", "TEXT NOT NULL"),
+    ("topic", "TEXT NOT NULL"),
+    ("title", "TEXT NOT NULL"),
+    ("content", "TEXT"),
+    ("summary", "TEXT"),
+    ("is_published", "TEXT"),       # "1"/"0" / TRUE/FALSE
+    ("metadata_json", "TEXT"),
+    ("created_at", "TEXT"),
+    ("updated_at", "TEXT"),
+]
+
+LESSON_NOTES_SQLITE_COLUMNS = [
+    *LESSON_NOTES_COLUMNS[:-2],
+    ("created_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+    ("updated_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+]
+
+LESSON_NOTES_POSTGRES_COLUMNS = [
+    *LESSON_NOTES_COLUMNS[:-2],
+    ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+    ("updated_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+]
+
+# ----------------------------
+# cbt_sessions — per CBT attempt
+# ----------------------------
+# Note: product modes are Study / CBT / Game. CBT session mode values should be things like "cbt", "mock", or "speed".
+CBT_SESSIONS_COLUMNS = [
+    ("id", "TEXT PRIMARY KEY"),
+    ("user_id", "TEXT NOT NULL"),
+    ("exam", "TEXT"),
+    ("subject", "TEXT"),
+    ("mode", "TEXT"),               # e.g. "cbt", "mock", "speed"
+    ("source_year", "INTEGER"),
+    ("total_questions", "INTEGER NOT NULL DEFAULT 0"),
+    ("answered_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("correct_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("wrong_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("unanswered_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("score_percent", "REAL"),
+    ("duration_seconds", "INTEGER"),
+    ("started_at", "TEXT"),
+    ("submitted_at", "TEXT"),
+    ("metadata_json", "TEXT"),
+]
+
+CBT_SESSIONS_SQLITE_COLUMNS = [
+    *CBT_SESSIONS_COLUMNS[:-3],
+    ("started_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+    ("submitted_at", "TEXT"),
+    ("metadata_json", "TEXT"),
+]
+
+CBT_SESSIONS_POSTGRES_COLUMNS = [
+    *CBT_SESSIONS_COLUMNS[:-3],
+    ("started_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+    ("submitted_at", "TIMESTAMPTZ"),
+    ("metadata_json", "TEXT"),
+]
+
+# ----------------------------
+# cbt_answers — per-question answer within a session
+# ----------------------------
+CBT_ANSWERS_COLUMNS = [
+    ("id", "TEXT PRIMARY KEY"),
+    ("session_id", "TEXT NOT NULL"),
+    ("user_id", "TEXT NOT NULL"),
+    ("question_id", "TEXT NOT NULL"),
+    ("question_exam", "TEXT"),
+    ("question_subject", "TEXT"),
+    ("question_year", "INTEGER"),
+    ("selected_answer", "TEXT"),
+    ("correct_answer", "TEXT"),
+    ("is_correct", "TEXT"),         # "1"/"0" / TRUE/FALSE
+    ("time_spent_seconds", "INTEGER"),
+    ("created_at", "TEXT"),
+    ("metadata_json", "TEXT"),
+]
+
+CBT_ANSWERS_SQLITE_COLUMNS = [
+    *CBT_ANSWERS_COLUMNS[:-2],
+    ("created_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+    ("metadata_json", "TEXT"),
+]
+
+CBT_ANSWERS_POSTGRES_COLUMNS = [
+    *CBT_ANSWERS_COLUMNS[:-2],
+    ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+    ("metadata_json", "TEXT"),
+]
+
+# ----------------------------
+# user_progress — cross-mode activity tracking
+# ----------------------------
+# Official activity types should align to the product: "study", "cbt", "game".
+USER_PROGRESS_COLUMNS = [
+    ("id", "TEXT PRIMARY KEY"),
+    ("user_id", "TEXT NOT NULL"),
+    ("activity_type", "TEXT NOT NULL"),   # official modes: "study", "cbt", "game"
+    ("exam", "TEXT"),
+    ("subject", "TEXT"),
+    ("topic", "TEXT"),
+    ("subtopic_id", "TEXT"),
+    ("lesson_note_id", "TEXT"),
+    ("question_id", "TEXT"),
+    ("session_id", "TEXT"),
+    ("selected_answer", "TEXT"),
+    ("is_correct", "TEXT"),               # "1"/"0" / TRUE/FALSE
+    ("score", "REAL"),
+    ("time_spent_seconds", "INTEGER"),
+    ("metadata_json", "TEXT"),
+    ("created_at", "TEXT"),
+]
+
+USER_PROGRESS_SQLITE_COLUMNS = [
+    *USER_PROGRESS_COLUMNS[:-1],
+    ("created_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+]
+
+USER_PROGRESS_POSTGRES_COLUMNS = [
+    *USER_PROGRESS_COLUMNS[:-1],
+    ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+]
+
+# ----------------------------
+# game_sessions — optional/future; schema defined now, dormant until needed
+# ----------------------------
+GAME_SESSIONS_COLUMNS = [
+    ("id", "TEXT PRIMARY KEY"),
+    ("user_id", "TEXT NOT NULL"),
+    ("exam", "TEXT"),
+    ("subject", "TEXT"),
+    ("topic", "TEXT"),
+    ("subtopic_id", "TEXT"),
+    ("total_questions", "INTEGER NOT NULL DEFAULT 0"),
+    ("correct_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("wrong_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("best_streak", "INTEGER NOT NULL DEFAULT 0"),
+    ("lives_used", "INTEGER NOT NULL DEFAULT 0"),
+    ("duration_seconds", "INTEGER"),
+    ("started_at", "TEXT"),
+    ("ended_at", "TEXT"),
+    ("metadata_json", "TEXT"),
+]
+
+GAME_SESSIONS_SQLITE_COLUMNS = [
+    *GAME_SESSIONS_COLUMNS[:-3],
+    ("started_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+    ("ended_at", "TEXT"),
+    ("metadata_json", "TEXT"),
+]
+
+GAME_SESSIONS_POSTGRES_COLUMNS = [
+    *GAME_SESSIONS_COLUMNS[:-3],
+    ("started_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+    ("ended_at", "TIMESTAMPTZ"),
+    ("metadata_json", "TEXT"),
+]
+
+# ----------------------------
+# user_sessions — active login sessions (anti-sharing / session limiting)
+# ----------------------------
+USER_SESSIONS_COLUMNS = [
+    ("id", "TEXT PRIMARY KEY"),         # session token (random hex)
+    ("user_id", "TEXT NOT NULL"),
+    ("identifier", "TEXT NOT NULL"),
+    ("device_hint", "TEXT"),            # optional: user-agent snippet
+    ("created_at", "TEXT"),
+    ("last_seen_at", "TEXT"),
+    ("expires_at", "TEXT"),
+    ("is_active", "TEXT"),              # "1"/"0" / TRUE/FALSE
+]
+
+USER_SESSIONS_SQLITE_COLUMNS = [
+    *USER_SESSIONS_COLUMNS[:-4],
+    ("created_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+    ("last_seen_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+    ("expires_at", "TEXT"),
+    ("is_active", "TEXT NOT NULL DEFAULT '1'"),
+]
+
+USER_SESSIONS_POSTGRES_COLUMNS = [
+    *USER_SESSIONS_COLUMNS[:-4],
+    ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+    ("last_seen_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+    ("expires_at", "TIMESTAMPTZ"),
+    ("is_active", "BOOLEAN NOT NULL DEFAULT TRUE"),
+]
 
 
 # ----------------------------
@@ -103,7 +355,7 @@ def init_db(db_path: Optional[str] = None) -> None:
     Initialize DB schema.
     - If DATABASE_URL is set => Postgres
     - Else => SQLite using DB_PATH
-    Safe to call multiple times.
+    Safe to call multiple times (all CREATE TABLE IF NOT EXISTS).
     """
     if _using_postgres():
         _init_db_postgres()
@@ -120,6 +372,37 @@ def get_db(db_path: Optional[str] = None):
     if _using_postgres():
         return _get_pg()
     return _get_sqlite(db_path=db_path)
+
+
+# ----------------------------
+# SQL builders
+# ----------------------------
+# user_devices — registered devices per user (device policy enforcement)
+# ----------------------------
+USER_DEVICES_COLUMNS = [
+    ("id",           "TEXT PRIMARY KEY"),       # random hex
+    ("user_id",      "TEXT NOT NULL"),
+    ("device_id",    "TEXT NOT NULL"),          # provided by client (Android ID, UUID, etc.)
+    ("device_name",  "TEXT"),                   # e.g. "Samsung A15"
+    ("platform",     "TEXT"),                   # android | ios | web
+    ("created_at",   "TEXT"),
+    ("last_seen_at", "TEXT"),
+    ("revoked_at",   "TEXT"),                   # null = active; set = revoked
+]
+
+USER_DEVICES_SQLITE_COLUMNS = [
+    *USER_DEVICES_COLUMNS[:-3],
+    ("created_at",   "TEXT NOT NULL DEFAULT (datetime('now'))"),
+    ("last_seen_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+    ("revoked_at",   "TEXT"),
+]
+
+USER_DEVICES_POSTGRES_COLUMNS = [
+    *USER_DEVICES_COLUMNS[:-3],
+    ("created_at",   "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+    ("last_seen_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+    ("revoked_at",   "TIMESTAMPTZ"),
+]
 
 
 def _table_sql(table_name: str, columns: list[tuple[str, str]]) -> str:
@@ -147,13 +430,51 @@ def _feedback_table_sql(columns: list[tuple[str, str]]) -> str:
     return _table_sql("feedback", columns)
 
 
+def _topics_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("topics", columns)
+
+
+def _subtopics_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("subtopics", columns)
+
+
+def _lesson_notes_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("lesson_notes", columns)
+
+
+def _cbt_sessions_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("cbt_sessions", columns)
+
+
+def _cbt_answers_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("cbt_answers", columns)
+
+
+def _user_progress_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("user_progress", columns)
+
+
+def _game_sessions_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("game_sessions", columns)
+
+
+def _user_sessions_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("user_sessions", columns)
+
+
+def _user_devices_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("user_devices", columns)
+
+
+# ----------------------------
+# Migration helpers
+# ----------------------------
 def _sqlite_add_missing_columns(cur: sqlite3.Cursor, table_name: str, columns: list[tuple[str, str]]) -> None:
     cur.execute(f"PRAGMA table_info({table_name});")
     cols = {row[1] for row in cur.fetchall()}
     for col, ddl in columns:
         if col in cols:
             continue
-
         col_type = ddl.replace(" PRIMARY KEY", "")
         col_type = col_type.replace(" NOT NULL", "")
         cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col} {col_type};")
@@ -167,7 +488,6 @@ def _postgres_add_missing_columns(cur, table_name: str, columns: list[tuple[str,
     for col, ddl in columns:
         if "PRIMARY KEY" in ddl:
             continue
-
         cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col} {ddl};")
 
 
@@ -176,7 +496,7 @@ def _postgres_add_missing_question_columns(cur) -> None:
 
 
 # ----------------------------
-# SQLite implementation (keeps your current schema)
+# SQLite implementation
 # ----------------------------
 def _init_db_sqlite(db_path: Optional[str] = None) -> None:
     db_path = db_path or os.getenv("DB_PATH", "exam_partner.db")
@@ -187,6 +507,7 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         cur = conn.cursor()
         cur.execute("PRAGMA foreign_keys = ON;")
 
+        # ---- existing tables ----
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -195,11 +516,20 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
               salt TEXT NOT NULL,
               pw_hash TEXT NOT NULL,
               is_paid INTEGER NOT NULL DEFAULT 0,
-              is_admin INTEGER NOT NULL DEFAULT 0,
               created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             """
         )
+
+        # users migrations
+        _sqlite_add_missing_columns(cur, "users", [
+            ("email", "TEXT"),
+            ("paid_until", "TEXT"),
+            ("plan", "TEXT NOT NULL DEFAULT 'free'"),
+            ("is_founding", "INTEGER NOT NULL DEFAULT 0"),
+            ("full_name", "TEXT"),
+            ("is_admin", "INTEGER NOT NULL DEFAULT 0"),
+        ])
 
         cur.execute(
             """
@@ -211,13 +541,17 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
               amount_kobo INTEGER NOT NULL,
               currency TEXT NOT NULL,
               status TEXT NOT NULL,
-              channel TEXT,
               raw_json TEXT,
               created_at TEXT NOT NULL DEFAULT (datetime('now')),
               FOREIGN KEY(user_id) REFERENCES users(id)
             );
             """
         )
+
+        # payments migration: channel column
+        _sqlite_add_missing_columns(cur, "payments", [
+            ("channel", "TEXT"),
+        ])
 
         cur.execute(_questions_table_sql())
         cur.execute(_passages_table_sql(PASSAGES_SQLITE_COLUMNS))
@@ -248,13 +582,26 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
             """
         )
 
-        # lightweight migrations for older SQLite DBs
-        _sqlite_add_missing_columns(cur, "users", [("email", "TEXT"), ("paid_until", "TEXT"), ("plan", "TEXT"), ("is_founding", "INTEGER"), ("is_admin", "INTEGER NOT NULL DEFAULT 0")])
+        # ---- new tables ----
+        cur.execute(_topics_table_sql(TOPICS_SQLITE_COLUMNS))
+        cur.execute(_subtopics_table_sql(SUBTOPICS_SQLITE_COLUMNS))
+        cur.execute(_lesson_notes_table_sql(LESSON_NOTES_SQLITE_COLUMNS))
+        cur.execute(_cbt_sessions_table_sql(CBT_SESSIONS_SQLITE_COLUMNS))
+        cur.execute(_cbt_answers_table_sql(CBT_ANSWERS_SQLITE_COLUMNS))
+        cur.execute(_user_progress_table_sql(USER_PROGRESS_SQLITE_COLUMNS))
+        cur.execute(_game_sessions_table_sql(GAME_SESSIONS_SQLITE_COLUMNS))
+        cur.execute(_user_sessions_table_sql(USER_SESSIONS_SQLITE_COLUMNS))
+        cur.execute(_user_devices_table_sql(USER_DEVICES_SQLITE_COLUMNS))
+
+        # ---- lightweight column migrations ----
         _sqlite_add_missing_question_columns(cur)
         _sqlite_add_missing_columns(cur, "passages", PASSAGES_COLUMNS)
         _sqlite_add_missing_columns(cur, "feedback", FEEDBACK_COLUMNS)
-        _sqlite_add_missing_columns(cur, "payments", [("channel", "TEXT")])
+        _sqlite_add_missing_columns(cur, "topics", TOPICS_COLUMNS)
+        _sqlite_add_missing_columns(cur, "subtopics", SUBTOPICS_COLUMNS)
+        _sqlite_add_missing_columns(cur, "lesson_notes", LESSON_NOTES_COLUMNS)
 
+        # ---- indexes: existing ----
         cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_exam_year_subject ON questions(exam, year, subject);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_qtype ON questions(qtype);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_sort_key ON questions(sort_key);")
@@ -266,6 +613,44 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_created_at ON admin_audit_log(created_at);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_action ON admin_audit_log(action);")
+
+        # ---- indexes: new tables ----
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_topics_exam_subject ON topics(exam, subject);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_topics_subject_topic ON topics(subject, topic);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_subtopics_exam_subject ON subtopics(exam, subject);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_subtopics_topic_id ON subtopics(topic_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_subtopics_subject ON subtopics(subject);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_subtopics_topic ON subtopics(subject, topic);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_lesson_notes_subtopic ON lesson_notes(subtopic_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_lesson_notes_exam_subject ON lesson_notes(exam, subject);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_lesson_notes_subject ON lesson_notes(subject);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_sessions_user ON cbt_sessions(user_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_sessions_user_subject ON cbt_sessions(user_id, subject);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_sessions_started ON cbt_sessions(started_at);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_answers_session ON cbt_answers(session_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_answers_user ON cbt_answers(user_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_answers_question ON cbt_answers(question_id);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_progress_user ON user_progress(user_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_progress_user_subject ON user_progress(user_id, subject);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_progress_activity ON user_progress(activity_type);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_progress_created ON user_progress(created_at);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_game_sessions_user ON game_sessions(user_id);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_identifier ON user_sessions(identifier);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_active ON user_sessions(identifier, is_active);")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_user_devices_uid ON user_devices(user_id, device_id) WHERE revoked_at IS NULL;")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_devices_user ON user_devices(user_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_devices_active ON user_devices(user_id, revoked_at);")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_user_devices_uid ON user_devices(user_id, device_id) WHERE revoked_at IS NULL;")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_devices_user ON user_devices(user_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_devices_active ON user_devices(user_id, revoked_at);")
 
         conn.commit()
     finally:
@@ -287,7 +672,6 @@ def _get_pg():
     from psycopg2.extras import RealDictCursor
 
     url = (os.getenv("DATABASE_URL") or "").strip()
-    # Neon uses SSL; your URL already includes sslmode=require
     conn = psycopg2.connect(url, cursor_factory=RealDictCursor)
     return _PGConn(conn)
 
@@ -297,6 +681,7 @@ def _init_db_postgres() -> None:
     try:
         cur = db.cursor()
 
+        # ---- existing tables ----
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -305,18 +690,19 @@ def _init_db_postgres() -> None:
               salt TEXT NOT NULL,
               pw_hash TEXT NOT NULL,
               is_paid BOOLEAN NOT NULL DEFAULT FALSE,
-              is_admin BOOLEAN NOT NULL DEFAULT FALSE,
               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
             """
         )
 
-        # --- migrations (Postgres) ---
+        # users migrations
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS paid_until TIMESTAMPTZ;")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'free';")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_founding BOOLEAN NOT NULL DEFAULT FALSE;")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name TEXT;")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;")
+
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS payments (
@@ -327,12 +713,14 @@ def _init_db_postgres() -> None:
               amount_kobo BIGINT NOT NULL,
               currency TEXT NOT NULL,
               status TEXT NOT NULL,
-              channel TEXT,
               raw_json TEXT,
               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
             """
         )
+
+        # payments migration
+        cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS channel TEXT;")
 
         cur.execute(_questions_table_sql())
         cur.execute(_passages_table_sql(PASSAGES_POSTGRES_COLUMNS))
@@ -340,7 +728,6 @@ def _init_db_postgres() -> None:
         _postgres_add_missing_question_columns(cur)
         _postgres_add_missing_columns(cur, "passages", PASSAGES_COLUMNS)
         _postgres_add_missing_columns(cur, "feedback", FEEDBACK_COLUMNS)
-        _postgres_add_missing_columns(cur, "payments", [("channel", "TEXT")])
 
         cur.execute(
             """
@@ -367,6 +754,29 @@ def _init_db_postgres() -> None:
             """
         )
 
+        # ---- new tables ----
+        cur.execute(_topics_table_sql(TOPICS_POSTGRES_COLUMNS))
+        cur.execute(_subtopics_table_sql(SUBTOPICS_POSTGRES_COLUMNS))
+        cur.execute(_lesson_notes_table_sql(LESSON_NOTES_POSTGRES_COLUMNS))
+        cur.execute(_cbt_sessions_table_sql(CBT_SESSIONS_POSTGRES_COLUMNS))
+        cur.execute(_cbt_answers_table_sql(CBT_ANSWERS_POSTGRES_COLUMNS))
+        cur.execute(_user_progress_table_sql(USER_PROGRESS_POSTGRES_COLUMNS))
+        cur.execute(_game_sessions_table_sql(GAME_SESSIONS_POSTGRES_COLUMNS))
+        cur.execute(_user_sessions_table_sql(USER_SESSIONS_POSTGRES_COLUMNS))
+        cur.execute(_user_devices_table_sql(USER_DEVICES_POSTGRES_COLUMNS))
+        _postgres_add_missing_columns(cur, "user_devices", USER_DEVICES_POSTGRES_COLUMNS)
+
+        # column migrations for new tables (safe to run repeatedly)
+        _postgres_add_missing_columns(cur, "topics", TOPICS_POSTGRES_COLUMNS)
+        _postgres_add_missing_columns(cur, "subtopics", SUBTOPICS_POSTGRES_COLUMNS)
+        _postgres_add_missing_columns(cur, "lesson_notes", LESSON_NOTES_POSTGRES_COLUMNS)
+        _postgres_add_missing_columns(cur, "cbt_sessions", CBT_SESSIONS_POSTGRES_COLUMNS)
+        _postgres_add_missing_columns(cur, "cbt_answers", CBT_ANSWERS_POSTGRES_COLUMNS)
+        _postgres_add_missing_columns(cur, "user_progress", USER_PROGRESS_POSTGRES_COLUMNS)
+        _postgres_add_missing_columns(cur, "game_sessions", GAME_SESSIONS_POSTGRES_COLUMNS)
+        _postgres_add_missing_columns(cur, "user_sessions", USER_SESSIONS_POSTGRES_COLUMNS)
+
+        # ---- indexes: existing ----
         cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_exam_year_subject ON questions(exam, year, subject);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_qtype ON questions(qtype);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_sort_key ON questions(sort_key);")
@@ -378,6 +788,38 @@ def _init_db_postgres() -> None:
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_created_at ON admin_audit_log(created_at);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_action ON admin_audit_log(action);")
+
+        # ---- indexes: new tables ----
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_topics_exam_subject ON topics(exam, subject);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_topics_subject_topic ON topics(subject, topic);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_subtopics_exam_subject ON subtopics(exam, subject);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_subtopics_topic_id ON subtopics(topic_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_subtopics_subject ON subtopics(subject);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_subtopics_topic ON subtopics(subject, topic);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_lesson_notes_subtopic ON lesson_notes(subtopic_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_lesson_notes_exam_subject ON lesson_notes(exam, subject);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_lesson_notes_subject ON lesson_notes(subject);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_sessions_user ON cbt_sessions(user_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_sessions_user_subject ON cbt_sessions(user_id, subject);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_sessions_started ON cbt_sessions(started_at);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_answers_session ON cbt_answers(session_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_answers_user ON cbt_answers(user_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_answers_question ON cbt_answers(question_id);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_progress_user ON user_progress(user_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_progress_user_subject ON user_progress(user_id, subject);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_progress_activity ON user_progress(activity_type);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_progress_created ON user_progress(created_at);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_game_sessions_user ON game_sessions(user_id);")
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_identifier ON user_sessions(identifier);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_active ON user_sessions(identifier, is_active);")
 
         db.commit()
     finally:
@@ -418,3 +860,11 @@ class _PGCursor:
 
     def fetchall(self):
         return self._cur.fetchall()
+
+
+if __name__ == "__main__":
+    import sys
+    print("Running ExamPartner database initialisation...")
+    init_db()
+    print("Done. All tables and indexes are up to date.")
+    sys.exit(0)
