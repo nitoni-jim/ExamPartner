@@ -8,12 +8,22 @@ from pydantic import BaseModel
 class LoginReq(BaseModel):
     identifier: str
     password: str
+    device_id: Optional[str] = None
+    device_name: Optional[str] = None
+    platform: Optional[str] = None
 
 
 class RegisterReq(BaseModel):
     identifier: str
     password: str
     full_name: Optional[str] = None
+    device_id: Optional[str] = None
+    device_name: Optional[str] = None
+    platform: Optional[str] = None
+
+
+class RefreshReq(BaseModel):
+    device_id: Optional[str] = None
 
 
 # Backwards-compatible alias
@@ -51,3 +61,12 @@ class StudySubtopicsResponse(BaseModel):
     subject: str
     topic: str
     subtopics: List[str]
+
+
+class DeviceResp(BaseModel):
+    device_id: str
+    device_name: Optional[str] = None
+    platform: Optional[str] = None
+    created_at: Optional[str] = None
+    last_seen_at: Optional[str] = None
+    is_current_device: bool = False
