@@ -152,6 +152,17 @@ def touch_device(cur, user_id: str, device_id: str) -> None:
     )
 
 
+def _to_str(val) -> Optional[str]:
+    """Convert datetime or string timestamp to ISO string. Returns None if blank."""
+    if val is None:
+        return None
+    if isinstance(val, str):
+        return val or None
+    if isinstance(val, datetime):
+        return val.isoformat()
+    return str(val)
+
+
 def _rows_to_device_list(rows) -> List[Dict[str, Any]]:
     def _v(row, key, idx):
         try:
@@ -165,8 +176,8 @@ def _rows_to_device_list(rows) -> List[Dict[str, Any]]:
             "device_id":         _v(r, "device_id", 0),
             "device_name":       _v(r, "device_name", 1),
             "platform":          _v(r, "platform", 2),
-            "created_at":        _v(r, "created_at", 3),
-            "last_seen_at":      _v(r, "last_seen_at", 4),
+            "created_at":        _to_str(_v(r, "created_at", 3)),
+            "last_seen_at":      _to_str(_v(r, "last_seen_at", 4)),
             "is_current_device": False,
         })
     return result
@@ -313,8 +324,8 @@ def list_devices(
             "device_id":         (did := _v(r, "device_id", 0)),
             "device_name":       _v(r, "device_name", 1),
             "platform":          _v(r, "platform", 2),
-            "created_at":        _v(r, "created_at", 3),
-            "last_seen_at":      _v(r, "last_seen_at", 4),
+            "created_at":        _to_str(_v(r, "created_at", 3)),
+            "last_seen_at":      _to_str(_v(r, "last_seen_at", 4)),
             "is_current_device": (did == current_device_id) if current_device_id else False,
         }
         for r in rows
