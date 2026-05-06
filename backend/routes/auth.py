@@ -15,7 +15,7 @@ import hashlib
 import secrets
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path
 from fastapi.responses import JSONResponse
 
 from config import db_conn, logger
@@ -30,8 +30,20 @@ from services.device_service import (
     revoke_device_preauth,
 )
 from services.question_utils import row_get
+from pydantic import BaseModel
 
 router = APIRouter(tags=["auth"])
+
+
+# ---------------------------------------------------------------------------
+# Local request models
+# ---------------------------------------------------------------------------
+
+class PreAuthRemoveBody(BaseModel):
+    """Request body for /auth/devices/remove-preauth."""
+    identifier: str
+    password:   str
+    device_id:  str
 
 
 def _hash_pw(password: str, salt: str) -> str:
@@ -66,7 +78,7 @@ def _verify_password(identifier: str, password: str) -> Optional[Dict[str, Any]]
 # ---------------------------------------------------------------------------
 
 @router.post("/auth/register", response_model=AuthResp)
-async def register(request: Request, body: RegisterReq):
+def register(body: RegisterReq):
     identifier = body.identifier.strip().lower()
     if not identifier or len(body.password) < 4:
         raise HTTPException(status_code=400, detail="Invalid identifier/password")
@@ -118,7 +130,7 @@ async def register(request: Request, body: RegisterReq):
 # ---------------------------------------------------------------------------
 
 @router.post("/auth/login", response_model=AuthResp)
-async def login(request: Request, body: AuthReq):
+def login(body: AuthReq):
     identifier = body.identifier.strip().lower()
 
     row = _verify_password(identifier, body.password)
@@ -161,7 +173,7 @@ async def login(request: Request, body: AuthReq):
 # ---------------------------------------------------------------------------
 
 @router.post("/auth/devices/remove-preauth")
-async def remove_device_preauth(payload: Dict[str, str]):
+def remove_device_preauth(body: PreAuthRemoveBody):
     """
     Remove an active device using credentials instead of a Bearer token.
 
@@ -179,9 +191,9 @@ async def remove_device_preauth(payload: Dict[str, str]):
     After a successful removal the app retries login, which will succeed
     because the device slot is now free.
     """
-    identifier = (payload.get("identifier") or "").strip().lower()
-    password   = payload.get("password") or ""
-    device_id  = (payload.get("device_id") or "").strip()
+    identifier = (body.identifier or "").strip().lower()
+    password   = body.password or ""
+    device_id  = (body.device_id or "").strip()
 
     if not identifier or not password or not device_id:
         raise HTTPException(status_code=400, detail="identifier, password and device_id are required")
