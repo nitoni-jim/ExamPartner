@@ -1,12 +1,21 @@
 """
 services/device_service.py — device registration and policy enforcement.
 
-Device limits:
+Device limits (per account, not global):
   free user  : 1 active device
   paid user  : 2 active devices
 
 An active device is one where revoked_at IS NULL.
-All enforcement is backend-side — the Android app cannot bypass this.
+
+Device limit UX (Sprint 8):
+  When login is blocked, the 403 body includes:
+    - active device list
+    - device_limit and active_count
+    - can_remove_device (false if within 30-day cooldown)
+    - cooldown_message (backend text, shown verbatim in app)
+
+  A pre-auth removal endpoint allows removing a device using credentials
+  (not a token) so reinstall recovery works from the login screen itself.
 """
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -17,19 +26,8 @@ from fastapi import HTTPException
 from config import db_conn
 from services.access_control import is_admin_identifier, is_paid_user
 
-
-# ---------------------------------------------------------------------------
-# Limits
-# ---------------------------------------------------------------------------
-
 DEVICE_LIMIT_FREE = 1
 DEVICE_LIMIT_PAID = 2
-
-DEVICE_LIMIT_ERROR = (
-    "This account has reached its device limit. "
-    "Please remove an old device or contact support."
-)
-
 DEVICE_REMOVAL_COOLDOWN_DAYS = 30
 
 
@@ -38,7 +36,6 @@ def _now_iso() -> str:
 
 
 def _get_device_limit(identifier: str) -> int:
-    """Returns the device limit for this user based on paid status."""
     paid = is_paid_user({"sub": identifier})
     return DEVICE_LIMIT_PAID if paid else DEVICE_LIMIT_FREE
 
@@ -52,16 +49,13 @@ def _get_user_id(cur, identifier: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Cooldown helpers
+# Cooldown
 # ---------------------------------------------------------------------------
 
-def _check_removal_cooldown(cur, user_id: str, identifier: str) -> None:
-    """
-    Raises 429 if the user has removed a device within the last 30 days.
-    Admins bypass this check entirely.
-    """
+def _get_cooldown_message(cur, user_id: str, identifier: str) -> Optional[str]:
+    """Returns cooldown message string if blocked, None if removal is allowed."""
     if is_admin_identifier(identifier):
-        return  # admins bypass cooldown
+        return None
 
     cur.execute(
         "SELECT MAX(revoked_at) AS last_revoked FROM user_devices WHERE user_id = ?",
@@ -69,34 +63,33 @@ def _check_removal_cooldown(cur, user_id: str, identifier: str) -> None:
     )
     row = cur.fetchone()
     last_revoked = row.get("last_revoked") if hasattr(row, "get") else row[0]
-
     if not last_revoked:
-        return  # no previous revocations — allow
+        return None
 
-    # Parse ISO timestamp
     try:
         if isinstance(last_revoked, str):
-            last_revoked_dt = datetime.fromisoformat(last_revoked.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(last_revoked.replace("Z", "+00:00"))
         else:
-            last_revoked_dt = last_revoked
-        if last_revoked_dt.tzinfo is None:
-            last_revoked_dt = last_revoked_dt.replace(tzinfo=timezone.utc)
+            dt = last_revoked
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
     except Exception:
-        return  # unparseable — allow rather than block
+        return None
 
-    now = datetime.now(timezone.utc)
-    cooldown_until = last_revoked_dt + timedelta(days=DEVICE_REMOVAL_COOLDOWN_DAYS)
+    cooldown_until = dt + timedelta(days=DEVICE_REMOVAL_COOLDOWN_DAYS)
+    if datetime.now(timezone.utc) < cooldown_until:
+        return f"You can remove a device again on {cooldown_until.strftime('%d %B %Y')}."
+    return None
 
-    if now < cooldown_until:
-        date_str = cooldown_until.strftime("%d %B %Y")
-        raise HTTPException(
-            status_code=429,
-            detail=f"You can change devices again on {date_str}.",
-        )
+
+def _check_removal_cooldown(cur, user_id: str, identifier: str) -> None:
+    msg = _get_cooldown_message(cur, user_id, identifier)
+    if msg:
+        raise HTTPException(status_code=429, detail=msg)
 
 
 # ---------------------------------------------------------------------------
-# Core operations
+# Core queries
 # ---------------------------------------------------------------------------
 
 def count_active_devices(cur, user_id: str) -> int:
@@ -112,7 +105,7 @@ def count_active_devices(cur, user_id: str) -> int:
 
 
 def find_device(cur, user_id: str, device_id: str) -> Optional[Any]:
-    """Find an active (non-revoked) device record."""
+    """Active device record for this specific (user_id, device_id) pair."""
     cur.execute(
         "SELECT id, device_id, device_name, platform, created_at, last_seen_at "
         "FROM user_devices WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL",
@@ -122,12 +115,46 @@ def find_device(cur, user_id: str, device_id: str) -> Optional[Any]:
 
 
 def touch_device(cur, user_id: str, device_id: str) -> None:
-    """Update last_seen_at for an existing active device."""
     cur.execute(
-        "UPDATE user_devices SET last_seen_at = ? WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL",
+        "UPDATE user_devices SET last_seen_at = ? "
+        "WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL",
         (_now_iso(), user_id, device_id),
     )
 
+
+def _rows_to_device_list(rows) -> List[Dict[str, Any]]:
+    def _v(row, key, idx):
+        try:
+            return row[key] if hasattr(row, "keys") else row[idx]
+        except Exception:
+            return None
+
+    result = []
+    for r in rows:
+        result.append({
+            "device_id":         _v(r, "device_id", 0),
+            "device_name":       _v(r, "device_name", 1),
+            "platform":          _v(r, "platform", 2),
+            "created_at":        _v(r, "created_at", 3),
+            "last_seen_at":      _v(r, "last_seen_at", 4),
+            "is_current_device": False,
+        })
+    return result
+
+
+def _fetch_active_devices(cur, user_id: str) -> List[Dict[str, Any]]:
+    cur.execute(
+        "SELECT device_id, device_name, platform, created_at, last_seen_at "
+        "FROM user_devices WHERE user_id = ? AND revoked_at IS NULL "
+        "ORDER BY last_seen_at DESC",
+        (user_id,),
+    )
+    return _rows_to_device_list(cur.fetchall())
+
+
+# ---------------------------------------------------------------------------
+# Register (login / register flow)
+# ---------------------------------------------------------------------------
 
 def register_device(
     identifier: str,
@@ -136,16 +163,27 @@ def register_device(
     platform: Optional[str],
 ) -> None:
     """
-    Register a device for a user, enforcing the device limit.
+    Register or refresh a device for a user.
 
-    - If device already registered (active): refresh last_seen_at only.
-    - If device is new and limit not exceeded: insert.
-    - If device is new and limit exceeded: raise 403.
-    - If no device_id provided: skip silently (web clients).
+    If the device is already active for this user: touch last_seen_at only.
+    If the device is new and under the limit: insert.
+    If the device is new and at the limit: raise HTTP 403 with structured body:
+      {
+        "detail":            "This account has reached its device limit.",
+        "devices":           [...],          # active devices with id/name/platform/last_seen
+        "device_limit":      1 | 2,
+        "active_count":      N,
+        "can_remove_device": true | false,   # false if within 30-day cooldown
+        "cooldown_message":  null | "You can remove a device again on DD Month YYYY."
+      }
+
+    Device limit is enforced per user_id, not globally per device_id.
+    The same physical phone used by two different accounts does not affect
+    either account's limit — each account's device count is independent.
     """
     device_id = (device_id or "").strip()
     if not device_id:
-        return  # web/anonymous callers — no device tracking needed
+        return
 
     db = db_conn()
     try:
@@ -154,27 +192,35 @@ def register_device(
         if not user_id:
             return
 
-        existing = find_device(cur, user_id, device_id)
-
-        if existing:
-            # Already registered — just refresh
+        if find_device(cur, user_id, device_id):
             touch_device(cur, user_id, device_id)
             db.commit()
             return
 
-        # New device — check limit
         active_count = count_active_devices(cur, user_id)
         limit = _get_device_limit(identifier)
 
         if active_count >= limit:
-            raise HTTPException(status_code=403, detail=DEVICE_LIMIT_ERROR)
+            devices = _fetch_active_devices(cur, user_id)
+            cooldown_msg = _get_cooldown_message(cur, user_id, identifier)
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "detail":            "This account has reached its device limit.",
+                    "devices":           devices,
+                    "device_limit":      limit,
+                    "active_count":      active_count,
+                    "can_remove_device": cooldown_msg is None,
+                    "cooldown_message":  cooldown_msg,
+                },
+            )
 
-        # Insert new device
         record_id = secrets.token_hex(16)
         now = _now_iso()
         cur.execute(
             """
-            INSERT INTO user_devices (id, user_id, device_id, device_name, platform, created_at, last_seen_at, revoked_at)
+            INSERT INTO user_devices
+              (id, user_id, device_id, device_name, platform, created_at, last_seen_at, revoked_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
             """,
             (
@@ -192,11 +238,14 @@ def register_device(
         db.close()
 
 
-def list_devices(identifier: str, current_device_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """
-    Return all active devices for this user.
-    Marks the current device with is_current_device: true.
-    """
+# ---------------------------------------------------------------------------
+# List (token-authenticated — ProfileScreen)
+# ---------------------------------------------------------------------------
+
+def list_devices(
+    identifier: str,
+    current_device_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     db = db_conn()
     try:
         cur = db.cursor()
@@ -205,43 +254,42 @@ def list_devices(identifier: str, current_device_id: Optional[str] = None) -> Li
             return []
 
         cur.execute(
-            """
-            SELECT device_id, device_name, platform, created_at, last_seen_at
-            FROM user_devices
-            WHERE user_id = ? AND revoked_at IS NULL
-            ORDER BY last_seen_at DESC
-            """,
+            "SELECT device_id, device_name, platform, created_at, last_seen_at "
+            "FROM user_devices WHERE user_id = ? AND revoked_at IS NULL "
+            "ORDER BY last_seen_at DESC",
             (user_id,),
         )
         rows = cur.fetchall()
     finally:
         db.close()
 
-    def _val(row, key, idx):
+    def _v(row, key, idx):
         try:
             return row[key] if hasattr(row, "keys") else row[idx]
         except Exception:
             return None
 
-    result = []
-    for row in rows:
-        did = _val(row, "device_id", 0)
-        result.append({
-            "device_id":        did,
-            "device_name":      _val(row, "device_name", 1),
-            "platform":         _val(row, "platform", 2),
-            "created_at":       _val(row, "created_at", 3),
-            "last_seen_at":     _val(row, "last_seen_at", 4),
+    return [
+        {
+            "device_id":         (did := _v(r, "device_id", 0)),
+            "device_name":       _v(r, "device_name", 1),
+            "platform":          _v(r, "platform", 2),
+            "created_at":        _v(r, "created_at", 3),
+            "last_seen_at":      _v(r, "last_seen_at", 4),
             "is_current_device": (did == current_device_id) if current_device_id else False,
-        })
-    return result
+        }
+        for r in rows
+    ]
 
+
+# ---------------------------------------------------------------------------
+# Revoke — token-authenticated (ProfileScreen → device management)
+# ---------------------------------------------------------------------------
 
 def revoke_device(identifier: str, device_id: str) -> None:
     """
-    Revoke (soft-delete) a device belonging to the user.
-    Raises 404 if device is not found or already revoked.
-    Raises 403 if device belongs to another user.
+    Revoke a device via Bearer token (from ProfileScreen).
+    30-day cooldown applies. Admins bypass.
     """
     device_id = (device_id or "").strip()
     if not device_id:
@@ -256,21 +304,19 @@ def revoke_device(identifier: str, device_id: str) -> None:
 
         existing = find_device(cur, user_id, device_id)
         if not existing:
-            # Check if it exists but belongs to another user
             cur.execute(
                 "SELECT user_id FROM user_devices WHERE device_id = ? AND revoked_at IS NULL",
                 (device_id,),
             )
-            other = cur.fetchone()
-            if other:
+            if cur.fetchone():
                 raise HTTPException(status_code=403, detail="You can only remove your own devices")
             raise HTTPException(status_code=404, detail="Device not found or already removed")
 
-        # Enforce 30-day cooldown — admins bypass
         _check_removal_cooldown(cur, user_id, identifier)
 
         cur.execute(
-            "UPDATE user_devices SET revoked_at = ? WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL",
+            "UPDATE user_devices SET revoked_at = ? "
+            "WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL",
             (_now_iso(), user_id, device_id),
         )
         db.commit()
@@ -278,14 +324,53 @@ def revoke_device(identifier: str, device_id: str) -> None:
         db.close()
 
 
-def refresh_session(
-    identifier: str,
-    device_id: Optional[str],
-) -> None:
+# ---------------------------------------------------------------------------
+# Revoke — pre-auth (login screen — reinstall recovery)
+# ---------------------------------------------------------------------------
+
+def revoke_device_preauth(identifier: str, device_id: str) -> None:
     """
-    Touch device last_seen_at on token refresh.
-    No-op if device_id not provided.
+    Remove a device using credentials instead of a Bearer token.
+
+    Used when the user cannot log in because their limit is reached (reinstall).
+    Password verification is performed by the auth route before calling this.
+    The 30-day cooldown applies identically to the token-authenticated path.
+
+    On success the caller retries login, which will succeed because the slot
+    is now free.
     """
+    device_id = (device_id or "").strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="device_id is required")
+
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        user_id = _get_user_id(cur, identifier)
+        if not user_id:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        existing = find_device(cur, user_id, device_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Device not found or already removed")
+
+        _check_removal_cooldown(cur, user_id, identifier)
+
+        cur.execute(
+            "UPDATE user_devices SET revoked_at = ? "
+            "WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL",
+            (_now_iso(), user_id, device_id),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Refresh session (token refresh path)
+# ---------------------------------------------------------------------------
+
+def refresh_session(identifier: str, device_id: Optional[str]) -> None:
     device_id = (device_id or "").strip()
     if not device_id:
         return
