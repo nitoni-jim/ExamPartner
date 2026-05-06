@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any, List
 
 import requests
 from dotenv import load_dotenv
-from fastapi import APIRouter, Request, HTTPException, Query
+from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 
 from db import get_db, _using_postgres  # uses Postgres if DATABASE_URL is set; else SQLite
