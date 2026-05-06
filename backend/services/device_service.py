@@ -30,6 +30,12 @@ DEVICE_LIMIT_FREE = 1
 DEVICE_LIMIT_PAID = 2
 DEVICE_REMOVAL_COOLDOWN_DAYS = 30
 
+# Devices not seen in this many days are considered orphaned (app uninstalled
+# or reinstalled). They are silently revoked before the limit check so the
+# user never hits a false device-limit error after a normal reinstall.
+# 90 days is generous — a truly active device calls /auth/refresh far more often.
+STALE_DEVICE_DAYS = 90
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -91,6 +97,30 @@ def _check_removal_cooldown(cur, user_id: str, identifier: str) -> None:
 # ---------------------------------------------------------------------------
 # Core queries
 # ---------------------------------------------------------------------------
+
+def _revoke_stale_devices(cur, user_id: str) -> None:
+    """
+    Silently revoke active devices for this user that haven't been seen in
+    STALE_DEVICE_DAYS days. Called before the device limit check in
+    register_device so a reinstall never incorrectly blocks re-login.
+
+    The 30-day manual removal cooldown does NOT apply here — this is an
+    automatic server-side cleanup, not a user-initiated removal action.
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=STALE_DEVICE_DAYS)
+    ).isoformat()
+    cur.execute(
+        """
+        UPDATE user_devices
+        SET revoked_at = ?
+        WHERE user_id = ?
+          AND revoked_at IS NULL
+          AND last_seen_at < ?
+        """,
+        (_now_iso(), user_id, cutoff),
+    )
+
 
 def count_active_devices(cur, user_id: str) -> int:
     cur.execute(
@@ -197,6 +227,15 @@ def register_device(
             db.commit()
             return
 
+        # Step 1: silently revoke orphaned/stale devices (not seen in 90 days).
+        # These are reinstalled or uninstalled devices whose tokens are expired —
+        # they can never call /auth/refresh again so revoking them is safe.
+        # This makes reinstall recovery seamless with zero user action required.
+        _revoke_stale_devices(cur, user_id)
+
+        # Step 2: re-count after cleanup, then enforce the limit.
+        # If the user genuinely has two recent active devices, return the
+        # structured 403 so the app shows inline device management.
         active_count = count_active_devices(cur, user_id)
         limit = _get_device_limit(identifier)
 
