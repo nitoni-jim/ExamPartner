@@ -16,6 +16,13 @@ Device limit UX (Sprint 8):
 
   A pre-auth removal endpoint allows removing a device using credentials
   (not a token) so reinstall recovery works from the login screen itself.
+
+revoke_reason values:
+  manual               — user explicitly removed the device (triggers 30-day cooldown)
+  reinstall_heuristic  — auto-revoked because same platform+name, new device_id after reinstall
+  stale                — auto-revoked because not seen in STALE_DEVICE_DAYS days
+
+Only 'manual' revokes count toward the 30-day removal cooldown.
 """
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -55,16 +62,26 @@ def _get_user_id(cur, identifier: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Cooldown
+# Cooldown — only manual revokes count
 # ---------------------------------------------------------------------------
 
 def _get_cooldown_message(cur, user_id: str, identifier: str) -> Optional[str]:
-    """Returns cooldown message string if blocked, None if removal is allowed."""
+    """
+    Returns cooldown message string if blocked, None if removal is allowed.
+
+    Only rows with revoke_reason = 'manual' count toward the 30-day cooldown.
+    Auto-revokes (reinstall_heuristic, stale) do not block manual removals.
+    """
     if is_admin_identifier(identifier):
         return None
 
     cur.execute(
-        "SELECT MAX(revoked_at) AS last_revoked FROM user_devices WHERE user_id = ?",
+        """
+        SELECT MAX(revoked_at) AS last_revoked
+        FROM user_devices
+        WHERE user_id = ?
+          AND revoke_reason = 'manual'
+        """,
         (user_id,),
     )
     row = cur.fetchone()
@@ -106,6 +123,7 @@ def _revoke_stale_devices(cur, user_id: str) -> None:
 
     The 30-day manual removal cooldown does NOT apply here — this is an
     automatic server-side cleanup, not a user-initiated removal action.
+    revoke_reason is set to 'stale' so the cooldown query ignores these rows.
     """
     cutoff = (
         datetime.now(timezone.utc) - timedelta(days=STALE_DEVICE_DAYS)
@@ -113,7 +131,8 @@ def _revoke_stale_devices(cur, user_id: str) -> None:
     cur.execute(
         """
         UPDATE user_devices
-        SET revoked_at = ?
+        SET revoked_at    = ?,
+            revoke_reason = 'stale'
         WHERE user_id = ?
           AND revoked_at IS NULL
           AND last_seen_at < ?
@@ -144,11 +163,30 @@ def find_device(cur, user_id: str, device_id: str) -> Optional[Any]:
     return cur.fetchone()
 
 
-def touch_device(cur, user_id: str, device_id: str) -> None:
+def touch_device(cur, user_id: str, device_id: str,
+                 device_name: Optional[str] = None,
+                 platform: Optional[str] = None) -> None:
+    """
+    Update last_seen_at on an existing active device row.
+    Also refreshes device_name and platform if provided, so a reinstall
+    that preserved device_id still gets up-to-date metadata.
+    Uses COALESCE so a None incoming value never overwrites a stored value.
+    """
     cur.execute(
-        "UPDATE user_devices SET last_seen_at = ? "
-        "WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL",
-        (_now_iso(), user_id, device_id),
+        """
+        UPDATE user_devices
+        SET last_seen_at = ?,
+            device_name  = COALESCE(?, device_name),
+            platform     = COALESCE(?, platform)
+        WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL
+        """,
+        (
+            _now_iso(),
+            (device_name or "").strip() or None,
+            (platform or "").strip().lower() or None,
+            user_id,
+            device_id,
+        ),
     )
 
 
@@ -194,6 +232,131 @@ def _fetch_active_devices(cur, user_id: str) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Reinstall heuristic
+# ---------------------------------------------------------------------------
+
+def _find_reinstall_candidate(
+    cur,
+    user_id: str,
+    incoming_device_id: str,
+    platform: Optional[str],
+    device_name: Optional[str],
+) -> Optional[Any]:
+    """
+    Returns the single active device row that looks like the same physical
+    phone after a reinstall, or None if the match is absent or ambiguous.
+
+    Conditions (ALL must hold):
+      - same platform (case-insensitive, already normalised by caller)
+      - same device_name (exact match)
+      - different device_id (not the incoming one)
+      - revoked_at IS NULL (still active)
+      - exactly one such row exists — two or more means ambiguous, do not revoke
+
+    Both platform and device_name must be non-empty. An empty device_name
+    (e.g. the backend stored NULL) means we cannot reliably identify the
+    physical phone, so we do not auto-revoke.
+    """
+    norm_platform    = (platform or "").strip().lower()
+    norm_device_name = (device_name or "").strip()
+
+    if not norm_platform or not norm_device_name:
+        return None
+
+    cur.execute(
+        """
+        SELECT id, device_id, device_name, platform, created_at, last_seen_at
+        FROM user_devices
+        WHERE user_id     = ?
+          AND platform    = ?
+          AND device_name = ?
+          AND device_id  != ?
+          AND revoked_at IS NULL
+        """,
+        (user_id, norm_platform, norm_device_name, incoming_device_id),
+    )
+    rows = cur.fetchall()
+
+    # Exactly one match required — two or more is ambiguous (two phones of the
+    # same model), so we fall through to the normal 403 device-limit response.
+    if len(rows) != 1:
+        return None
+    return rows[0]
+
+
+def _revoke_reinstall_candidate(cur, candidate_row) -> None:
+    """
+    Revoke the old device row identified as the reinstall candidate.
+    Sets revoke_reason = 'reinstall_heuristic' so the cooldown query ignores it.
+    """
+    def _v(row, key, idx):
+        try:
+            return row[key] if hasattr(row, "keys") else row[idx]
+        except Exception:
+            return None
+
+    row_id = _v(candidate_row, "id", 0)
+    cur.execute(
+        """
+        UPDATE user_devices
+        SET revoked_at    = ?,
+            revoke_reason = 'reinstall_heuristic'
+        WHERE id = ?
+          AND revoked_at IS NULL
+        """,
+        (_now_iso(), row_id),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Insert helper
+# ---------------------------------------------------------------------------
+
+def _insert_device(
+    cur,
+    user_id: str,
+    device_id: str,
+    device_name: Optional[str],
+    platform: Optional[str],
+) -> None:
+    """
+    Insert a new active device row.
+
+    The ON CONFLICT clause acts as a final safety net against any race that
+    slips past the earlier find_device check (e.g. concurrent login requests).
+    The partial unique index ux_user_devices_active_user_device on
+    (user_id, device_id) WHERE revoked_at IS NULL backs this at the DB level.
+
+    On conflict: update metadata rather than failing, so the row is always
+    in the most up-to-date state after this call.
+    """
+    record_id = secrets.token_hex(16)
+    now       = _now_iso()
+    cur.execute(
+        """
+        INSERT INTO user_devices
+          (id, user_id, device_id, device_name, platform,
+           created_at, last_seen_at, revoked_at, revoke_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+        ON CONFLICT (user_id, device_id) WHERE revoked_at IS NULL
+        DO UPDATE SET
+          last_seen_at = EXCLUDED.last_seen_at,
+          device_name  = COALESCE(EXCLUDED.device_name, user_devices.device_name),
+          platform     = COALESCE(EXCLUDED.platform,    user_devices.platform)
+        """,
+        (
+            record_id,
+            user_id,
+            device_id,
+            device_name,
+            platform,
+            now,
+            now,
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Register (login / register flow)
 # ---------------------------------------------------------------------------
 
@@ -206,25 +369,28 @@ def register_device(
     """
     Register or refresh a device for a user.
 
-    If the device is already active for this user: touch last_seen_at only.
-    If the device is new and under the limit: insert.
-    If the device is new and at the limit: raise HTTP 403 with structured body:
-      {
-        "detail":            "This account has reached its device limit.",
-        "devices":           [...],          # active devices with id/name/platform/last_seen
-        "device_limit":      1 | 2,
-        "active_count":      N,
-        "can_remove_device": true | false,   # false if within 30-day cooldown
-        "cooldown_message":  null | "You can remove a device again on DD Month YYYY."
-      }
+    Flow:
+      1. If the active device already exists for (user_id, device_id): update
+         last_seen_at / device_name / platform. No insert. Return.
+      2. Silently revoke stale devices (not seen in STALE_DEVICE_DAYS days).
+      3. Re-count active devices after stale cleanup.
+      4. If under the limit: insert new row. Return.
+      5. If at/over the limit: run the reinstall heuristic.
+         If exactly one active row matches (same platform + device_name,
+         different device_id): revoke it with reason 'reinstall_heuristic',
+         insert new row, allow login.
+      6. Otherwise: raise HTTP 403 with structured device-limit body.
 
     Device limit is enforced per user_id, not globally per device_id.
     The same physical phone used by two different accounts does not affect
-    either account's limit — each account's device count is independent.
+    either account's limit.
     """
     device_id = (device_id or "").strip()
     if not device_id:
         return
+
+    norm_platform    = (platform or "").strip().lower() or None
+    norm_device_name = (device_name or "").strip() or None
 
     db = db_conn()
     try:
@@ -233,57 +399,56 @@ def register_device(
         if not user_id:
             return
 
+        # Step 1: idempotent refresh — same active device_id, just update metadata.
         if find_device(cur, user_id, device_id):
-            touch_device(cur, user_id, device_id)
+            touch_device(cur, user_id, device_id,
+                         device_name=norm_device_name,
+                         platform=norm_platform)
             db.commit()
             return
 
-        # Step 1: silently revoke orphaned/stale devices (not seen in 90 days).
-        # These are reinstalled or uninstalled devices whose tokens are expired —
-        # they can never call /auth/refresh again so revoking them is safe.
-        # This makes reinstall recovery seamless with zero user action required.
+        # Step 2: silently revoke orphaned/stale devices (reason = 'stale').
         _revoke_stale_devices(cur, user_id)
 
-        # Step 2: re-count after cleanup, then enforce the limit.
-        # If the user genuinely has two recent active devices, return the
-        # structured 403 so the app shows inline device management.
+        # Step 3: re-count after stale cleanup.
         active_count = count_active_devices(cur, user_id)
-        limit = _get_device_limit(identifier)
+        limit        = _get_device_limit(identifier)
 
-        if active_count >= limit:
-            devices = _fetch_active_devices(cur, user_id)
-            cooldown_msg = _get_cooldown_message(cur, user_id, identifier)
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "detail":            "This account has reached its device limit.",
-                    "devices":           devices,
-                    "device_limit":      limit,
-                    "active_count":      active_count,
-                    "can_remove_device": cooldown_msg is None,
-                    "cooldown_message":  cooldown_msg,
-                },
-            )
+        # Step 4: under limit — insert normally.
+        if active_count < limit:
+            _insert_device(cur, user_id, device_id, norm_device_name, norm_platform)
+            db.commit()
+            return
 
-        record_id = secrets.token_hex(16)
-        now = _now_iso()
-        cur.execute(
-            """
-            INSERT INTO user_devices
-              (id, user_id, device_id, device_name, platform, created_at, last_seen_at, revoked_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
-            """,
-            (
-                record_id,
-                user_id,
-                device_id,
-                (device_name or "").strip() or None,
-                (platform or "").strip().lower() or None,
-                now,
-                now,
-            ),
+        # Step 5: at/over limit — run reinstall heuristic before blocking.
+        candidate = _find_reinstall_candidate(
+            cur,
+            user_id=user_id,
+            incoming_device_id=device_id,
+            platform=norm_platform,
+            device_name=norm_device_name,
         )
-        db.commit()
+        if candidate is not None:
+            # Same physical phone after reinstall — revoke old row, register new one.
+            _revoke_reinstall_candidate(cur, candidate)
+            _insert_device(cur, user_id, device_id, norm_device_name, norm_platform)
+            db.commit()
+            return
+
+        # Step 6: genuinely over limit or ambiguous — return structured 403.
+        devices      = _fetch_active_devices(cur, user_id)
+        cooldown_msg = _get_cooldown_message(cur, user_id, identifier)
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "detail":            "This account has reached its device limit.",
+                "devices":           devices,
+                "device_limit":      limit,
+                "active_count":      active_count,
+                "can_remove_device": cooldown_msg is None,
+                "cooldown_message":  cooldown_msg,
+            },
+        )
     finally:
         db.close()
 
@@ -340,6 +505,7 @@ def revoke_device(identifier: str, device_id: str) -> None:
     """
     Revoke a device via Bearer token (from ProfileScreen).
     30-day cooldown applies. Admins bypass.
+    Sets revoke_reason = 'manual' so the cooldown query counts this row.
     """
     device_id = (device_id or "").strip()
     if not device_id:
@@ -365,8 +531,12 @@ def revoke_device(identifier: str, device_id: str) -> None:
         _check_removal_cooldown(cur, user_id, identifier)
 
         cur.execute(
-            "UPDATE user_devices SET revoked_at = ? "
-            "WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL",
+            """
+            UPDATE user_devices
+            SET revoked_at    = ?,
+                revoke_reason = 'manual'
+            WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL
+            """,
             (_now_iso(), user_id, device_id),
         )
         db.commit()
@@ -385,6 +555,7 @@ def revoke_device_preauth(identifier: str, device_id: str) -> None:
     Used when the user cannot log in because their limit is reached (reinstall).
     Password verification is performed by the auth route before calling this.
     The 30-day cooldown applies identically to the token-authenticated path.
+    Sets revoke_reason = 'manual' so the cooldown query counts this row.
 
     On success the caller retries login, which will succeed because the slot
     is now free.
@@ -407,8 +578,12 @@ def revoke_device_preauth(identifier: str, device_id: str) -> None:
         _check_removal_cooldown(cur, user_id, identifier)
 
         cur.execute(
-            "UPDATE user_devices SET revoked_at = ? "
-            "WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL",
+            """
+            UPDATE user_devices
+            SET revoked_at    = ?,
+                revoke_reason = 'manual'
+            WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL
+            """,
             (_now_iso(), user_id, device_id),
         )
         db.commit()
