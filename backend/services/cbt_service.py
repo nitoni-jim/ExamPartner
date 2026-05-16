@@ -18,8 +18,30 @@ from services.question_utils import (
 )
 
 CBT_ENGLISH_SUBJECT = "Use of English"
-CBT_ENGLISH_CAP = 60
-CBT_OTHER_CAP = 40
+CBT_ENGLISH_CAP     = 60
+CBT_JAMB_CAP        = 40
+CBT_WAEC_CAP        = 50
+CBT_NECO_CAP        = 60
+
+def get_cbt_cap(subject: str, exam: str) -> int:
+    """
+    Returns the correct CBT question cap for the given exam and subject.
+    - Use of English: always 60 (JAMB scales 60 → 100 pts in app)
+    - JAMB: 40 per subject
+    - WAEC: 50 per subject
+    - NECO: 60 per subject
+    - Other/unknown: 50 (safe default)
+    """
+    if subject == CBT_ENGLISH_SUBJECT:
+        return CBT_ENGLISH_CAP
+    exam_upper = (exam or "").strip().upper()
+    if exam_upper == "JAMB":
+        return CBT_JAMB_CAP
+    if exam_upper == "WAEC":
+        return CBT_WAEC_CAP
+    if exam_upper == "NECO":
+        return CBT_NECO_CAP
+    return CBT_WAEC_CAP  # safe default
 
 
 def get_founding_status() -> Dict[str, Any]:
@@ -113,7 +135,7 @@ def fetch_cbt_questions(
 
     random.shuffle(deduped)
 
-    cap = CBT_ENGLISH_CAP if subject == CBT_ENGLISH_SUBJECT else CBT_OTHER_CAP
+    cap = get_cbt_cap(subject=subject, exam=exam)
     capped = deduped[:cap]
 
     return {
