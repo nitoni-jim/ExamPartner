@@ -338,6 +338,94 @@ USER_SESSIONS_POSTGRES_COLUMNS = [
     ("is_active", "BOOLEAN NOT NULL DEFAULT TRUE"),
 ]
 
+# ----------------------------
+# user_devices — registered devices per user (device policy enforcement)
+# ----------------------------
+USER_DEVICES_COLUMNS = [
+    ("id",             "TEXT PRIMARY KEY"),       # random hex
+    ("user_id",        "TEXT NOT NULL"),
+    ("device_id",      "TEXT NOT NULL"),          # provided by client (Android ID, UUID, etc.)
+    ("device_name",    "TEXT"),                   # e.g. "Samsung A15"
+    ("platform",       "TEXT"),                   # android | ios | web
+    ("created_at",     "TEXT"),
+    ("last_seen_at",   "TEXT"),
+    ("revoked_at",     "TEXT"),                   # null = active; set = revoked
+    ("revoke_reason",  "TEXT"),                   # manual | reinstall_heuristic | stale
+]
+
+USER_DEVICES_SQLITE_COLUMNS = [
+    *USER_DEVICES_COLUMNS[:-4],
+    ("created_at",    "TEXT NOT NULL DEFAULT (datetime('now'))"),
+    ("last_seen_at",  "TEXT NOT NULL DEFAULT (datetime('now'))"),
+    ("revoked_at",    "TEXT"),
+    ("revoke_reason", "TEXT"),
+]
+
+USER_DEVICES_POSTGRES_COLUMNS = [
+    *USER_DEVICES_COLUMNS[:-4],
+    ("created_at",    "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+    ("last_seen_at",  "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+    ("revoked_at",    "TIMESTAMPTZ"),
+    ("revoke_reason", "TEXT"),
+]
+
+# ----------------------------
+# theory_attempts — one row per AI grading attempt
+# ----------------------------
+THEORY_ATTEMPTS_COLUMNS = [
+    ("id",               "TEXT PRIMARY KEY"),
+    ("user_id",          "TEXT NOT NULL"),      # identifier (not DB id)
+    ("question_id",      "TEXT NOT NULL"),
+    ("student_answer",   "TEXT NOT NULL"),
+    ("score",            "REAL"),
+    ("max_score",        "REAL"),
+    ("feedback_json",    "TEXT"),               # full Claude response JSON
+    ("model_used",       "TEXT"),               # haiku | sonnet
+    ("input_tokens",     "INTEGER"),
+    ("output_tokens",    "INTEGER"),
+    ("estimated_cost_usd", "REAL"),
+    ("created_at",       "TEXT"),
+]
+
+THEORY_ATTEMPTS_SQLITE_COLUMNS = [
+    *THEORY_ATTEMPTS_COLUMNS[:-1],
+    ("created_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+]
+
+THEORY_ATTEMPTS_POSTGRES_COLUMNS = [
+    *THEORY_ATTEMPTS_COLUMNS[:-1],
+    ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+]
+
+# ----------------------------
+# ai_grading_usage — usage counter per user per period
+# ----------------------------
+# period_key values:
+#   "lifetime"  — free users (single lifetime bucket)
+#   "YYYY-MM"   — paid users (monthly bucket, e.g. "2026-05")
+#   "admin"     — admin users (single high-limit bucket)
+AI_GRADING_USAGE_COLUMNS = [
+    ("id",          "TEXT PRIMARY KEY"),
+    ("user_id",     "TEXT NOT NULL"),       # identifier (not DB id)
+    ("period_key",  "TEXT NOT NULL"),       # "lifetime" | "YYYY-MM" | "admin"
+    ("used_count",  "INTEGER NOT NULL DEFAULT 0"),
+    ("plan_limit",  "INTEGER NOT NULL"),    # snapshot of limit at time of first use
+    ("created_at",  "TEXT"),
+    ("updated_at",  "TEXT"),
+]
+
+AI_GRADING_USAGE_SQLITE_COLUMNS = [
+    *AI_GRADING_USAGE_COLUMNS[:-2],
+    ("created_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+    ("updated_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+]
+
+AI_GRADING_USAGE_POSTGRES_COLUMNS = [
+    *AI_GRADING_USAGE_COLUMNS[:-2],
+    ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+    ("updated_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+]
+
 
 # ----------------------------
 # Detect Postgres
@@ -352,15 +440,33 @@ def _using_postgres() -> bool:
 # ----------------------------
 def init_db(db_path: Optional[str] = None) -> None:
     """
-    Initialize DB schema.
-    - If DATABASE_URL is set => Postgres
-    - Else => SQLite using DB_PATH
+    Initialize DB schema with retry logic for transient connection failures.
+    - If DATABASE_URL is set => Postgres (3 attempts, 2s/4s backoff)
+    - Else => SQLite using DB_PATH (no retry needed)
     Safe to call multiple times (all CREATE TABLE IF NOT EXISTS).
     """
-    if _using_postgres():
-        _init_db_postgres()
-    else:
+    import time
+
+    if not _using_postgres():
         _init_db_sqlite(db_path=db_path)
+        return
+
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, 4):
+        try:
+            _init_db_postgres()
+            return
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "init_db attempt %d/3 failed: %s — %s",
+                attempt, type(exc).__name__, exc,
+            )
+            if attempt < 3:
+                time.sleep(attempt * 2)  # 2s then 4s
+
+    logger.error("init_db failed after 3 attempts — raising last exception")
+    raise last_exc  # type: ignore[misc]
 
 
 def get_db(db_path: Optional[str] = None):
@@ -377,34 +483,6 @@ def get_db(db_path: Optional[str] = None):
 # ----------------------------
 # SQL builders
 # ----------------------------
-# user_devices — registered devices per user (device policy enforcement)
-# ----------------------------
-USER_DEVICES_COLUMNS = [
-    ("id",           "TEXT PRIMARY KEY"),       # random hex
-    ("user_id",      "TEXT NOT NULL"),
-    ("device_id",    "TEXT NOT NULL"),          # provided by client (Android ID, UUID, etc.)
-    ("device_name",  "TEXT"),                   # e.g. "Samsung A15"
-    ("platform",     "TEXT"),                   # android | ios | web
-    ("created_at",   "TEXT"),
-    ("last_seen_at", "TEXT"),
-    ("revoked_at",   "TEXT"),                   # null = active; set = revoked
-]
-
-USER_DEVICES_SQLITE_COLUMNS = [
-    *USER_DEVICES_COLUMNS[:-3],
-    ("created_at",   "TEXT NOT NULL DEFAULT (datetime('now'))"),
-    ("last_seen_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
-    ("revoked_at",   "TEXT"),
-]
-
-USER_DEVICES_POSTGRES_COLUMNS = [
-    *USER_DEVICES_COLUMNS[:-3],
-    ("created_at",   "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
-    ("last_seen_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
-    ("revoked_at",   "TIMESTAMPTZ"),
-]
-
-
 def _table_sql(table_name: str, columns: list[tuple[str, str]]) -> str:
     columns_sql = ",\n              ".join(f"{name} {ddl}" for name, ddl in columns)
     return (
@@ -464,6 +542,14 @@ def _user_sessions_table_sql(columns: list[tuple[str, str]]) -> str:
 
 def _user_devices_table_sql(columns: list[tuple[str, str]]) -> str:
     return _table_sql("user_devices", columns)
+
+
+def _theory_attempts_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("theory_attempts", columns)
+
+
+def _ai_grading_usage_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("ai_grading_usage", columns)
 
 
 # ----------------------------
@@ -592,6 +678,8 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         cur.execute(_game_sessions_table_sql(GAME_SESSIONS_SQLITE_COLUMNS))
         cur.execute(_user_sessions_table_sql(USER_SESSIONS_SQLITE_COLUMNS))
         cur.execute(_user_devices_table_sql(USER_DEVICES_SQLITE_COLUMNS))
+        cur.execute(_theory_attempts_table_sql(THEORY_ATTEMPTS_SQLITE_COLUMNS))
+        cur.execute(_ai_grading_usage_table_sql(AI_GRADING_USAGE_SQLITE_COLUMNS))
 
         # ---- lightweight column migrations ----
         _sqlite_add_missing_question_columns(cur)
@@ -600,59 +688,75 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         _sqlite_add_missing_columns(cur, "topics", TOPICS_COLUMNS)
         _sqlite_add_missing_columns(cur, "subtopics", SUBTOPICS_COLUMNS)
         _sqlite_add_missing_columns(cur, "lesson_notes", LESSON_NOTES_COLUMNS)
+        _sqlite_add_missing_columns(cur, "theory_attempts", THEORY_ATTEMPTS_COLUMNS)
+        _sqlite_add_missing_columns(cur, "ai_grading_usage", AI_GRADING_USAGE_COLUMNS)
 
-        # ---- indexes: existing ----
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_exam_year_subject ON questions(exam, year, subject);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_qtype ON questions(qtype);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_sort_key ON questions(sort_key);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_passage_id ON questions(passage_id);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_passages_lookup ON passages(exam, year, subject, paper, section);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_feedback_question_id ON feedback(question_id);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_created_at ON admin_audit_log(created_at);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_action ON admin_audit_log(action);")
-
-        # ---- indexes: new tables ----
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_topics_exam_subject ON topics(exam, subject);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_topics_subject_topic ON topics(subject, topic);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_subtopics_exam_subject ON subtopics(exam, subject);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_subtopics_topic_id ON subtopics(topic_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_subtopics_subject ON subtopics(subject);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_subtopics_topic ON subtopics(subject, topic);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_lesson_notes_subtopic ON lesson_notes(subtopic_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_lesson_notes_exam_subject ON lesson_notes(exam, subject);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_lesson_notes_subject ON lesson_notes(subject);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_sessions_user ON cbt_sessions(user_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_sessions_user_subject ON cbt_sessions(user_id, subject);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_sessions_started ON cbt_sessions(started_at);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_answers_session ON cbt_answers(session_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_answers_user ON cbt_answers(user_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_answers_question ON cbt_answers(question_id);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_progress_user ON user_progress(user_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_progress_user_subject ON user_progress(user_id, subject);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_progress_activity ON user_progress(activity_type);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_progress_created ON user_progress(created_at);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_game_sessions_user ON game_sessions(user_id);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_identifier ON user_sessions(identifier);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_active ON user_sessions(identifier, is_active);")
-        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_user_devices_uid ON user_devices(user_id, device_id) WHERE revoked_at IS NULL;")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_devices_user ON user_devices(user_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_devices_active ON user_devices(user_id, revoked_at);")
-        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_user_devices_uid ON user_devices(user_id, device_id) WHERE revoked_at IS NULL;")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_devices_user ON user_devices(user_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_devices_active ON user_devices(user_id, revoked_at);")
-
+        # *** COMMIT PHASE 1 — tables are now durable regardless of index errors ***
         conn.commit()
+
+        # ---- indexes — each wrapped individually so one failure never blocks others ----
+        _sqlite_indexes = [
+            # questions
+            "CREATE INDEX IF NOT EXISTS idx_questions_exam_year_subject ON questions(exam, year, subject);",
+            "CREATE INDEX IF NOT EXISTS idx_questions_qtype ON questions(qtype);",
+            "CREATE INDEX IF NOT EXISTS idx_questions_sort_key ON questions(sort_key);",
+            "CREATE INDEX IF NOT EXISTS idx_questions_passage_id ON questions(passage_id);",
+            # passages / feedback / audit
+            "CREATE INDEX IF NOT EXISTS idx_passages_lookup ON passages(exam, year, subject, paper, section);",
+            "CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at);",
+            "CREATE INDEX IF NOT EXISTS idx_feedback_question_id ON feedback(question_id);",
+            "CREATE INDEX IF NOT EXISTS idx_admin_audit_created_at ON admin_audit_log(created_at);",
+            "CREATE INDEX IF NOT EXISTS idx_admin_audit_action ON admin_audit_log(action);",
+            # topics / subtopics / lesson_notes
+            "CREATE INDEX IF NOT EXISTS idx_topics_exam_subject ON topics(exam, subject);",
+            "CREATE INDEX IF NOT EXISTS idx_topics_subject_topic ON topics(subject, topic);",
+            "CREATE INDEX IF NOT EXISTS idx_subtopics_exam_subject ON subtopics(exam, subject);",
+            "CREATE INDEX IF NOT EXISTS idx_subtopics_topic_id ON subtopics(topic_id);",
+            "CREATE INDEX IF NOT EXISTS idx_subtopics_subject ON subtopics(subject);",
+            "CREATE INDEX IF NOT EXISTS idx_subtopics_topic ON subtopics(subject, topic);",
+            "CREATE INDEX IF NOT EXISTS idx_lesson_notes_subtopic ON lesson_notes(subtopic_id);",
+            "CREATE INDEX IF NOT EXISTS idx_lesson_notes_exam_subject ON lesson_notes(exam, subject);",
+            "CREATE INDEX IF NOT EXISTS idx_lesson_notes_subject ON lesson_notes(subject);",
+            # cbt_sessions / cbt_answers
+            "CREATE INDEX IF NOT EXISTS idx_cbt_sessions_user ON cbt_sessions(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_cbt_sessions_user_subject ON cbt_sessions(user_id, subject);",
+            "CREATE INDEX IF NOT EXISTS idx_cbt_sessions_started ON cbt_sessions(started_at);",
+            "CREATE INDEX IF NOT EXISTS idx_cbt_answers_session ON cbt_answers(session_id);",
+            "CREATE INDEX IF NOT EXISTS idx_cbt_answers_user ON cbt_answers(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_cbt_answers_question ON cbt_answers(question_id);",
+            # user_progress
+            "CREATE INDEX IF NOT EXISTS idx_user_progress_user ON user_progress(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_user_progress_user_subject ON user_progress(user_id, subject);",
+            "CREATE INDEX IF NOT EXISTS idx_user_progress_activity ON user_progress(activity_type);",
+            "CREATE INDEX IF NOT EXISTS idx_user_progress_created ON user_progress(created_at);",
+            # game_sessions
+            "CREATE INDEX IF NOT EXISTS idx_game_sessions_user ON game_sessions(user_id);",
+            # user_sessions
+            "CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_user_sessions_identifier ON user_sessions(identifier);",
+            "CREATE INDEX IF NOT EXISTS idx_user_sessions_active ON user_sessions(identifier, is_active);",
+            # user_devices
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_user_devices_active_user_device ON user_devices(user_id, device_id) WHERE revoked_at IS NULL;",
+            "CREATE INDEX IF NOT EXISTS idx_user_devices_user ON user_devices(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_user_devices_active ON user_devices(user_id, revoked_at);",
+            "ALTER TABLE user_devices ADD COLUMN revoke_reason TEXT;",
+            # theory_attempts
+            "CREATE INDEX IF NOT EXISTS idx_theory_attempts_user ON theory_attempts(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_theory_attempts_question ON theory_attempts(question_id);",
+            "CREATE INDEX IF NOT EXISTS idx_theory_attempts_created ON theory_attempts(created_at);",
+            # ai_grading_usage
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_grading_usage_user_period ON ai_grading_usage(user_id, period_key);",
+            "CREATE INDEX IF NOT EXISTS idx_ai_grading_usage_user ON ai_grading_usage(user_id);",
+        ]
+
+        for sql in _sqlite_indexes:
+            try:
+                cur.execute(sql)
+                conn.commit()
+            except Exception as exc:
+                conn.rollback()
+                logger.warning("SQLite index DDL skipped (%s): %s", type(exc).__name__, exc)
+
     finally:
         conn.close()
 
@@ -676,10 +780,30 @@ def _get_pg():
     return _PGConn(conn)
 
 
+def _pg_exec_index(db, cur, sql: str) -> None:
+    """
+    Execute a single DDL index statement in its own savepoint so that a
+    failure (e.g. conflicting index definition) never aborts the surrounding
+    transaction.  Errors are logged as warnings and skipped.
+    """
+    try:
+        cur.execute("SAVEPOINT _idx;")
+        cur.execute(sql)
+        cur.execute("RELEASE SAVEPOINT _idx;")
+    except Exception as exc:
+        cur.execute("ROLLBACK TO SAVEPOINT _idx;")
+        logger.warning("Index DDL skipped (%s): %s", type(exc).__name__, exc)
+
+
 def _init_db_postgres() -> None:
     db = _get_pg()
     try:
         cur = db.cursor()
+
+        # ------------------------------------------------------------------ #
+        # PHASE 1 — Tables + column migrations                                #
+        # Committed as one unit.  If this succeeds, tables exist on disk.     #
+        # ------------------------------------------------------------------ #
 
         # ---- existing tables ----
         cur.execute(
@@ -764,7 +888,8 @@ def _init_db_postgres() -> None:
         cur.execute(_game_sessions_table_sql(GAME_SESSIONS_POSTGRES_COLUMNS))
         cur.execute(_user_sessions_table_sql(USER_SESSIONS_POSTGRES_COLUMNS))
         cur.execute(_user_devices_table_sql(USER_DEVICES_POSTGRES_COLUMNS))
-        _postgres_add_missing_columns(cur, "user_devices", USER_DEVICES_POSTGRES_COLUMNS)
+        cur.execute(_theory_attempts_table_sql(THEORY_ATTEMPTS_POSTGRES_COLUMNS))
+        cur.execute(_ai_grading_usage_table_sql(AI_GRADING_USAGE_POSTGRES_COLUMNS))
 
         # column migrations for new tables (safe to run repeatedly)
         _postgres_add_missing_columns(cur, "topics", TOPICS_POSTGRES_COLUMNS)
@@ -775,53 +900,78 @@ def _init_db_postgres() -> None:
         _postgres_add_missing_columns(cur, "user_progress", USER_PROGRESS_POSTGRES_COLUMNS)
         _postgres_add_missing_columns(cur, "game_sessions", GAME_SESSIONS_POSTGRES_COLUMNS)
         _postgres_add_missing_columns(cur, "user_sessions", USER_SESSIONS_POSTGRES_COLUMNS)
+        _postgres_add_missing_columns(cur, "user_devices", USER_DEVICES_POSTGRES_COLUMNS)
+        _postgres_add_missing_columns(cur, "theory_attempts", THEORY_ATTEMPTS_POSTGRES_COLUMNS)
+        _postgres_add_missing_columns(cur, "ai_grading_usage", AI_GRADING_USAGE_POSTGRES_COLUMNS)
 
-        # ---- indexes: existing ----
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_exam_year_subject ON questions(exam, year, subject);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_qtype ON questions(qtype);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_sort_key ON questions(sort_key);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_passage_id ON questions(passage_id);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_passages_lookup ON passages(exam, year, subject, paper, section);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_feedback_question_id ON feedback(question_id);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_created_at ON admin_audit_log(created_at);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_admin_audit_action ON admin_audit_log(action);")
-
-        # ---- indexes: new tables ----
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_topics_exam_subject ON topics(exam, subject);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_topics_subject_topic ON topics(subject, topic);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_subtopics_exam_subject ON subtopics(exam, subject);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_subtopics_topic_id ON subtopics(topic_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_subtopics_subject ON subtopics(subject);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_subtopics_topic ON subtopics(subject, topic);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_lesson_notes_subtopic ON lesson_notes(subtopic_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_lesson_notes_exam_subject ON lesson_notes(exam, subject);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_lesson_notes_subject ON lesson_notes(subject);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_sessions_user ON cbt_sessions(user_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_sessions_user_subject ON cbt_sessions(user_id, subject);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_sessions_started ON cbt_sessions(started_at);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_answers_session ON cbt_answers(session_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_answers_user ON cbt_answers(user_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_cbt_answers_question ON cbt_answers(question_id);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_progress_user ON user_progress(user_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_progress_user_subject ON user_progress(user_id, subject);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_progress_activity ON user_progress(activity_type);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_progress_created ON user_progress(created_at);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_game_sessions_user ON game_sessions(user_id);")
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_identifier ON user_sessions(identifier);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_active ON user_sessions(identifier, is_active);")
-
+        # *** COMMIT PHASE 1 — tables are now durable regardless of index errors ***
         db.commit()
+
+        # ------------------------------------------------------------------ #
+        # PHASE 2 — Indexes                                                   #
+        # Each index runs in its own savepoint so one bad index never rolls   #
+        # back the others or (critically) the table commit above.             #
+        # ------------------------------------------------------------------ #
+        _indexes = [
+            # questions
+            "CREATE INDEX IF NOT EXISTS idx_questions_exam_year_subject ON questions(exam, year, subject);",
+            "CREATE INDEX IF NOT EXISTS idx_questions_qtype ON questions(qtype);",
+            "CREATE INDEX IF NOT EXISTS idx_questions_sort_key ON questions(sort_key);",
+            "CREATE INDEX IF NOT EXISTS idx_questions_passage_id ON questions(passage_id);",
+            # passages / feedback / audit
+            "CREATE INDEX IF NOT EXISTS idx_passages_lookup ON passages(exam, year, subject, paper, section);",
+            "CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at);",
+            "CREATE INDEX IF NOT EXISTS idx_feedback_question_id ON feedback(question_id);",
+            "CREATE INDEX IF NOT EXISTS idx_admin_audit_created_at ON admin_audit_log(created_at);",
+            "CREATE INDEX IF NOT EXISTS idx_admin_audit_action ON admin_audit_log(action);",
+            # topics / subtopics / lesson_notes
+            "CREATE INDEX IF NOT EXISTS idx_topics_exam_subject ON topics(exam, subject);",
+            "CREATE INDEX IF NOT EXISTS idx_topics_subject_topic ON topics(subject, topic);",
+            "CREATE INDEX IF NOT EXISTS idx_subtopics_exam_subject ON subtopics(exam, subject);",
+            "CREATE INDEX IF NOT EXISTS idx_subtopics_topic_id ON subtopics(topic_id);",
+            "CREATE INDEX IF NOT EXISTS idx_subtopics_subject ON subtopics(subject);",
+            "CREATE INDEX IF NOT EXISTS idx_subtopics_topic ON subtopics(subject, topic);",
+            "CREATE INDEX IF NOT EXISTS idx_lesson_notes_subtopic ON lesson_notes(subtopic_id);",
+            "CREATE INDEX IF NOT EXISTS idx_lesson_notes_exam_subject ON lesson_notes(exam, subject);",
+            "CREATE INDEX IF NOT EXISTS idx_lesson_notes_subject ON lesson_notes(subject);",
+            # cbt_sessions / cbt_answers
+            "CREATE INDEX IF NOT EXISTS idx_cbt_sessions_user ON cbt_sessions(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_cbt_sessions_user_subject ON cbt_sessions(user_id, subject);",
+            "CREATE INDEX IF NOT EXISTS idx_cbt_sessions_started ON cbt_sessions(started_at);",
+            "CREATE INDEX IF NOT EXISTS idx_cbt_answers_session ON cbt_answers(session_id);",
+            "CREATE INDEX IF NOT EXISTS idx_cbt_answers_user ON cbt_answers(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_cbt_answers_question ON cbt_answers(question_id);",
+            # user_progress
+            "CREATE INDEX IF NOT EXISTS idx_user_progress_user ON user_progress(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_user_progress_user_subject ON user_progress(user_id, subject);",
+            "CREATE INDEX IF NOT EXISTS idx_user_progress_activity ON user_progress(activity_type);",
+            "CREATE INDEX IF NOT EXISTS idx_user_progress_created ON user_progress(created_at);",
+            # game_sessions
+            "CREATE INDEX IF NOT EXISTS idx_game_sessions_user ON game_sessions(user_id);",
+            # user_sessions
+            "CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_user_sessions_identifier ON user_sessions(identifier);",
+            "CREATE INDEX IF NOT EXISTS idx_user_sessions_active ON user_sessions(identifier, is_active);",
+            # user_devices
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_user_devices_active_user_device ON user_devices(user_id, device_id) WHERE revoked_at IS NULL;",
+            "CREATE INDEX IF NOT EXISTS idx_user_devices_user ON user_devices(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_user_devices_active ON user_devices(user_id, revoked_at);",
+            "ALTER TABLE user_devices ADD COLUMN IF NOT EXISTS revoke_reason TEXT;",
+            # theory_attempts
+            "CREATE INDEX IF NOT EXISTS idx_theory_attempts_user ON theory_attempts(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_theory_attempts_question ON theory_attempts(question_id);",
+            "CREATE INDEX IF NOT EXISTS idx_theory_attempts_created ON theory_attempts(created_at);",
+            # ai_grading_usage
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_grading_usage_user_period ON ai_grading_usage(user_id, period_key);",
+            "CREATE INDEX IF NOT EXISTS idx_ai_grading_usage_user ON ai_grading_usage(user_id);",
+        ]
+
+        for sql in _indexes:
+            _pg_exec_index(db, cur, sql)
+
+        # *** COMMIT PHASE 2 — all indexes that succeeded are now durable ***
+        db.commit()
+
     finally:
         db.close()
 
