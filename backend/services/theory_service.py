@@ -360,8 +360,19 @@ def _call_claude(prompt: str, model: str) -> Dict[str, Any]:
     input_tokens  = message.usage.input_tokens  if message.usage else 0
     output_tokens = message.usage.output_tokens if message.usage else 0
 
+    # Strip markdown code fences — Haiku sometimes wraps JSON in ```json ... ```
+    # despite being instructed not to.
+    clean_text = raw_text.strip()
+    if clean_text.startswith("```"):
+        # Remove opening fence (```json or ```)
+        clean_text = clean_text.split("\n", 1)[-1]
+        # Remove closing fence
+        if clean_text.endswith("```"):
+            clean_text = clean_text.rsplit("```", 1)[0]
+    clean_text = clean_text.strip()
+
     try:
-        parsed = json.loads(raw_text)
+        parsed = json.loads(clean_text)
     except json.JSONDecodeError:
         logger.error("Claude returned non-JSON response: %s", raw_text[:500])
         raise HTTPException(status_code=502, detail="AI grading returned an unreadable response. Please try again.")
