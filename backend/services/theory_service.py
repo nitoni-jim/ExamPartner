@@ -219,7 +219,7 @@ def _fetch_question_data(question_id: str) -> Dict[str, Any]:
     if not examiner_points_raw:
         raise HTTPException(
             status_code=400,
-            detail="This question does not have AI grading data yet.",
+            detail="This theory question does not yet have a verified marking rubric for AI scoring.",
         )
 
     try:
