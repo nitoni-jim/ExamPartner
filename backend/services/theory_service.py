@@ -346,7 +346,7 @@ def _call_claude(prompt: str, model: str) -> Dict[str, Any]:
     try:
         message = client.messages.create(
             model=model,
-            max_tokens=1024,
+            max_tokens=2048,
             messages=[{"role": "user", "content": prompt}],
         )
     except anthropic.APIStatusError as exc:
@@ -359,17 +359,22 @@ def _call_claude(prompt: str, model: str) -> Dict[str, Any]:
     raw_text = message.content[0].text if message.content else ""
     input_tokens  = message.usage.input_tokens  if message.usage else 0
     output_tokens = message.usage.output_tokens if message.usage else 0
+    stop_reason   = message.stop_reason or "unknown"
+
+    if stop_reason == "max_tokens":
+        logger.warning("Claude response truncated (max_tokens hit): model=%s tokens=%d", model, output_tokens)
 
     # Strip markdown code fences — Haiku sometimes wraps JSON in ```json ... ```
-    # despite being instructed not to.
+    # despite being instructed not to. Also handles truncated responses where
+    # the closing fence may be missing.
     clean_text = raw_text.strip()
     if clean_text.startswith("```"):
-        # Remove opening fence (```json or ```)
+        # Remove opening fence line (```json or ```)
         clean_text = clean_text.split("\n", 1)[-1]
-        # Remove closing fence
+        # Remove closing fence if present
         if clean_text.endswith("```"):
             clean_text = clean_text.rsplit("```", 1)[0]
-    clean_text = clean_text.strip()
+        clean_text = clean_text.strip()
 
     try:
         parsed = json.loads(clean_text)
