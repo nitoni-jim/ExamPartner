@@ -1,6 +1,9 @@
+import logging
 import os
 import sqlite3
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 QUESTIONS_COLUMNS = [
     ("id", "TEXT PRIMARY KEY"),
@@ -426,6 +429,35 @@ AI_GRADING_USAGE_POSTGRES_COLUMNS = [
     ("updated_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
 ]
 
+# ----------------------------
+# password_reset_tokens — single-use OTP codes for password recovery
+# ----------------------------
+# token_hash:  SHA-256 of the raw 6-digit code sent to the user.
+#              The raw code is NEVER stored.
+# used_at:     NULL = unused; set to now() when the code is consumed.
+#              Enforces single-use on the database level.
+# expires_at:  30 minutes from creation. Checked at redemption time.
+# identifier:  Matches users.identifier (email or phone string used at login).
+# ----------------------------
+PASSWORD_RESET_TOKENS_COLUMNS = [
+    ("id",          "TEXT PRIMARY KEY"),          # random UUID hex
+    ("identifier",  "TEXT NOT NULL"),             # users.identifier
+    ("token_hash",  "TEXT NOT NULL UNIQUE"),      # SHA-256(raw_code)
+    ("expires_at",  "TEXT NOT NULL"),             # ISO timestamp
+    ("used_at",     "TEXT"),                      # NULL = unused
+    ("created_at",  "TEXT"),
+]
+
+PASSWORD_RESET_TOKENS_SQLITE_COLUMNS = [
+    *PASSWORD_RESET_TOKENS_COLUMNS[:-1],
+    ("created_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+]
+
+PASSWORD_RESET_TOKENS_POSTGRES_COLUMNS = [
+    *PASSWORD_RESET_TOKENS_COLUMNS[:-1],
+    ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+]
+
 
 # ----------------------------
 # Detect Postgres
@@ -550,6 +582,10 @@ def _theory_attempts_table_sql(columns: list[tuple[str, str]]) -> str:
 
 def _ai_grading_usage_table_sql(columns: list[tuple[str, str]]) -> str:
     return _table_sql("ai_grading_usage", columns)
+
+
+def _password_reset_tokens_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("password_reset_tokens", columns)
 
 
 # ----------------------------
@@ -680,6 +716,7 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         cur.execute(_user_devices_table_sql(USER_DEVICES_SQLITE_COLUMNS))
         cur.execute(_theory_attempts_table_sql(THEORY_ATTEMPTS_SQLITE_COLUMNS))
         cur.execute(_ai_grading_usage_table_sql(AI_GRADING_USAGE_SQLITE_COLUMNS))
+        cur.execute(_password_reset_tokens_table_sql(PASSWORD_RESET_TOKENS_SQLITE_COLUMNS))
 
         # ---- lightweight column migrations ----
         _sqlite_add_missing_question_columns(cur)
@@ -690,6 +727,7 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         _sqlite_add_missing_columns(cur, "lesson_notes", LESSON_NOTES_COLUMNS)
         _sqlite_add_missing_columns(cur, "theory_attempts", THEORY_ATTEMPTS_COLUMNS)
         _sqlite_add_missing_columns(cur, "ai_grading_usage", AI_GRADING_USAGE_COLUMNS)
+        _sqlite_add_missing_columns(cur, "password_reset_tokens", PASSWORD_RESET_TOKENS_COLUMNS)
 
         # *** COMMIT PHASE 1 — tables are now durable regardless of index errors ***
         conn.commit()
@@ -747,6 +785,9 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
             # ai_grading_usage
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_grading_usage_user_period ON ai_grading_usage(user_id, period_key);",
             "CREATE INDEX IF NOT EXISTS idx_ai_grading_usage_user ON ai_grading_usage(user_id);",
+            # password_reset_tokens
+            "CREATE INDEX IF NOT EXISTS idx_prt_identifier ON password_reset_tokens(identifier);",
+            "CREATE INDEX IF NOT EXISTS idx_prt_expires_at ON password_reset_tokens(expires_at);",
         ]
 
         for sql in _sqlite_indexes:
@@ -890,6 +931,7 @@ def _init_db_postgres() -> None:
         cur.execute(_user_devices_table_sql(USER_DEVICES_POSTGRES_COLUMNS))
         cur.execute(_theory_attempts_table_sql(THEORY_ATTEMPTS_POSTGRES_COLUMNS))
         cur.execute(_ai_grading_usage_table_sql(AI_GRADING_USAGE_POSTGRES_COLUMNS))
+        cur.execute(_password_reset_tokens_table_sql(PASSWORD_RESET_TOKENS_POSTGRES_COLUMNS))
 
         # column migrations for new tables (safe to run repeatedly)
         _postgres_add_missing_columns(cur, "topics", TOPICS_POSTGRES_COLUMNS)
@@ -903,6 +945,7 @@ def _init_db_postgres() -> None:
         _postgres_add_missing_columns(cur, "user_devices", USER_DEVICES_POSTGRES_COLUMNS)
         _postgres_add_missing_columns(cur, "theory_attempts", THEORY_ATTEMPTS_POSTGRES_COLUMNS)
         _postgres_add_missing_columns(cur, "ai_grading_usage", AI_GRADING_USAGE_POSTGRES_COLUMNS)
+        _postgres_add_missing_columns(cur, "password_reset_tokens", PASSWORD_RESET_TOKENS_POSTGRES_COLUMNS)
 
         # *** COMMIT PHASE 1 — tables are now durable regardless of index errors ***
         db.commit()
@@ -964,6 +1007,9 @@ def _init_db_postgres() -> None:
             # ai_grading_usage
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_grading_usage_user_period ON ai_grading_usage(user_id, period_key);",
             "CREATE INDEX IF NOT EXISTS idx_ai_grading_usage_user ON ai_grading_usage(user_id);",
+            # password_reset_tokens
+            "CREATE INDEX IF NOT EXISTS idx_prt_identifier ON password_reset_tokens(identifier);",
+            "CREATE INDEX IF NOT EXISTS idx_prt_expires_at ON password_reset_tokens(expires_at);",
         ]
 
         for sql in _indexes:
