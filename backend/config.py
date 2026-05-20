@@ -26,6 +26,17 @@ FOUNDING_CAP: int = int(os.getenv("FOUNDING_CAP", "500"))
 FREE_SAMPLE_LIMIT_OBJ: int = int(os.getenv("FREE_SAMPLE_LIMIT_OBJ", "10"))
 FREE_SAMPLE_LIMIT_THEORY: int = int(os.getenv("FREE_SAMPLE_LIMIT_THEORY", "2"))
 
+# ---------------------------------------------------------------------------
+# Email — password reset
+# ---------------------------------------------------------------------------
+# RESEND_API_KEY:      Set in Render environment. No default — email is
+#                      silently skipped in dev if this is absent.
+# SUPPORT_EMAIL_FROM:  The "From" address shown to the user.
+#                      Must be a verified sender domain in your Resend account.
+# ---------------------------------------------------------------------------
+RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
+SUPPORT_EMAIL_FROM: str = os.getenv("SUPPORT_EMAIL_FROM", "ExamPartner <noreply@exampartner.com>")
+
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s | %(levelname)s | %(message)s",
