@@ -29,7 +29,10 @@ from services.device_service import (
     revoke_device,
     revoke_device_preauth,
 )
+from services.email_service import send_reset_code
+from services.password_reset_service import create_reset_code, redeem_reset_code
 from services.question_utils import row_get
+from models.schemas import ForgotPasswordReq, ResetPasswordReq
 from pydantic import BaseModel
 
 router = APIRouter(tags=["auth"])
@@ -303,6 +306,78 @@ def me(user: Optional[Dict[str, Any]] = Depends(get_current_user)):
         "is_admin":       is_admin_identifier(identifier) or bool(row_get(row, "is_admin") or False),
         "device_limit":   2 if is_paid_active else 1,
     }
+
+
+# ---------------------------------------------------------------------------
+# Forgot password — request a reset code (Step 1)
+# ---------------------------------------------------------------------------
+
+@router.post("/auth/forgot-password")
+def forgot_password(body: ForgotPasswordReq):
+    """
+    Request a password reset code.
+
+    The response is always the same generic message regardless of whether:
+      - The account exists.
+      - The account has a linked email.
+      - The email was sent successfully.
+
+    This prevents user enumeration.
+
+    Flow:
+      1. Look up the user and their linked email.
+      2. If found, generate a 6-digit code, store its hash, send the email.
+      3. Always return the same 200 response.
+    """
+    identifier = (body.identifier or "").strip().lower()
+
+    if not identifier:
+        # Still return generic success — no enumeration via 400.
+        return {
+            "ok":      True,
+            "message": "If an account exists with this identifier and has a linked email, password reset instructions have been sent.",
+        }
+
+    result = create_reset_code(identifier)
+
+    # result is None if account doesn't exist or has no email.
+    # result is (email, raw_code) tuple if account exists and has email.
+    if result is not None:
+        email, raw_code = result
+        # Fire and forget — failure is logged inside send_reset_code,
+        # never surfaced to the caller.
+        send_reset_code(to_email=email, code=raw_code)
+
+    # Always return the same message.
+    return {
+        "ok":      True,
+        "message": "If an account exists with this identifier and has a linked email, password reset instructions have been sent.",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Reset password — redeem code and set new password (Step 2)
+# ---------------------------------------------------------------------------
+
+@router.post("/auth/reset-password")
+def reset_password(body: ResetPasswordReq):
+    """
+    Redeem a reset code and set a new password.
+
+    Raises:
+      400 — missing fields or password too short.
+      422 — code is invalid, expired, or already used.
+              (single message — does not reveal which condition applies)
+
+    On success: password is updated and the token is marked as used.
+    The user should be directed to the login screen to sign in with the new password.
+    """
+    redeem_reset_code(
+        identifier   = body.identifier,
+        raw_code     = body.code,
+        new_password = body.new_password,
+    )
+    return {"ok": True, "message": "Password updated successfully. You can now log in with your new password."}
 
 
 # ---------------------------------------------------------------------------
