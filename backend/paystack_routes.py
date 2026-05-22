@@ -1,4 +1,3 @@
-
 # paystack_routes.py (Neon Postgres-ready, cleaned, feature-complete for MVP)
 
 import os
@@ -82,6 +81,18 @@ AUTO_DOWNGRADE_ON_REFUND = env_bool("AUTO_DOWNGRADE_ON_REFUND", False)
 MIN_AMOUNT_KOBO = int(env_str("MIN_AMOUNT_KOBO", "100000"))
 
 JWT_SECRET = env_str("JWT_SECRET", "dev_secret_change_me")
+
+# Platform-specific callback URLs for Paystack hosted checkout.
+# Web redirects to Cloudflare Pages; Android uses a deep link.
+# Set both on Render — do not use a single shared callback URL.
+PAYSTACK_WEB_CALLBACK_URL = env_str(
+    "PAYSTACK_WEB_CALLBACK_URL",
+    "https://exampartner.pages.dev/?payment=callback"
+)
+PAYSTACK_ANDROID_CALLBACK_URL = env_str(
+    "PAYSTACK_ANDROID_CALLBACK_URL",
+    "exampartner://payment-callback"
+)
 
 
 
@@ -601,9 +612,24 @@ def admin_grant_access_by_identifier(
 # -----------------------------
 # API models
 # -----------------------------
+class InitializeReq(BaseModel):
+    """
+    Request body for POST /payments/initialize.
+    Amount is decided server-side from plan — client must not send amount.
+    platform: "web" | "android" — determines which callback_url is used.
+    """
+    email: str        # for Paystack customer record
+    identifier: str   # account identifier (email or phone)
+    plan: str         # "founding" | "core"
+    platform: str = "web"  # "web" | "android"
+
+
+# FIX: email is Optional — Android sends blank email when profile cache is empty at verify time.
+# Identifier is resolved from Paystack metadata (meta_identifier) and customer email first;
+# Android email field is only a last resort fallback.
 class VerifyReq(BaseModel):
     reference: str
-    email: Optional[str] = None   # fallback only — identifier resolved from Paystack metadata first
+    email: Optional[str] = None
 
 
 class AdminRefundReq(BaseModel):
@@ -627,6 +653,72 @@ def paystack_public_key():
     if not PAYSTACK_PUBLIC_KEY:
         raise HTTPException(status_code=500, detail="PAYSTACK_PUBLIC_KEY not configured")
     return {"ok": True, "public_key": PAYSTACK_PUBLIC_KEY}
+
+@router.post("/initialize")
+def initialize_payment(req: InitializeReq, request: Request):
+    """
+    Create a Paystack hosted checkout transaction.
+
+    Used by Web (redirect) and Android (Chrome Custom Tab).
+    Replaces the old inline iframe / SDK chargeCard flow.
+
+    Amount is decided server-side — plan determines kobo:
+      founding = 100,000 kobo (₦1,000)
+      core     = 200,000 kobo (₦2,000)
+
+    Includes channels: card, bank, ussd, bank_transfer.
+    """
+    user       = require_user(request)
+    identifier = (req.identifier or "").strip().lower()
+    email      = (req.email or "").strip().lower()
+    plan       = (req.plan or "").strip().lower()
+
+    if not identifier:
+        raise HTTPException(status_code=400, detail="identifier is required")
+    if not email or not is_email(email):
+        email = identifier if is_email(identifier) else f"{identifier}@exampartner.app"
+    if plan not in ("founding", "core"):
+        raise HTTPException(status_code=400, detail="plan must be founding or core")
+
+    # Server-side amount — never trust client
+    PLAN_AMOUNTS = {"founding": 100_000, "core": 200_000}
+    amount_kobo = PLAN_AMOUNTS[plan]
+
+    payload = {
+        "email":        email,
+        "amount":       amount_kobo,
+        "currency":     "NGN",
+        "callback_url": PAYSTACK_ANDROID_CALLBACK_URL
+        if (req.platform or "web").strip().lower() == "android"
+        else PAYSTACK_WEB_CALLBACK_URL,
+        "channels":     ["card", "bank", "ussd", "bank_transfer"],
+        "metadata": {
+            "identifier": identifier,
+            "plan":       plan,
+            "custom_fields": [
+                {"display_name": "ExamPartner Identifier", "variable_name": "identifier", "value": identifier},
+                {"display_name": "Plan", "variable_name": "plan", "value": plan},
+            ],
+        },
+    }
+
+    resp = paystack_api_post("/transaction/initialize", payload)
+    data = resp.get("data") or {}
+
+    authorization_url = data.get("authorization_url") or ""
+    reference         = data.get("reference") or ""
+    access_code       = data.get("access_code") or ""
+
+    if not authorization_url or not reference:
+        raise HTTPException(status_code=502, detail="Paystack did not return a checkout URL")
+
+    return {
+        "ok":                True,
+        "authorization_url": authorization_url,
+        "reference":         reference,
+        "access_code":       access_code,
+    }
+
 
 @router.get("/history")
 def payment_history(request: Request, limit: int = 20):
@@ -702,8 +794,6 @@ def payment_history(request: Request, limit: int = 20):
     return {"ok": True, "limit": limit, "items": items}
 
 
-
-
 @router.post("/verify")
 def verify_payment(req: VerifyReq):
     ref = (req.reference or "").strip()
@@ -711,8 +801,8 @@ def verify_payment(req: VerifyReq):
 
     if not ref:
         raise HTTPException(status_code=400, detail="Missing reference")
-    # email is optional — identifier is resolved from Paystack metadata first.
-    # Only used as a last resort fallback if Paystack has no metadata.
+    # FIX: removed hard email guard — Android sends blank email when profile cache is empty.
+    # Identifier is resolved from Paystack metadata and customer email first; email is last resort only.
 
     resp = paystack_api_get(f"/transaction/verify/{ref}")
     if not resp.get("status"):
