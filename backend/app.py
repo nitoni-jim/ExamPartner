@@ -25,6 +25,7 @@ from routes.cbt import router as cbt_router
 from routes.feedback import router as feedback_router
 from routes.questions import router as questions_router
 from routes.theory import router as theory_router
+from routes.content import router as content_router
 
 # ---------------------------------------------------------------------------
 # App
@@ -56,6 +57,7 @@ app.include_router(cbt_router)
 app.include_router(admin_router)
 app.include_router(paystack_router)   # payments — already uses APIRouter
 app.include_router(theory_router)     # AI theory grading
+app.include_router(content_router)    # content version / sync awareness
 
 # ---------------------------------------------------------------------------
 # Startup
