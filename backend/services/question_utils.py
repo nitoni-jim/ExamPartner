@@ -141,7 +141,7 @@ def row_to_question(row: Any, passage_lookup: Optional[Dict[str, Any]] = None) -
         "section_instruction": row_get(row, "section_instruction"),
         "question_text": row["question_text"],
         "options": jloads(row_get(row, "options_json")),
-        "answer": row_get(row, "answer"),
+        "answer": jloads(row_get(row, "answer")) if row_get(row, "answer", "").startswith("[") else row_get(row, "answer"),
         "explanation": normalize_explanation(qtype, row_get(row, "explanation"), row_get(row, "subject")),
         "sub_questions": jloads(row_get(row, "sub_questions_json")),
         "solution_steps": jloads(row_get(row, "solution_steps_json")),
