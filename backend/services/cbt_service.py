@@ -17,22 +17,22 @@ from services.question_utils import (
     row_to_question,
 )
 
-CBT_ENGLISH_SUBJECT = "Use of English"
-CBT_ENGLISH_CAP     = 60
-CBT_JAMB_CAP        = 40
-CBT_WAEC_CAP        = 50
-CBT_NECO_CAP        = 60
+CBT_ENGLISH_SUBJECTS = {"Use of English", "English Language"}
+CBT_ENGLISH_CAP      = 80
+CBT_JAMB_CAP         = 40
+CBT_WAEC_CAP         = 50
+CBT_NECO_CAP         = 60
 
 def get_cbt_cap(subject: str, exam: str) -> int:
     """
     Returns the correct CBT question cap for the given exam and subject.
-    - Use of English: always 60 (JAMB scales 60 → 100 pts in app)
+    - Use of English / English Language: 80 (covers both JAMB and WAEC naming)
     - JAMB: 40 per subject
     - WAEC: 50 per subject
     - NECO: 60 per subject
     - Other/unknown: 50 (safe default)
     """
-    if subject == CBT_ENGLISH_SUBJECT:
+    if subject in CBT_ENGLISH_SUBJECTS:
         return CBT_ENGLISH_CAP
     exam_upper = (exam or "").strip().upper()
     if exam_upper == "JAMB":
@@ -77,7 +77,7 @@ def fetch_cbt_questions(
     - Paid users: all years pooled.
     - Free users: oldest year only (resolved here).
     - Deduplication: first occurrence of each unique question_text wins.
-    - Cap: 60 for Use of English, 40 for all other subjects.
+    - Cap: per get_cbt_cap() — 80 for English subjects, 40 JAMB, 50 WAEC, 60 NECO.
 
     Returns a dict ready to be returned directly by the route.
     """
