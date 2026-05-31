@@ -17,24 +17,28 @@ from services.question_utils import (
     row_to_question,
 )
 
-CBT_ENGLISH_SUBJECTS = {"Use of English", "English Language"}
-CBT_ENGLISH_CAP      = 80
-CBT_JAMB_CAP         = 40
-CBT_WAEC_CAP         = 50
-CBT_NECO_CAP         = 60
+CBT_ENGLISH_SUBJECT      = "Use of English"
+CBT_ENGLISH_LANGUAGE     = "English Language"
+CBT_ENGLISH_CAP          = 60   # JAMB Use of English
+CBT_JAMB_CAP             = 40
+CBT_WAEC_CAP             = 50
+CBT_NECO_CAP             = 60
 
 def get_cbt_cap(subject: str, exam: str) -> int:
     """
     Returns the correct CBT question cap for the given exam and subject.
-    - Use of English / English Language: 80 (covers both JAMB and WAEC naming)
+    - JAMB Use of English: 60
+    - WAEC/NECO English Language: actual DB count via high ceiling (no artificial cap)
     - JAMB: 40 per subject
     - WAEC: 50 per subject
     - NECO: 60 per subject
     - Other/unknown: 50 (safe default)
     """
-    if subject in CBT_ENGLISH_SUBJECTS:
-        return CBT_ENGLISH_CAP
     exam_upper = (exam or "").strip().upper()
+    if subject == CBT_ENGLISH_SUBJECT and exam_upper == "JAMB":
+        return CBT_ENGLISH_CAP
+    if subject == CBT_ENGLISH_LANGUAGE and exam_upper in ("WAEC", "NECO"):
+        return 999  # no artificial cap — return all available after dedup
     if exam_upper == "JAMB":
         return CBT_JAMB_CAP
     if exam_upper == "WAEC":
@@ -77,7 +81,8 @@ def fetch_cbt_questions(
     - Paid users: all years pooled.
     - Free users: oldest year only (resolved here).
     - Deduplication: first occurrence of each unique question_text wins.
-    - Cap: per get_cbt_cap() — 80 for English subjects, 40 JAMB, 50 WAEC, 60 NECO.
+    - Cap: per get_cbt_cap() — JAMB English 60, WAEC/NECO English Language uncapped,
+      JAMB subjects 40, WAEC subjects 50, NECO subjects 60.
 
     Returns a dict ready to be returned directly by the route.
     """
