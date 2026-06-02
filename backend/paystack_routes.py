@@ -5,6 +5,7 @@ import hmac
 import json
 import hashlib
 import base64
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
@@ -1067,3 +1068,219 @@ def admin_mark_paid(
     )
 
     return result
+
+
+# =============================================================================
+# AI Theory Marking Top-up — Phase 3
+# =============================================================================
+# Top-up package: 50 extra AI theory markings for ₦1,000, valid 1 year.
+# These are SEPARATE from subscription — they only affect AI grading quota.
+# Top-up can be purchased by free or paid users alike.
+# =============================================================================
+
+TOPUP_EXTRA_50_AMOUNT_KOBO = 100000   # ₦1,000 in kobo
+TOPUP_EXTRA_50_CREDITS     = 50
+TOPUP_PACKAGE_KEY          = "extra_50"
+
+
+class TopupInitReq(BaseModel):
+    package: str  # must be "extra_50"
+
+
+class TopupVerifyReq(BaseModel):
+    reference: str
+
+
+@router.post("/ai-grading/topup/init")
+def topup_init(req: TopupInitReq, request: Request):
+    """
+    Initialise a Paystack transaction for an AI theory marking top-up.
+
+    Request:  { "package": "extra_50" }
+    Response: { "ok": true, "authorization_url": "...", "reference": "..." }
+
+    Requires Bearer token. Platform is detected from User-Agent to select
+    the correct callback URL (Android deep link vs web redirect).
+    """
+    user = require_user(request)
+    identifier = user.get("sub", "").strip().lower()
+    if not identifier:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    package = (req.package or "").strip().lower()
+    if package != TOPUP_PACKAGE_KEY:
+        raise HTTPException(status_code=400, detail=f"Unknown top-up package: {package}")
+
+    # Detect platform for callback URL
+    ua = (request.headers.get("user-agent") or "").lower()
+    is_android = "android" in ua or "okhttp" in ua or "dalvik" in ua
+    callback_url = PAYSTACK_ANDROID_CALLBACK_URL if is_android else PAYSTACK_WEB_CALLBACK_URL
+
+    reference = f"ep_topup_{secrets.token_hex(12)}"
+
+    payload = {
+        "amount":       TOPUP_EXTRA_50_AMOUNT_KOBO,
+        "email":        identifier if is_email(identifier) else f"{identifier}@exampartner.internal",
+        "reference":    reference,
+        "callback_url": callback_url,
+        "metadata": {
+            "identifier": identifier,
+            "package":    TOPUP_PACKAGE_KEY,
+            "credits":    TOPUP_EXTRA_50_CREDITS,
+        },
+    }
+
+    resp = paystack_api_post("/transaction/initialize", payload)
+    data = resp.get("data") or {}
+    authorization_url = data.get("authorization_url") or ""
+    if not authorization_url:
+        raise HTTPException(status_code=502, detail="Paystack did not return an authorization URL")
+
+    return {
+        "ok":               True,
+        "authorization_url": authorization_url,
+        "reference":        reference,
+    }
+
+
+@router.post("/ai-grading/topup/verify")
+def topup_verify(req: TopupVerifyReq, request: Request):
+    """
+    Verify a Paystack top-up transaction and credit 50 AI markings.
+
+    Idempotent: if the reference has already been processed, returns the
+    existing purchase info without adding credits again.
+
+    Request:  { "reference": "ep_topup_..." }
+    Response: {
+        "ok": true,
+        "credits_added": 50,
+        "extra_credits_remaining": 50,
+        "expires_at": "...",
+        "message": "50 extra AI theory markings added successfully."
+    }
+    """
+    user = require_user(request)
+    identifier = user.get("sub", "").strip().lower()
+    if not identifier:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    reference = (req.reference or "").strip()
+    if not reference:
+        raise HTTPException(status_code=400, detail="reference is required")
+
+    # ── Idempotency check — do not add credits twice ──────────────────────
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "SELECT id, credits_total, credits_used, expires_at FROM ai_grading_credit_purchases "
+            "WHERE payment_reference = ?",
+            (reference,),
+        )
+        existing = cur.fetchone()
+    finally:
+        db.close()
+
+    if existing:
+        # Already processed — return current state without adding credits
+        existing_id      = existing["id"] if hasattr(existing, "keys") else existing[0]
+        credits_total    = existing["credits_total"] if hasattr(existing, "keys") else existing[1]
+        credits_used     = existing["credits_used"] if hasattr(existing, "keys") else existing[2]
+        expires_at_str   = existing["expires_at"] if hasattr(existing, "keys") else existing[3]
+        remaining = _topup_extra_remaining(identifier)
+        return {
+            "ok":                      True,
+            "credits_added":           0,
+            "extra_credits_remaining": remaining,
+            "expires_at":              expires_at_str,
+            "message":                 "This reference has already been processed.",
+        }
+
+    # ── Verify with Paystack ──────────────────────────────────────────────
+    resp = paystack_api_get(f"/transaction/verify/{reference}")
+    if not resp.get("status"):
+        raise HTTPException(status_code=400, detail="Paystack verification failed")
+
+    tx     = resp.get("data") or {}
+    status = (tx.get("status") or "").strip().lower()
+    amount = int(tx.get("amount") or 0)
+
+    if status != "success":
+        raise HTTPException(status_code=400, detail=f"Payment not successful: {status}")
+
+    if amount < TOPUP_EXTRA_50_AMOUNT_KOBO:
+        raise HTTPException(status_code=400, detail="Payment amount too low for this package")
+
+    # Confirm package from metadata
+    metadata = tx.get("metadata") or {}
+    meta_pkg = (metadata.get("package") or "").strip().lower()
+    if meta_pkg and meta_pkg != TOPUP_PACKAGE_KEY:
+        raise HTTPException(status_code=400, detail="Reference is not a top-up transaction")
+
+    # ── Credit the user ───────────────────────────────────────────────────
+    now   = datetime.now(timezone.utc)
+    expires_at = (now + timedelta(days=365)).isoformat()
+    purchase_id = secrets.token_hex(16)
+
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO ai_grading_credit_purchases
+              (id, user_identifier, credits_total, credits_used, amount_paid,
+               currency, payment_reference, status, expires_at)
+            VALUES (?, ?, ?, 0, ?, 'NGN', ?, 'active', ?)
+            """,
+            (purchase_id, identifier, TOPUP_EXTRA_50_CREDITS,
+             amount, reference, expires_at),
+        )
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        # If a UNIQUE constraint fires here, another request beat us — idempotent
+        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+            remaining = _topup_extra_remaining(identifier)
+            return {
+                "ok":                      True,
+                "credits_added":           0,
+                "extra_credits_remaining": remaining,
+                "expires_at":              expires_at,
+                "message":                 "This reference has already been processed.",
+            }
+        raise HTTPException(status_code=500, detail="Failed to record top-up credits")
+    finally:
+        db.close()
+
+    remaining = _topup_extra_remaining(identifier)
+    return {
+        "ok":                      True,
+        "credits_added":           TOPUP_EXTRA_50_CREDITS,
+        "extra_credits_remaining": remaining,
+        "expires_at":              expires_at,
+        "message":                 f"{TOPUP_EXTRA_50_CREDITS} extra AI theory markings added successfully.",
+    }
+
+
+def _topup_extra_remaining(identifier: str) -> int:
+    """Returns total valid non-expired top-up credits for a user."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(credits_total - credits_used), 0) AS remaining
+            FROM ai_grading_credit_purchases
+            WHERE user_identifier = ?
+              AND status = 'active'
+              AND credits_used < credits_total
+              AND (expires_at IS NULL OR expires_at > ?)
+            """,
+            (identifier, now_iso),
+        )
+        row = cur.fetchone()
+        return int((row["remaining"] if hasattr(row, "keys") else row[0]) or 0)
+    finally:
+        db.close()
