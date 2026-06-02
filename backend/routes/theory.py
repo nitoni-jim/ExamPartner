@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from services.auth_utils import get_current_user
-from services.theory_service import grade_theory
+from services.theory_service import grade_theory, get_ai_grading_quota
 
 router = APIRouter(tags=["theory"])
 
@@ -29,6 +29,31 @@ router = APIRouter(tags=["theory"])
 class GradeRequest(BaseModel):
     question_id:    str
     student_answer: str
+
+
+@router.get("/ai-grading/quota")
+def get_quota_route(
+    user: Optional[Dict[str, Any]] = Depends(get_current_user),
+):
+    """
+    Returns the current AI theory grading quota for the authenticated user.
+
+    Response:
+      {
+        "ok": true,
+        "monthly_used": 3,
+        "monthly_limit": 10,
+        "monthly_remaining": 7,
+        "extra_credits_remaining": 50,
+        "plan": "core"
+      }
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    identifier = user.get("sub")
+    if not identifier:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    return get_ai_grading_quota(identifier=identifier)
 
 
 @router.post("/theory/grade")
