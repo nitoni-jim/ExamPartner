@@ -123,13 +123,14 @@ def _resolve_limit_and_period(plan_info: Dict[str, Any]) -> tuple[int, str]:
 def _check_and_increment_usage(identifier: str, plan_info: Dict[str, Any]) -> Dict[str, Any]:
     """
     Checks usage against the user's limit for the current period.
-    - Raises HTTP 429 if the limit is reached.
-    - Increments used_count on success (upsert).
-    - Returns the usage row dict for logging purposes.
 
-    The increment happens BEFORE the Claude call so that a failed Claude
-    call doesn't give the user a free retry.  If you prefer post-call
-    increment, swap the call order in grade_theory().
+    Priority:
+      1. Use normal monthly/lifetime allowance if available.
+      2. If exhausted, fall back to valid top-up credits.
+      3. If neither, raise HTTP 429.
+
+    The increment happens BEFORE the Claude call so a failed Claude call
+    doesn't grant a free retry.
     """
     limit, period_key = _resolve_limit_and_period(plan_info)
 
@@ -142,52 +143,130 @@ def _check_and_increment_usage(identifier: str, plan_info: Dict[str, Any]) -> Di
         )
         row = cur.fetchone()
 
-        if row:
-            used = int(row_get(row, "used_count") or 0)
-            if used >= limit:
-                _raise_quota_exceeded(plan_info, used, limit, period_key)
+        used = int(row_get(row, "used_count") or 0) if row else 0
+        allowance_exhausted = used >= limit
 
-            cur.execute(
-                "UPDATE ai_grading_usage SET used_count = used_count + 1, updated_at = ?, plan_limit = ? "
-                "WHERE user_id = ? AND period_key = ?",
-                (_now_iso(), limit, identifier, period_key),
-            )
+        if not allowance_exhausted:
+            # Normal path — use monthly/lifetime allowance
+            if row:
+                cur.execute(
+                    "UPDATE ai_grading_usage SET used_count = used_count + 1, updated_at = ?, plan_limit = ? "
+                    "WHERE user_id = ? AND period_key = ?",
+                    (_now_iso(), limit, identifier, period_key),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO ai_grading_usage (id, user_id, period_key, used_count, plan_limit) "
+                    "VALUES (?, ?, ?, 1, ?)",
+                    (secrets.token_hex(16), identifier, period_key, limit),
+                )
+            db.commit()
+            extra_remaining = _get_extra_credits_remaining(identifier)
+            return {
+                "period_key":             period_key,
+                "used_count":             used + 1,
+                "plan_limit":             limit,
+                "used_topup_credit":      False,
+                "extra_credits_remaining": extra_remaining,
+            }
         else:
-            # First use in this period
-            cur.execute(
-                "INSERT INTO ai_grading_usage (id, user_id, period_key, used_count, plan_limit) "
-                "VALUES (?, ?, ?, 1, ?)",
-                (secrets.token_hex(16), identifier, period_key, limit),
-            )
-            used = 0  # was 0 before this insert
-
-        db.commit()
+            db.commit()  # no-op but keeps connection clean
     finally:
         db.close()
 
-    return {
-        "period_key": period_key,
-        "used_count": used + 1,
-        "plan_limit": limit,
-    }
+    # Monthly/lifetime allowance exhausted — try top-up credits
+    extra_remaining = _get_extra_credits_remaining(identifier)
+    if extra_remaining > 0:
+        _deduct_extra_credit(identifier)
+        return {
+            "period_key":             period_key,
+            "used_count":             used,
+            "plan_limit":             limit,
+            "used_topup_credit":      True,
+            "extra_credits_remaining": extra_remaining - 1,
+        }
+
+    # No allowance, no top-up credits
+    _raise_quota_exceeded(plan_info, used, limit, period_key)
 
 
 def _raise_quota_exceeded(plan_info: Dict[str, Any], used: int, limit: int, period_key: str) -> None:
     if period_key == "lifetime":
         detail = (
-            f"You have used your {limit} free AI theory grading. "
-            "Upgrade to a paid plan for monthly AI markings."
+            "You have used your free AI theory marking. "
+            "Upgrade to unlock monthly AI theory markings."
         )
     else:
         detail = (
-            f"You have used all {limit} AI theory gradings for {period_key}. "
-            "Your allowance resets at the start of next month."
+            f"You have used your {limit} AI theory markings for this month. "
+            "You can still study theory questions and marking guides. "
+            "Need more AI marking? Buy 50 extra markings for ₦1,000, valid for 1 year."
         )
     raise HTTPException(status_code=429, detail=detail)
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _get_extra_credits_remaining(identifier: str) -> int:
+    """
+    Returns total valid, non-expired top-up credits remaining for this user.
+    Sums (credits_total - credits_used) across all active, non-expired purchases.
+    """
+    now_iso = _now_iso()
+    db = db_conn()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(credits_total - credits_used), 0) AS remaining
+            FROM ai_grading_credit_purchases
+            WHERE user_identifier = ?
+              AND status = 'active'
+              AND credits_used < credits_total
+              AND (expires_at IS NULL OR expires_at > ?)
+            """,
+            (identifier, now_iso),
+        )
+        row = cur.fetchone()
+        return int(row_get(row, "remaining") or 0)
+    finally:
+        db.close()
+
+
+def _deduct_extra_credit(identifier: str) -> None:
+    """
+    Deducts 1 credit from the oldest valid, non-expired top-up purchase.
+    Must only be called after confirming credits are available via _get_extra_credits_remaining.
+    """
+    now_iso = _now_iso()
+    db = db_conn()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT id FROM ai_grading_credit_purchases
+            WHERE user_identifier = ?
+              AND status = 'active'
+              AND credits_used < credits_total
+              AND (expires_at IS NULL OR expires_at > ?)
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (identifier, now_iso),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=429, detail="No valid top-up credits found.")
+        purchase_id = row_get(row, "id")
+        cur.execute(
+            "UPDATE ai_grading_credit_purchases SET credits_used = credits_used + 1 WHERE id = ?",
+            (purchase_id,),
+        )
+        db.commit()
+    finally:
+        db.close()
 
 
 def _fetch_passage_text(passage_id: str) -> str:
@@ -889,8 +968,8 @@ def _store_attempt(
                 identifier,
                 question_id,
                 student_answer,
-                float(result.get("total_marks_awarded", 0)),
-                float(result.get("max_marks", 0)),
+                float(result.get("total_marks_awarded", result.get("score", 0)) or 0),
+                float(result.get("max_marks", result.get("max_score", 0)) or 0),
                 json.dumps(feedback_for_storage),
                 model_used,
                 input_tokens,
@@ -907,19 +986,54 @@ def _store_attempt(
 
 
 # ---------------------------------------------------------------------------
-# Public entry point
+# Public entry points
 # ---------------------------------------------------------------------------
+
+def get_ai_grading_quota(identifier: str) -> Dict[str, Any]:
+    """
+    Returns the current AI theory grading quota for a user.
+    Used by GET /ai-grading/quota.
+    """
+    plan_info  = _get_user_plan(identifier)
+    limit, period_key = _resolve_limit_and_period(plan_info)
+
+    db = db_conn()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "SELECT used_count FROM ai_grading_usage WHERE user_id = ? AND period_key = ?",
+            (identifier, period_key),
+        )
+        row = cur.fetchone()
+        used = int(row_get(row, "used_count") or 0) if row else 0
+    finally:
+        db.close()
+
+    extra = _get_extra_credits_remaining(identifier)
+    remaining = max(0, limit - used)
+
+    return {
+        "ok":                      True,
+        "monthly_used":            used,
+        "monthly_limit":           limit,
+        "monthly_remaining":       remaining,
+        "extra_credits_remaining": extra,
+        "plan":                    plan_info["plan"],
+    }
+
 
 def grade_theory(identifier: str, question_id: str, student_answer: str) -> Dict[str, Any]:
     """
     Orchestrates the full AI grading flow:
-      1. Resolve user plan
-      2. Check + increment usage (raises 429 before any Claude call if over limit)
-      3. Fetch trusted question data from DB
-      4. Build prompt
-      5. Call Haiku; escalate to Sonnet if confidence < threshold or needs_review
-      6. Store attempt in theory_attempts (always, including admins)
-      7. Return clean feedback JSON to the route
+      1. Validate student_answer
+      2. Fetch and validate question data (no usage consumed on invalid question)
+      3. Resolve grading mode (no usage consumed on non-gradeable question)
+      4. Resolve user plan
+      5. Check + increment usage (monthly first, then top-up; raises 429 if neither)
+      6. Build prompt
+      7. Call Haiku; escalate to Sonnet if confidence < threshold or needs_review
+      8. Store attempt in theory_attempts (always, including admins)
+      9. Return clean feedback JSON to the route
 
     Returns the grading result dict (without internal _meta key).
     Raises HTTPException for all error cases.
@@ -928,26 +1042,28 @@ def grade_theory(identifier: str, question_id: str, student_answer: str) -> Dict
     if not student_answer:
         raise HTTPException(status_code=400, detail="student_answer cannot be empty.")
 
-    # 1. Resolve plan
+    # 1. Fetch and validate question BEFORE consuming any allowance
+    question_data = _fetch_question_data(question_id)
+
+    # 2. Resolve grading mode BEFORE consuming any allowance
+    grading_mode = _resolve_grading_mode(question_data)
+
+    # 3. Resolve plan
     plan_info = _get_user_plan(identifier)
 
-    # 2. Check + increment usage — raises 429 if over limit
+    # 4. Check + increment usage — raises 429 if over limit (monthly first, then top-up)
     usage = _check_and_increment_usage(identifier, plan_info)
     logger.info(
-        "AI grading: user=%s plan=%s period=%s used=%d/%d",
+        "AI grading: user=%s plan=%s period=%s used=%d/%d topup=%s",
         identifier,
         plan_info["plan"],
         usage["period_key"],
         usage["used_count"],
         usage["plan_limit"],
+        usage.get("used_topup_credit", False),
     )
 
-    # 3. Fetch question (now includes metadata, grading_mode, passage_text)
-    question_data = _fetch_question_data(question_id)
-
-    # 4. Resolve grading mode and build prompt
-    grading_mode = _resolve_grading_mode(question_data)
-
+    # 5. Build prompt
     if grading_mode == "essay_rubric":
         prompt = _build_english_essay_prompt(question_data, student_answer)
     elif grading_mode == "comprehension_point_based":
@@ -957,14 +1073,14 @@ def grade_theory(identifier: str, question_id: str, student_answer: str) -> Dict
     else:
         prompt = _build_prompt(question_data, student_answer)
 
-    # 5a. Call Haiku
+    # 6a. Call Haiku
     result = _call_claude(prompt, MODEL_HAIKU)
 
-    # 5b. Validate English response shape (general shape validated inside _call_claude)
+    # 6b. Validate English response shape (general shape validated inside _call_claude)
     if grading_mode != "general":
         _validate_english_response(result, grading_mode)
 
-    # 5c. Escalate to Sonnet if needed
+    # 6c. Escalate to Sonnet if needed
     confidence   = float(result.get("confidence", 1.0))
     needs_review = bool(result.get("needs_review", False))
     if confidence < ESCALATION_THRESHOLD or needs_review:
@@ -976,18 +1092,20 @@ def grade_theory(identifier: str, question_id: str, student_answer: str) -> Dict
         if grading_mode != "general":
             _validate_english_response(result, grading_mode)
 
-    # 6. Store attempt
+    # 7. Store attempt
     _store_attempt(identifier, question_id, student_answer, result)
 
-    # 7. Return clean response (strip internal _meta)
+    # 8. Return clean response (strip internal _meta)
     clean = {k: v for k, v in result.items() if k != "_meta"}
 
     # Surface usage info so Android can update quota UI
     clean["usage"] = {
-        "period_key":   usage["period_key"],
-        "used_count":   usage["used_count"],
-        "plan_limit":   usage["plan_limit"],
-        "plan":         plan_info["plan"],
+        "period_key":              usage["period_key"],
+        "used_count":              usage["used_count"],
+        "plan_limit":              usage["plan_limit"],
+        "extra_credits_remaining": usage.get("extra_credits_remaining", 0),
+        "used_topup_credit":       usage.get("used_topup_credit", False),
+        "plan":                    plan_info["plan"],
     }
 
     return clean
