@@ -10,7 +10,7 @@ load_dotenv()
 
 DB_PATH: str = os.getenv("DB_PATH", "exam_partner.db")
 JWT_SECRET: str = os.getenv("JWT_SECRET", "dev_secret_change_me")
-JWT_TTL_SECONDS: int = int(os.getenv("JWT_TTL_SECONDS", "86400"))
+JWT_TTL_SECONDS: int = int(os.getenv("JWT_TTL_SECONDS", str(365 * 24 * 60 * 60)))  # 1 year default
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 
 ADMIN_IDENTIFIERS: frozenset = frozenset(
