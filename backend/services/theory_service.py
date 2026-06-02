@@ -260,13 +260,6 @@ def _fetch_question_data(question_id: str) -> Dict[str, Any]:
         except Exception:
             raise HTTPException(status_code=500, detail="Examiner points data is malformed.")
 
-    # For non-English general theory: require examiner_points
-    if grading_mode == "general" and not examiner_points:
-        raise HTTPException(
-            status_code=400,
-            detail="This theory question does not yet have a verified marking rubric for AI scoring.",
-        )
-
     sub_questions_raw = row_get(row, "sub_questions_json")
     sub_questions = []
     if sub_questions_raw:
@@ -274,6 +267,19 @@ def _fetch_question_data(question_id: str) -> Dict[str, Any]:
             sub_questions = json.loads(sub_questions_raw)
         except Exception:
             sub_questions = []
+
+    # For non-English general theory: require EITHER top-level examiner_points
+    # OR sub_questions that each carry their own examiner_points list.
+    sub_questions_have_rubric = (
+        isinstance(sub_questions, list)
+        and len(sub_questions) > 0
+        and any(sq.get("examiner_points") for sq in sub_questions)
+    )
+    if grading_mode == "general" and not examiner_points and not sub_questions_have_rubric:
+        raise HTTPException(
+            status_code=400,
+            detail="This theory question does not yet have a verified marking rubric for AI scoring.",
+        )
 
     # Resolve passage text for comprehension and summary
     passage_text = ""
@@ -318,19 +324,38 @@ def _build_prompt(question_data: Dict[str, Any], student_answer: str) -> str:
     The student_answer is the only untrusted input — it is clearly delimited.
     """
     q = question_data
-    sub_q_block = ""
-    if q["sub_questions"]:
-        lines = []
-        for sq in q["sub_questions"]:
-            label   = sq.get("label", "")
-            sq_text = sq.get("question_text", "")
-            sq_marks = sq.get("marks", "")
-            lines.append(f"  {label} [{sq_marks} marks]: {sq_text}")
-        sub_q_block = "\nSub-questions:\n" + "\n".join(lines)
+    sub_questions = q.get("sub_questions") or []
 
-    examiner_points_text = "\n".join(
-        f"  - {pt}" for pt in q["examiner_points"]
-    )
+    # Build sub-question block and collect examiner points.
+    # Two layouts are supported:
+    #   (A) Top-level examiner_points list  — flat questions without sub-parts
+    #   (B) Per-sub-question examiner_points — structured multi-part questions
+    sub_q_block = ""
+    per_sq_rubric_lines = []
+
+    if sub_questions:
+        sq_lines = []
+        for sq in sub_questions:
+            label    = sq.get("label", "")
+            sq_text  = sq.get("question_text", "")
+            sq_marks = sq.get("marks", "")
+            sq_lines.append(f"  {label} [{sq_marks} marks]: {sq_text}")
+            # Collect per-sub-question examiner points
+            sq_points = sq.get("examiner_points") or []
+            if sq_points:
+                per_sq_rubric_lines.append(f"  {label} [{sq_marks} marks]:")
+                for pt in sq_points:
+                    per_sq_rubric_lines.append(f"    - {pt}")
+        sub_q_block = "\nSub-questions:\n" + "\n".join(sq_lines)
+
+    # Resolve which rubric to use
+    top_level_points = q.get("examiner_points") or []
+    if per_sq_rubric_lines:
+        # Layout B — per-sub-question rubric
+        examiner_points_text = "\n".join(per_sq_rubric_lines)
+    else:
+        # Layout A — flat top-level rubric
+        examiner_points_text = "\n".join(f"  - {pt}" for pt in top_level_points)
 
     prompt = f"""You are an experienced Nigerian secondary school examiner grading a {q['exam']} {q['subject']} theory question.
 
