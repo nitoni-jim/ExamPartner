@@ -460,6 +460,35 @@ PASSWORD_RESET_TOKENS_POSTGRES_COLUMNS = [
 
 
 # ----------------------------
+# ai_grading_credit_purchases — top-up credit packs bought via Paystack
+# ----------------------------
+AI_GRADING_CREDIT_PURCHASES_COLUMNS = [
+    ("id",                "TEXT PRIMARY KEY"),
+    ("user_identifier",   "TEXT NOT NULL"),
+    ("credits_total",     "INTEGER NOT NULL"),
+    ("credits_used",      "INTEGER NOT NULL DEFAULT 0"),
+    ("amount_paid",       "INTEGER NOT NULL"),
+    ("currency",          "TEXT NOT NULL DEFAULT 'NGN'"),
+    ("payment_reference", "TEXT UNIQUE"),
+    ("status",            "TEXT NOT NULL DEFAULT 'active'"),
+    ("created_at",        "TEXT"),
+    ("expires_at",        "TEXT"),
+]
+
+AI_GRADING_CREDIT_PURCHASES_SQLITE_COLUMNS = [
+    *AI_GRADING_CREDIT_PURCHASES_COLUMNS[:-2],
+    ("created_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+    ("expires_at", "TEXT"),
+]
+
+AI_GRADING_CREDIT_PURCHASES_POSTGRES_COLUMNS = [
+    *AI_GRADING_CREDIT_PURCHASES_COLUMNS[:-2],
+    ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+    ("expires_at", "TIMESTAMPTZ"),
+]
+
+
+# ----------------------------
 # Detect Postgres
 # ----------------------------
 def _using_postgres() -> bool:
@@ -586,6 +615,10 @@ def _ai_grading_usage_table_sql(columns: list[tuple[str, str]]) -> str:
 
 def _password_reset_tokens_table_sql(columns: list[tuple[str, str]]) -> str:
     return _table_sql("password_reset_tokens", columns)
+
+
+def _ai_grading_credit_purchases_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("ai_grading_credit_purchases", columns)
 
 
 # ----------------------------
@@ -717,6 +750,7 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         cur.execute(_theory_attempts_table_sql(THEORY_ATTEMPTS_SQLITE_COLUMNS))
         cur.execute(_ai_grading_usage_table_sql(AI_GRADING_USAGE_SQLITE_COLUMNS))
         cur.execute(_password_reset_tokens_table_sql(PASSWORD_RESET_TOKENS_SQLITE_COLUMNS))
+        cur.execute(_ai_grading_credit_purchases_table_sql(AI_GRADING_CREDIT_PURCHASES_SQLITE_COLUMNS))
 
         # ---- lightweight column migrations ----
         _sqlite_add_missing_question_columns(cur)
@@ -728,6 +762,7 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         _sqlite_add_missing_columns(cur, "theory_attempts", THEORY_ATTEMPTS_COLUMNS)
         _sqlite_add_missing_columns(cur, "ai_grading_usage", AI_GRADING_USAGE_COLUMNS)
         _sqlite_add_missing_columns(cur, "password_reset_tokens", PASSWORD_RESET_TOKENS_COLUMNS)
+        _sqlite_add_missing_columns(cur, "ai_grading_credit_purchases", AI_GRADING_CREDIT_PURCHASES_COLUMNS)
 
         # *** COMMIT PHASE 1 — tables are now durable regardless of index errors ***
         conn.commit()
@@ -788,6 +823,10 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
             # password_reset_tokens
             "CREATE INDEX IF NOT EXISTS idx_prt_identifier ON password_reset_tokens(identifier);",
             "CREATE INDEX IF NOT EXISTS idx_prt_expires_at ON password_reset_tokens(expires_at);",
+            # ai_grading_credit_purchases
+            "CREATE INDEX IF NOT EXISTS idx_agcp_user ON ai_grading_credit_purchases(user_identifier);",
+            "CREATE INDEX IF NOT EXISTS idx_agcp_expires ON ai_grading_credit_purchases(expires_at);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_agcp_reference ON ai_grading_credit_purchases(payment_reference);",
         ]
 
         for sql in _sqlite_indexes:
@@ -932,6 +971,7 @@ def _init_db_postgres() -> None:
         cur.execute(_theory_attempts_table_sql(THEORY_ATTEMPTS_POSTGRES_COLUMNS))
         cur.execute(_ai_grading_usage_table_sql(AI_GRADING_USAGE_POSTGRES_COLUMNS))
         cur.execute(_password_reset_tokens_table_sql(PASSWORD_RESET_TOKENS_POSTGRES_COLUMNS))
+        cur.execute(_ai_grading_credit_purchases_table_sql(AI_GRADING_CREDIT_PURCHASES_POSTGRES_COLUMNS))
 
         # column migrations for new tables (safe to run repeatedly)
         _postgres_add_missing_columns(cur, "topics", TOPICS_POSTGRES_COLUMNS)
@@ -946,6 +986,7 @@ def _init_db_postgres() -> None:
         _postgres_add_missing_columns(cur, "theory_attempts", THEORY_ATTEMPTS_POSTGRES_COLUMNS)
         _postgres_add_missing_columns(cur, "ai_grading_usage", AI_GRADING_USAGE_POSTGRES_COLUMNS)
         _postgres_add_missing_columns(cur, "password_reset_tokens", PASSWORD_RESET_TOKENS_POSTGRES_COLUMNS)
+        _postgres_add_missing_columns(cur, "ai_grading_credit_purchases", AI_GRADING_CREDIT_PURCHASES_POSTGRES_COLUMNS)
 
         # *** COMMIT PHASE 1 — tables are now durable regardless of index errors ***
         db.commit()
@@ -1010,6 +1051,10 @@ def _init_db_postgres() -> None:
             # password_reset_tokens
             "CREATE INDEX IF NOT EXISTS idx_prt_identifier ON password_reset_tokens(identifier);",
             "CREATE INDEX IF NOT EXISTS idx_prt_expires_at ON password_reset_tokens(expires_at);",
+            # ai_grading_credit_purchases
+            "CREATE INDEX IF NOT EXISTS idx_agcp_user ON ai_grading_credit_purchases(user_identifier);",
+            "CREATE INDEX IF NOT EXISTS idx_agcp_expires ON ai_grading_credit_purchases(expires_at);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_agcp_reference ON ai_grading_credit_purchases(payment_reference);",
         ]
 
         for sql in _indexes:
