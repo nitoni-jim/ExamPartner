@@ -90,9 +90,14 @@ PAYSTACK_WEB_CALLBACK_URL = env_str(
     "PAYSTACK_WEB_CALLBACK_URL",
     "https://exampartner.pages.dev/?payment=callback"
 )
+# Android uses the website redirect page which then deep-links back to the app.
+# exampartner:// custom schemes cannot be used directly as Paystack callback_url
+# because Chrome Custom Tab cannot navigate to custom URI schemes via HTTP redirect.
+# The website page at /payment-callback extracts the reference and redirects to
+# exampartner://payment-callback?reference=xxx which Android intercepts correctly.
 PAYSTACK_ANDROID_CALLBACK_URL = env_str(
     "PAYSTACK_ANDROID_CALLBACK_URL",
-    "exampartner://payment-callback"
+    "https://exampartner.app/payment-callback"
 )
 
 
