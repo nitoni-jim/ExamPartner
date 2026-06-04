@@ -939,6 +939,123 @@ def admin_reconcile(reference: str, request: Request):
     return {"ok": True, "reference": ref, "paid": bool(paid), "identifier": final_identifier or None, "channel": extract_paystack_channel(tx)}
 
 
+@router.post("/admin/topup/credit/{reference}")
+def admin_topup_credit(reference: str, request: Request):
+    """
+    Admin endpoint to manually credit AI top-up for a paid but unverified reference.
+
+    Use when:
+      - User paid successfully but network dropped before verify completed
+      - The ep_topup_ reference is confirmed successful in Paystack dashboard
+
+    Uses same x-admin-key auth as other admin endpoints.
+    Idempotent — safe to call multiple times for the same reference.
+
+    Usage:
+      curl -X POST https://exampartner-backend.onrender.com/payments/admin/topup/credit/ep_topup_xxx
+           -H "x-admin-key: your-admin-key"
+    """
+    require_admin(request)
+    ref = (reference or "").strip()
+    if not ref:
+        raise HTTPException(status_code=400, detail="Missing reference")
+
+    audit_admin_action(request, action="admin_topup_credit", reference=ref, payload={"reference": ref})
+
+    # Idempotency check — already credited?
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "SELECT id, user_identifier, credits_total, credits_used FROM ai_grading_credit_purchases "
+            "WHERE payment_reference = ?",
+            (ref,),
+        )
+        existing = cur.fetchone()
+    finally:
+        db.close()
+
+    if existing:
+        identifier = existing["user_identifier"] if hasattr(existing, "keys") else existing[1]
+        remaining  = _topup_extra_remaining(identifier)
+        return {
+            "ok":                      True,
+            "already_credited":        True,
+            "identifier":              identifier,
+            "extra_credits_remaining": remaining,
+            "message":                 f"Reference already processed for {identifier}.",
+        }
+
+    # Verify with Paystack
+    resp = paystack_api_get(f"/transaction/verify/{ref}")
+    if not resp.get("status"):
+        raise HTTPException(status_code=400, detail="Paystack verification failed")
+
+    tx     = resp.get("data") or {}
+    status = (tx.get("status") or "").strip().lower()
+    amount = int(tx.get("amount") or 0)
+
+    if status != "success":
+        raise HTTPException(status_code=400, detail=f"Payment not successful on Paystack: {status}")
+
+    if amount < TOPUP_EXTRA_50_AMOUNT_KOBO:
+        raise HTTPException(status_code=400, detail=f"Amount too low: {amount} kobo (expected {TOPUP_EXTRA_50_AMOUNT_KOBO})")
+
+    # Get identifier from metadata or customer email
+    customer        = tx.get("customer") or {}
+    email           = (customer.get("email") or "").strip().lower()
+    metadata        = tx.get("metadata") or {}
+    meta_identifier = (metadata.get("identifier") or "").strip().lower()
+    identifier      = meta_identifier or email
+
+    if not identifier:
+        raise HTTPException(status_code=400, detail="Could not determine user identifier from transaction metadata")
+
+    # Credit 50 markings
+    now         = datetime.now(timezone.utc)
+    expires_at  = (now + timedelta(days=365)).isoformat()
+    purchase_id = secrets.token_hex(16)
+
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO ai_grading_credit_purchases
+              (id, user_identifier, credits_total, credits_used, amount_paid,
+               currency, payment_reference, status, expires_at)
+            VALUES (?, ?, ?, 0, ?, 'NGN', ?, 'active', ?)
+            """,
+            (purchase_id, identifier, TOPUP_EXTRA_50_CREDITS, amount, ref, expires_at),
+        )
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+            remaining = _topup_extra_remaining(identifier)
+            return {
+                "ok":                      True,
+                "already_credited":        True,
+                "identifier":              identifier,
+                "extra_credits_remaining": remaining,
+                "message":                 f"Reference already processed for {identifier}.",
+            }
+        raise HTTPException(status_code=500, detail=f"Failed to record credits: {e}")
+    finally:
+        db.close()
+
+    remaining = _topup_extra_remaining(identifier)
+    return {
+        "ok":                      True,
+        "already_credited":        False,
+        "identifier":              identifier,
+        "credits_added":           TOPUP_EXTRA_50_CREDITS,
+        "extra_credits_remaining": remaining,
+        "expires_at":              expires_at,
+        "message":                 f"50 extra AI theory markings credited to {identifier}.",
+    }
+
+
 @router.post("/admin/refund")
 def admin_refund(req: AdminRefundReq, request: Request):
     require_admin(request)
