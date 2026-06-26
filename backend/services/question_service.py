@@ -13,6 +13,7 @@ from services.question_utils import (
     QUESTION_SELECT_COLS,
     build_filters,
     build_passage_lookup,
+    row_get,
     row_to_question,
     sort_theory_rows,
 )
@@ -330,3 +331,99 @@ def get_single_question(qid: str) -> Dict[str, Any]:
     passage_lookup = build_passage_lookup(db, [row])
     db.close()
     return row_to_question(row, passage_lookup)
+
+
+# ---------------------------------------------------------------------------
+# Available papers — drives the Study mode paper picker (e.g. Objective /
+# Theory / Oral English under English Language)
+# ---------------------------------------------------------------------------
+
+# Stable display order. Anything not listed here sorts alphabetically after
+# these, by label.
+_PAPER_SORT_ORDER = ["Objective", "Theory", "Oral English", "Practical", "Essay"]
+
+
+def _paper_sort_key(label: str) -> Tuple[int, str]:
+    try:
+        return (_PAPER_SORT_ORDER.index(label), label)
+    except ValueError:
+        return (len(_PAPER_SORT_ORDER), label)
+
+
+def get_available_papers(
+    exam: Optional[str],
+    year: Optional[int],
+    subject: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Returns the distinct (paper, qtype) combinations actually present in the
+    questions table for the given exam/year/subject, with a question count
+    and a display label for each.
+
+    Respects the real DB state: if paper is NULL for a group of rows (the
+    common case for subjects that predate the paper column), that group is
+    returned with "paper": null and a label derived from qtype ("objective"
+    -> "Objective", "theory" -> "Theory"). The endpoint never synthesizes a
+    non-null paper value for rows that don't actually have one — doing so
+    would let the UI request a paper filter that silently matches nothing.
+
+    Android's fetch rule (enforced client-side, not here):
+      - paper present (non-null)  -> include paper in the question fetch
+      - paper is null             -> omit the paper filter, rely on qtype only
+    """
+    where = ["1=1"]
+    params: List[Any] = []
+
+    if exam:
+        where.append("exam = ?")
+        params.append(exam)
+    if year is not None:
+        where.append("year = ?")
+        params.append(year)
+    if subject:
+        where.append("subject = ?")
+        params.append(subject)
+
+    where_sql = " AND ".join(where)
+
+    db = db_conn()
+    cur = db.cursor()
+    cur.execute(
+        f"""
+        SELECT paper, qtype, COUNT(*) AS cnt
+        FROM questions
+        WHERE {where_sql}
+        GROUP BY paper, qtype
+        """,
+        tuple(params),
+    )
+    rows = cur.fetchall()
+    db.close()
+
+    papers: List[Dict[str, Any]] = []
+    for r in rows:
+        paper = row_get(r, "paper")
+        qtype = row_get(r, "qtype")
+        count = int(row_get(r, "cnt") or 0)
+
+        if paper:
+            label = paper
+        else:
+            label = "Objective" if qtype == "objective" else "Theory" if qtype == "theory" else (qtype or "Unknown")
+
+        papers.append({
+            "paper": paper,
+            "qtype": qtype,
+            "label": label,
+            "count": count,
+        })
+
+    papers.sort(key=lambda p: _paper_sort_key(p["label"]))
+
+    return {
+        "exam": exam or "",
+        "year": year,
+        "subject": subject or "",
+        "papers": papers,
+    }
+
