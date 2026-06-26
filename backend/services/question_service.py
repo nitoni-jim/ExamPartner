@@ -136,9 +136,13 @@ def get_objective_questions(
     is_paid: bool,
     topic: Optional[str] = None,
     subtopic: Optional[str] = None,
+    paper: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Returns a page of objective questions, applying the free-year gate for unpaid users.
+
+    paper: optional discriminator within a subject (e.g. "Oral English" under
+    "English Language"). When omitted, behaves exactly as before.
     """
     db = db_conn()
     if not is_paid:
@@ -152,7 +156,7 @@ def get_objective_questions(
                 )
             year = free_year
 
-    where_sql, params = build_filters("objective", exam, year, subject, topic, subtopic)
+    where_sql, params = build_filters("objective", exam, year, subject, topic, subtopic, paper)
     cur = db.cursor()
     cur.execute(
         f"""
@@ -185,9 +189,13 @@ def get_theory_questions(
     is_paid: bool,
     topic: Optional[str] = None,
     subtopic: Optional[str] = None,
+    paper: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Returns a page of theory questions, applying the free-year gate for unpaid users.
+
+    paper: optional discriminator within a subject. When omitted, behaves
+    exactly as before.
     """
     db = db_conn()
     if not is_paid:
@@ -201,7 +209,7 @@ def get_theory_questions(
                 )
             year = free_year
 
-    where_sql, params = build_filters("theory", exam, year, subject, topic, subtopic)
+    where_sql, params = build_filters("theory", exam, year, subject, topic, subtopic, paper)
     cur = db.cursor()
     cur.execute(
         f"""
