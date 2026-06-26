@@ -68,6 +68,7 @@ def list_objective(
     subject: Optional[str] = Query(default=None),
     topic: Optional[str] = Query(default=None),
     subtopic: Optional[str] = Query(default=None),
+    paper: Optional[str] = Query(default=None),
     user: Optional[Dict[str, Any]] = Depends(get_current_user),
 ):
     paid = is_paid_user(user) or is_admin_user(user)
@@ -75,6 +76,7 @@ def list_objective(
         limit=limit, offset=offset,
         exam=exam, year=year, subject=subject,
         is_paid=paid, topic=topic, subtopic=subtopic,
+        paper=paper,
     )
 
 
@@ -87,6 +89,7 @@ def list_theory(
     subject: Optional[str] = Query(default=None),
     topic: Optional[str] = Query(default=None),
     subtopic: Optional[str] = Query(default=None),
+    paper: Optional[str] = Query(default=None),
     user: Optional[Dict[str, Any]] = Depends(get_current_user),
 ):
     paid = is_paid_user(user) or is_admin_user(user)
@@ -94,6 +97,7 @@ def list_theory(
         limit=limit, offset=offset,
         exam=exam, year=year, subject=subject,
         is_paid=paid, topic=topic, subtopic=subtopic,
+        paper=paper,
     )
 
 
