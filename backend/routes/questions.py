@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query
 from services.access_control import is_admin_user, is_paid_user
 from services.auth_utils import get_current_user
 from services.question_service import (
+    get_available_papers,
     get_filter_options,
     get_objective_questions,
     get_single_question,
@@ -56,6 +57,24 @@ def study_subtopics(
     topic: Optional[str] = Query(default=None),
 ):
     return get_subtopics(exam=exam, subject=subject, topic=topic)
+
+
+@router.get("/study/papers")
+def study_papers(
+    exam: Optional[str] = Query(default=None),
+    year: Optional[int] = Query(default=None),
+    subject: Optional[str] = Query(default=None),
+):
+    """
+    Returns the distinct papers available for an exam/year/subject, with a
+    display label and question count for each. Drives the Study mode paper
+    picker (e.g. Objective / Theory / Oral English under English Language).
+
+    paper may be null in the response for subjects/years where the paper
+    column was never backfilled — Android should omit the paper filter on
+    the subsequent question fetch in that case, relying on qtype alone.
+    """
+    return get_available_papers(exam=exam, year=year, subject=subject)
 
 
 @router.get("/questions/objective")
