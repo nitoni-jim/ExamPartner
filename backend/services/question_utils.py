@@ -167,7 +167,15 @@ def build_filters(
     subject: Optional[str],
     topic: Optional[str] = None,
     subtopic: Optional[str] = None,
+    paper: Optional[str] = None,
 ) -> Tuple[str, List[Any]]:
+    """
+    Builds a WHERE clause + params for question queries.
+
+    paper: optional discriminator within a subject (e.g. "Oral English" under
+    "English Language"). When omitted, no filtering by paper occurs — existing
+    callers and existing subjects are unaffected.
+    """
     where = ["qtype = ?"]
     params: List[Any] = [qtype]
 
@@ -186,6 +194,9 @@ def build_filters(
     if subtopic:
         where.append("subtopic = ?")
         params.append(subtopic)
+    if paper:
+        where.append("paper = ?")
+        params.append(paper)
 
     return " AND ".join(where), params
 
