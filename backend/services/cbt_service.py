@@ -24,11 +24,13 @@ CBT_JAMB_CAP             = 40
 CBT_WAEC_CAP             = 50
 CBT_NECO_CAP             = 60
 
-def get_cbt_cap(subject: str, exam: str) -> int:
+def get_cbt_cap(subject: str, exam: str, paper: Optional[str] = None) -> int:
     """
     Returns the correct CBT question cap for the given exam and subject.
     - JAMB Use of English: 60
     - WAEC/NECO English Language: actual DB count via high ceiling (no artificial cap)
+    - WAEC/NECO English Language, paper="Oral English": same uncapped treatment
+      as plain English Language Objective — deliberate, not an oversight.
     - JAMB: 40 per subject
     - WAEC: 50 per subject
     - NECO: 60 per subject
@@ -38,6 +40,9 @@ def get_cbt_cap(subject: str, exam: str) -> int:
     if subject == CBT_ENGLISH_SUBJECT and exam_upper == "JAMB":
         return CBT_ENGLISH_CAP
     if subject == CBT_ENGLISH_LANGUAGE and exam_upper in ("WAEC", "NECO"):
+        # Covers both plain English Language Objective and paper="Oral English"
+        # sessions — Oral English deliberately inherits the same uncapped
+        # treatment rather than getting its own smaller cap.
         return 999  # no artificial cap — return all available after dedup
     if exam_upper == "JAMB":
         return CBT_JAMB_CAP
@@ -74,6 +79,7 @@ def fetch_cbt_questions(
     subject: str,
     exam: str,
     is_paid: bool,
+    paper: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Fetches, deduplicates, shuffles, and caps CBT questions for one subject.
@@ -83,6 +89,9 @@ def fetch_cbt_questions(
     - Deduplication: first occurrence of each unique question_text wins.
     - Cap: per get_cbt_cap() — JAMB English 60, WAEC/NECO English Language uncapped,
       JAMB subjects 40, WAEC subjects 50, NECO subjects 60.
+    - paper: optional discriminator within a subject (e.g. "Oral English" under
+      "English Language"). When omitted, no filtering by paper occurs — existing
+      callers and existing subjects behave exactly as before.
 
     Returns a dict ready to be returned directly by the route.
     """
@@ -102,25 +111,47 @@ def fetch_cbt_questions(
     cur = db.cursor()
     try:
         if year_filter is not None:
-            cur.execute(
-                f"""
-                SELECT {QUESTION_SELECT_COLS}
-                FROM questions
-                WHERE qtype = ? AND exam = ? AND subject = ? AND year = ?
-                ORDER BY id
-                """,
-                ("objective", exam, subject, year_filter),
-            )
+            if paper:
+                cur.execute(
+                    f"""
+                    SELECT {QUESTION_SELECT_COLS}
+                    FROM questions
+                    WHERE qtype = ? AND exam = ? AND subject = ? AND year = ? AND paper = ?
+                    ORDER BY id
+                    """,
+                    ("objective", exam, subject, year_filter, paper),
+                )
+            else:
+                cur.execute(
+                    f"""
+                    SELECT {QUESTION_SELECT_COLS}
+                    FROM questions
+                    WHERE qtype = ? AND exam = ? AND subject = ? AND year = ?
+                    ORDER BY id
+                    """,
+                    ("objective", exam, subject, year_filter),
+                )
         else:
-            cur.execute(
-                f"""
-                SELECT {QUESTION_SELECT_COLS}
-                FROM questions
-                WHERE qtype = ? AND exam = ? AND subject = ?
-                ORDER BY id
-                """,
-                ("objective", exam, subject),
-            )
+            if paper:
+                cur.execute(
+                    f"""
+                    SELECT {QUESTION_SELECT_COLS}
+                    FROM questions
+                    WHERE qtype = ? AND exam = ? AND subject = ? AND paper = ?
+                    ORDER BY id
+                    """,
+                    ("objective", exam, subject, paper),
+                )
+            else:
+                cur.execute(
+                    f"""
+                    SELECT {QUESTION_SELECT_COLS}
+                    FROM questions
+                    WHERE qtype = ? AND exam = ? AND subject = ?
+                    ORDER BY id
+                    """,
+                    ("objective", exam, subject),
+                )
         rows = cur.fetchall()
         passage_lookup = build_passage_lookup(db, rows)
     finally:
@@ -140,7 +171,7 @@ def fetch_cbt_questions(
 
     random.shuffle(deduped)
 
-    cap = get_cbt_cap(subject=subject, exam=exam)
+    cap = get_cbt_cap(subject=subject, exam=exam, paper=paper)
     capped = deduped[:cap]
 
     return {
