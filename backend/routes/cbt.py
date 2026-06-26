@@ -24,6 +24,7 @@ def founding_status():
 def cbt_questions(
     subject: str = Query(...),
     exam: str = Query(default="JAMB"),
+    paper: Optional[str] = Query(default=None),
     user: Optional[Dict[str, Any]] = Depends(get_current_user),
 ):
     """
@@ -32,9 +33,12 @@ def cbt_questions(
     - Free users: oldest year only.
     - Deduplicates by exact question_text.
     - Caps at 60 for Use of English, 40 for all other subjects.
+    - paper: optional discriminator within a subject (e.g. "Oral English"
+      under "English Language"). Omitted = no change to existing behaviour.
     """
     subject = (subject or "").strip()
     exam = (exam or "JAMB").strip()
+    paper = (paper or "").strip() or None
 
     if not subject:
         raise HTTPException(status_code=400, detail="subject is required.")
@@ -44,4 +48,4 @@ def cbt_questions(
 
     paid = is_paid_user(user) or is_admin_user(user)
 
-    return fetch_cbt_questions(subject=subject, exam=exam, is_paid=paid)
+    return fetch_cbt_questions(subject=subject, exam=exam, is_paid=paid, paper=paper)
