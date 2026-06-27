@@ -317,6 +317,12 @@ def get_cbt_papers(
             "label": label,
             "count": count,
             "duration_minutes": get_paper_duration_minutes(paper, qtype),
+            # Theory requires AI grading (Claude + quota checks) and is never
+            # available offline. Objective-side papers (Objective, Oral
+            # English) can be prepared offline via Room sync, regardless of
+            # how many distinct paper values exist — this is qtype-driven,
+            # unlike duration which is paper-driven.
+            "requires_online": qtype == "theory",
         })
 
     papers.sort(key=lambda p: _cbt_paper_sort_key(p["label"]))
