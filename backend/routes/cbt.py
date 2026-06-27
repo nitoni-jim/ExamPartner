@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from services.access_control import is_admin_user, is_paid_user
 from services.auth_utils import get_current_user
-from services.cbt_service import fetch_cbt_questions, get_founding_status
+from services.cbt_service import fetch_cbt_questions, get_cbt_papers, get_founding_status
 
 router = APIRouter(tags=["cbt"])
 
@@ -18,6 +18,39 @@ router = APIRouter(tags=["cbt"])
 def founding_status():
     """Returns whether Founding (₦1,000) is still open for NEW users."""
     return get_founding_status()
+
+
+@router.get("/cbt/papers")
+def cbt_papers(
+    subject: str = Query(...),
+    exam: str = Query(default="JAMB"),
+    user: Optional[Dict[str, Any]] = Depends(get_current_user),
+):
+    """
+    Returns the distinct papers available for a subject's CBT pool
+    (e.g. Objective / Theory / Oral English under English Language),
+    each with a display label, question count, and duration in minutes.
+
+    Year-agnostic by design — CBT never picks a single year the way Study
+    mode does, so this is a separate endpoint from /study/papers, not a
+    reuse of it. Scoped to exactly the same access tier the question fetch
+    (/cbt/questions) draws from:
+      - Free users: only the free year's pool. Never reveals paid-only
+        papers or counts from locked years.
+      - Paid/admin: the full pooled set across all years.
+    """
+    subject = (subject or "").strip()
+    exam = (exam or "JAMB").strip()
+
+    if not subject:
+        raise HTTPException(status_code=400, detail="subject is required.")
+
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required for CBT.")
+
+    paid = is_paid_user(user) or is_admin_user(user)
+
+    return get_cbt_papers(subject=subject, exam=exam, is_paid=paid)
 
 
 @router.get("/cbt/questions")
