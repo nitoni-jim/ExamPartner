@@ -14,6 +14,7 @@ from services.access_control import get_free_year_for_subject
 from services.question_utils import (
     QUESTION_SELECT_COLS,
     build_passage_lookup,
+    row_get,
     row_to_question,
 )
 
@@ -23,6 +24,33 @@ CBT_ENGLISH_CAP          = 60   # JAMB Use of English
 CBT_JAMB_CAP             = 40
 CBT_WAEC_CAP             = 50
 CBT_NECO_CAP             = 60
+
+# ---------------------------------------------------------------------------
+# Paper duration map — drives the CBT test-type picker timer.
+#
+# Objective and Oral English are both qtype="objective" but have different
+# real-exam durations (WAEC Oral English Paper 3 is 60 items / 45 minutes,
+# distinct from the 60-minute general Objective paper) — duration must come
+# from paper, never from qtype alone.
+# ---------------------------------------------------------------------------
+CBT_PAPER_DURATION_MINUTES = {
+    "Objective":     60,
+    "Oral English":  45,
+    "Theory":        120,
+}
+_DEFAULT_OBJECTIVE_DURATION = 60
+_DEFAULT_THEORY_DURATION    = 120
+
+
+def get_paper_duration_minutes(paper: Optional[str], qtype: str) -> int:
+    """
+    Returns the CBT duration in minutes for one paper.
+    Looks up by paper first (the source of truth); falls back to a qtype-based
+    default only when paper is null (not backfilled for this subject yet).
+    """
+    if paper and paper in CBT_PAPER_DURATION_MINUTES:
+        return CBT_PAPER_DURATION_MINUTES[paper]
+    return _DEFAULT_THEORY_DURATION if qtype == "theory" else _DEFAULT_OBJECTIVE_DURATION
 
 def get_cbt_cap(subject: str, exam: str, paper: Optional[str] = None) -> int:
     """
@@ -181,3 +209,139 @@ def fetch_cbt_questions(
         "returned": len(capped),
         "free_year": year_filter,
     }
+
+
+# ---------------------------------------------------------------------------
+# CBT paper discovery — year-agnostic, mirrors the same free/paid pool rules
+# as fetch_cbt_questions(). Distinct from /study/papers, which is year-scoped
+# for Study mode. CBT never picks a single year, so it needs its own
+# discovery query that respects the same access tier the question fetch uses.
+# ---------------------------------------------------------------------------
+
+def get_cbt_papers(
+    subject: str,
+    exam: str,
+    is_paid: bool,
+) -> Dict[str, Any]:
+    """
+    Returns the distinct papers available for a subject's CBT pool, scoped to
+    exactly the same access tier fetch_cbt_questions() would draw from:
+      - Free users:  only the free year's rows (never reveals paid-only papers
+                      or counts from locked years)
+      - Paid/admin:   all years pooled
+
+    Each paper entry includes a duration_minutes (paper-driven, not qtype-driven
+    — Objective and Oral English share qtype="objective" but have different
+    real-exam timings).
+
+    access.available_years / access.locked_years / access.all_years are
+    explicit year lists (not just counts) so the client can build dynamic
+    upsell copy ("Unlock 2010 and 2023") without any hardcoded text on either
+    side. Free users never see locked-year question counts here — only which
+    years exist and which of those are locked.
+    """
+    db = db_conn()
+
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "SELECT DISTINCT year FROM questions WHERE exam = ? AND subject = ? AND year IS NOT NULL",
+            (exam, subject),
+        )
+        all_years = sorted([int(row_get(r, "year")) for r in cur.fetchall()], reverse=True)
+    except Exception:
+        all_years = []
+
+    year_filter: Optional[int] = None
+    available_years: List[int] = all_years
+    locked_years: List[int] = []
+
+    if not is_paid:
+        free_year = get_free_year_for_subject(db, exam, subject)
+        if free_year is None:
+            db.close()
+            return {
+                "exam": exam,
+                "subject": subject,
+                "access": {
+                    "is_paid": False,
+                    "mode": "free_year_only",
+                    "available_years": [],
+                    "locked_years": [],
+                    "all_years": all_years,
+                    "available_year_count": 0,
+                    "locked_year_count": len(all_years),
+                },
+                "papers": [],
+            }
+        year_filter = free_year
+        available_years = [free_year]
+        locked_years = [y for y in all_years if y != free_year]
+
+    cur = db.cursor()
+    try:
+        if year_filter is not None:
+            cur.execute(
+                """
+                SELECT paper, qtype, COUNT(*) AS cnt
+                FROM questions
+                WHERE exam = ? AND subject = ? AND year = ?
+                GROUP BY paper, qtype
+                """,
+                (exam, subject, year_filter),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT paper, qtype, COUNT(*) AS cnt
+                FROM questions
+                WHERE exam = ? AND subject = ?
+                GROUP BY paper, qtype
+                """,
+                (exam, subject),
+            )
+        rows = cur.fetchall()
+    finally:
+        db.close()
+
+    papers: List[Dict[str, Any]] = []
+    for r in rows:
+        paper = row_get(r, "paper")
+        qtype = row_get(r, "qtype")
+        count = int(row_get(r, "cnt") or 0)
+        label = paper if paper else ("Objective" if qtype == "objective" else "Theory" if qtype == "theory" else (qtype or "Unknown"))
+
+        papers.append({
+            "paper": paper,
+            "qtype": qtype,
+            "label": label,
+            "count": count,
+            "duration_minutes": get_paper_duration_minutes(paper, qtype),
+        })
+
+    papers.sort(key=lambda p: _cbt_paper_sort_key(p["label"]))
+
+    return {
+        "exam": exam,
+        "subject": subject,
+        "access": {
+            "is_paid": is_paid,
+            "mode": "free_year_only" if not is_paid else "full_pool",
+            "available_years": available_years,
+            "locked_years": locked_years,
+            "all_years": all_years,
+            "available_year_count": len(available_years),
+            "locked_year_count": len(locked_years),
+        },
+        "papers": papers,
+    }
+
+
+_CBT_PAPER_SORT_ORDER = ["Objective", "Theory", "Oral English", "Practical", "Essay"]
+
+
+def _cbt_paper_sort_key(label: str) -> Tuple[int, str]:
+    try:
+        return (_CBT_PAPER_SORT_ORDER.index(label), label)
+    except ValueError:
+        return (len(_CBT_PAPER_SORT_ORDER), label)
