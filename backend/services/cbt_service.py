@@ -310,20 +310,18 @@ def get_cbt_papers(
         if year_filter is not None:
             cur.execute(
                 """
-                SELECT paper, qtype, COUNT(*) AS cnt
+                SELECT paper, qtype, question_text
                 FROM questions
                 WHERE exam = ? AND subject = ? AND year = ?
-                GROUP BY paper, qtype
                 """,
                 (exam, subject, year_filter),
             )
         else:
             cur.execute(
                 """
-                SELECT paper, qtype, COUNT(*) AS cnt
+                SELECT paper, qtype, question_text
                 FROM questions
                 WHERE exam = ? AND subject = ?
-                GROUP BY paper, qtype
                 """,
                 (exam, subject),
             )
@@ -331,19 +329,36 @@ def get_cbt_papers(
     finally:
         db.close()
 
-    papers: List[Dict[str, Any]] = []
+    # Group by (paper, qtype), deduplicating by question_text within each
+    # group — must mirror fetch_cbt_questions()'s dedup exactly, or
+    # /cbt/papers.count will not match what /cbt/questions actually returns.
+    # This was the root cause of a 60-vs-56 mismatch for Oral English: the
+    # old query was a raw COUNT(*) with no dedup, while fetch_cbt_questions()
+    # already deduped by question_text before applying the cap.
+    grouped: Dict[Tuple[Optional[str], str], Dict[str, Any]] = {}
     for r in rows:
         paper = row_get(r, "paper")
         qtype = row_get(r, "qtype")
-        total_available = int(row_get(r, "cnt") or 0)
+        text = (row_get(r, "question_text") or "").strip()
+        key = (paper, qtype)
+        group = grouped.setdefault(key, {"raw_count": 0, "seen_texts": set(), "unique_count": 0})
+        group["raw_count"] += 1
+        if text and text in group["seen_texts"]:
+            continue
+        if text:
+            group["seen_texts"].add(text)
+        group["unique_count"] += 1
+
+    papers: List[Dict[str, Any]] = []
+    for (paper, qtype), group in grouped.items():
+        total_available = group["unique_count"]  # post-dedup, matches fetch_cbt_questions()'s pool size
         label = paper if paper else ("Objective" if qtype == "objective" else "Theory" if qtype == "theory" else (qtype or "Unknown"))
 
-        # count is what the CBT session will actually use — capped, never the
-        # raw DB row count. This was the root cause of a 180-question English
-        # Language CBT session: count previously equalled total_available
-        # directly with no cap applied. Theory keeps its own existing
-        # uncapped backend logic for now (Theory's cap/limit is a separate,
-        # later concern — full theory-paper grading isn't implemented yet).
+        # count is what the CBT session will actually use — capped AND
+        # deduplicated, never the raw DB row count. Theory keeps its own
+        # existing uncapped backend logic for now (Theory's cap/limit is a
+        # separate, later concern — full theory-paper grading isn't
+        # implemented yet).
         if qtype == "theory":
             session_count = total_available
         else:
