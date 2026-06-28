@@ -26,6 +26,22 @@ CBT_WAEC_CAP             = 50
 CBT_NECO_CAP             = 60
 
 # ---------------------------------------------------------------------------
+# TEMPORARY session caps — paper_rules / year-subject-paper specific rules
+# are later work. These are intentionally simple, hardcoded fallbacks so CBT
+# never starts a session with every matching DB row (which is the actual bug
+# this table fixes — English Language was previously uncapped at the
+# "no artificial cap" branch below, which silently meant "however many rows
+# exist", observed in production as a 180-question session).
+#
+# Configurable in one place so WAEC English's 80 (current syllabus) can
+# later be split per-year (e.g. older years at 100) without an Android
+# change — Android only ever reads count/duration_minutes off the response.
+# ---------------------------------------------------------------------------
+CBT_ORAL_ENGLISH_CAP           = 60
+CBT_WAEC_ENGLISH_OBJECTIVE_CAP = 80
+CBT_NECO_ENGLISH_OBJECTIVE_CAP = 80
+
+# ---------------------------------------------------------------------------
 # Paper duration map — drives the CBT test-type picker timer.
 #
 # Objective and Oral English are both qtype="objective" but have different
@@ -54,24 +70,35 @@ def get_paper_duration_minutes(paper: Optional[str], qtype: str) -> int:
 
 def get_cbt_cap(subject: str, exam: str, paper: Optional[str] = None) -> int:
     """
-    Returns the correct CBT question cap for the given exam and subject.
-    - JAMB Use of English: 60
-    - WAEC/NECO English Language: actual DB count via high ceiling (no artificial cap)
-    - WAEC/NECO English Language, paper="Oral English": same uncapped treatment
-      as plain English Language Objective — deliberate, not an oversight.
-    - JAMB: 40 per subject
-    - WAEC: 50 per subject
-    - NECO: 60 per subject
-    - Other/unknown: 50 (safe default)
+    Returns the correct CBT question cap for the given exam/subject/paper.
+
+    TEMPORARY, paper-driven, until paper_rules / year-specific rules exist:
+      - Oral English (any exam):                60
+      - WAEC English Language Objective:        80
+      - NECO English Language Objective:        80
+      - JAMB Use of English:                     60
+      - JAMB (other subjects):                   40
+      - WAEC (other subjects):                   50
+      - NECO (other subjects):                   60
+      - Other/unknown:                           50 (safe default)
+
+    English Language was previously uncapped here ("no artificial cap" —
+    return all DB rows after dedup). That was the root cause of CBT sessions
+    starting with 180 questions for English Language Objective. There is no
+    longer an uncapped branch for any paper.
     """
     exam_upper = (exam or "").strip().upper()
+
+    if paper == "Oral English":
+        return CBT_ORAL_ENGLISH_CAP
+
+    if subject == CBT_ENGLISH_LANGUAGE and exam_upper == "WAEC":
+        return CBT_WAEC_ENGLISH_OBJECTIVE_CAP
+    if subject == CBT_ENGLISH_LANGUAGE and exam_upper == "NECO":
+        return CBT_NECO_ENGLISH_OBJECTIVE_CAP
+
     if subject == CBT_ENGLISH_SUBJECT and exam_upper == "JAMB":
         return CBT_ENGLISH_CAP
-    if subject == CBT_ENGLISH_LANGUAGE and exam_upper in ("WAEC", "NECO"):
-        # Covers both plain English Language Objective and paper="Oral English"
-        # sessions — Oral English deliberately inherits the same uncapped
-        # treatment rather than getting its own smaller cap.
-        return 999  # no artificial cap — return all available after dedup
     if exam_upper == "JAMB":
         return CBT_JAMB_CAP
     if exam_upper == "WAEC":
@@ -308,14 +335,27 @@ def get_cbt_papers(
     for r in rows:
         paper = row_get(r, "paper")
         qtype = row_get(r, "qtype")
-        count = int(row_get(r, "cnt") or 0)
+        total_available = int(row_get(r, "cnt") or 0)
         label = paper if paper else ("Objective" if qtype == "objective" else "Theory" if qtype == "theory" else (qtype or "Unknown"))
+
+        # count is what the CBT session will actually use — capped, never the
+        # raw DB row count. This was the root cause of a 180-question English
+        # Language CBT session: count previously equalled total_available
+        # directly with no cap applied. Theory keeps its own existing
+        # uncapped backend logic for now (Theory's cap/limit is a separate,
+        # later concern — full theory-paper grading isn't implemented yet).
+        if qtype == "theory":
+            session_count = total_available
+        else:
+            cap = get_cbt_cap(subject=subject, exam=exam, paper=paper)
+            session_count = min(total_available, cap)
 
         papers.append({
             "paper": paper,
             "qtype": qtype,
             "label": label,
-            "count": count,
+            "count": session_count,
+            "total_available": total_available,
             "duration_minutes": get_paper_duration_minutes(paper, qtype),
             # Theory requires AI grading (Claude + quota checks) and is never
             # available offline. Objective-side papers (Objective, Oral
