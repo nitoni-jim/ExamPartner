@@ -214,15 +214,27 @@ def fetch_cbt_questions(
 
     total_available = len(rows)
 
-    # Deduplicate by exact question_text — keep first occurrence per text
-    seen_texts: set = set()
-    deduped: List[Any] = []
-    for row in rows:
-        text = (row["question_text"] or "").strip()
-        if text and text in seen_texts:
-            continue
-        seen_texts.add(text)
-        deduped.append(row)
+    # Deduplicate by exact question_text — keep first occurrence per text.
+    # Skipped for paper="Oral English": stress-pattern-style items legitimately
+    # share an identical generic stem ("Identify the word with a different
+    # stress pattern.") across multiple rows, each with different options and
+    # a different answer. Text-based dedup was incorrectly collapsing these
+    # into one — observed as WAEC/NECO Oral English returning 56 instead of
+    # 60 despite 60 genuinely distinct rows (60 distinct ids, confirmed by
+    # direct SQL check). For Oral English, id is the question identity; since
+    # rows here come from a single non-joining SELECT, every row is already
+    # a distinct id with no further dedup needed.
+    if paper == "Oral English":
+        deduped: List[Any] = list(rows)
+    else:
+        seen_texts: set = set()
+        deduped = []
+        for row in rows:
+            text = (row["question_text"] or "").strip()
+            if text and text in seen_texts:
+                continue
+            seen_texts.add(text)
+            deduped.append(row)
 
     random.shuffle(deduped)
 
@@ -332,9 +344,10 @@ def get_cbt_papers(
     # Group by (paper, qtype), deduplicating by question_text within each
     # group — must mirror fetch_cbt_questions()'s dedup exactly, or
     # /cbt/papers.count will not match what /cbt/questions actually returns.
-    # This was the root cause of a 60-vs-56 mismatch for Oral English: the
-    # old query was a raw COUNT(*) with no dedup, while fetch_cbt_questions()
-    # already deduped by question_text before applying the cap.
+    # Exception: paper="Oral English" skips text dedup entirely, since
+    # stress-pattern-style items legitimately share an identical generic
+    # stem across multiple rows with different options/answers — text
+    # dedup was incorrectly collapsing 60 genuinely distinct rows into 56.
     grouped: Dict[Tuple[Optional[str], str], Dict[str, Any]] = {}
     for r in rows:
         paper = row_get(r, "paper")
@@ -343,6 +356,9 @@ def get_cbt_papers(
         key = (paper, qtype)
         group = grouped.setdefault(key, {"raw_count": 0, "seen_texts": set(), "unique_count": 0})
         group["raw_count"] += 1
+        if paper == "Oral English":
+            group["unique_count"] += 1
+            continue
         if text and text in group["seen_texts"]:
             continue
         if text:
