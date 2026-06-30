@@ -489,6 +489,59 @@ AI_GRADING_CREDIT_PURCHASES_POSTGRES_COLUMNS = [
 
 
 # ----------------------------
+# paper_rules — per-paper timing/count/marks metadata (Sprint 3)
+# ----------------------------
+# One row = one paper (Objective / Theory / Oral English / etc.) for a given
+# exam+subject, optionally pinned to a specific year. year IS NULL means a
+# year-agnostic rule (syllabus-derived or a temporary fallback) — see
+# rule_source below for which kind.
+#
+# Resolution order (implemented in services/paper_rules_service.py):
+#   1. exact match: exam + subject + paper + year
+#   2. best year-NULL match for exam + subject + paper, preferring
+#      rule_source = 'actual_paper' over 'syllabus_default' over
+#      'legacy_placeholder' if more than one year-NULL row exists
+#   3. if nothing in the table at all, the route falls back to the existing
+#      hardcoded CBT_PAPER_DURATION_MINUTES / get_cbt_cap() in cbt_service.py
+#      — paper_rules never needs every row populated to be useful.
+#
+# rule_source values:
+#   actual_paper        — confirmed from a real booklet/cover page for that
+#                          specific year (highest confidence)
+#   syllabus_default     — derived from the current official syllabus because
+#                          the specific year's paper didn't state it
+#   legacy_placeholder    — the old universal hardcoded guess (e.g. 60/120),
+#                          kept only until replaced by one of the above; a
+#                          to-do marker, not a real source
+PAPER_RULES_COLUMNS = [
+    ("id",                "TEXT PRIMARY KEY"),
+    ("exam",              "TEXT NOT NULL"),
+    ("subject",           "TEXT NOT NULL"),
+    ("paper",              "TEXT NOT NULL"),
+    ("year",               "INTEGER"),                 # NULL = year-agnostic rule
+    ("duration_minutes",   "INTEGER"),                  # this paper's own duration only
+    ("question_count",     "INTEGER"),                  # nullable — not always known
+    ("total_marks",        "INTEGER"),                  # nullable — not always known
+    ("rule_source",        "TEXT NOT NULL"),             # actual_paper | syllabus_default | legacy_placeholder
+    ("rules_json",         "TEXT"),                      # reserved for future structured rules; unused for now
+    ("created_at",         "TEXT"),
+    ("updated_at",         "TEXT"),
+]
+
+PAPER_RULES_SQLITE_COLUMNS = [
+    *PAPER_RULES_COLUMNS[:-2],
+    ("created_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+    ("updated_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+]
+
+PAPER_RULES_POSTGRES_COLUMNS = [
+    *PAPER_RULES_COLUMNS[:-2],
+    ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+    ("updated_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+]
+
+
+# ----------------------------
 # Detect Postgres
 # ----------------------------
 def _using_postgres() -> bool:
@@ -621,6 +674,10 @@ def _ai_grading_credit_purchases_table_sql(columns: list[tuple[str, str]]) -> st
     return _table_sql("ai_grading_credit_purchases", columns)
 
 
+def _paper_rules_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("paper_rules", columns)
+
+
 # ----------------------------
 # Migration helpers
 # ----------------------------
@@ -751,6 +808,7 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         cur.execute(_ai_grading_usage_table_sql(AI_GRADING_USAGE_SQLITE_COLUMNS))
         cur.execute(_password_reset_tokens_table_sql(PASSWORD_RESET_TOKENS_SQLITE_COLUMNS))
         cur.execute(_ai_grading_credit_purchases_table_sql(AI_GRADING_CREDIT_PURCHASES_SQLITE_COLUMNS))
+        cur.execute(_paper_rules_table_sql(PAPER_RULES_SQLITE_COLUMNS))
 
         # ---- lightweight column migrations ----
         _sqlite_add_missing_question_columns(cur)
@@ -763,6 +821,7 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         _sqlite_add_missing_columns(cur, "ai_grading_usage", AI_GRADING_USAGE_COLUMNS)
         _sqlite_add_missing_columns(cur, "password_reset_tokens", PASSWORD_RESET_TOKENS_COLUMNS)
         _sqlite_add_missing_columns(cur, "ai_grading_credit_purchases", AI_GRADING_CREDIT_PURCHASES_COLUMNS)
+        _sqlite_add_missing_columns(cur, "paper_rules", PAPER_RULES_COLUMNS)
 
         # *** COMMIT PHASE 1 — tables are now durable regardless of index errors ***
         conn.commit()
@@ -827,6 +886,9 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
             "CREATE INDEX IF NOT EXISTS idx_agcp_user ON ai_grading_credit_purchases(user_identifier);",
             "CREATE INDEX IF NOT EXISTS idx_agcp_expires ON ai_grading_credit_purchases(expires_at);",
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_agcp_reference ON ai_grading_credit_purchases(payment_reference);",
+            # paper_rules
+            "CREATE INDEX IF NOT EXISTS idx_paper_rules_lookup ON paper_rules(exam, subject, paper, year);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_rules_unique_row ON paper_rules(exam, subject, paper, year);",
         ]
 
         for sql in _sqlite_indexes:
@@ -972,6 +1034,7 @@ def _init_db_postgres() -> None:
         cur.execute(_ai_grading_usage_table_sql(AI_GRADING_USAGE_POSTGRES_COLUMNS))
         cur.execute(_password_reset_tokens_table_sql(PASSWORD_RESET_TOKENS_POSTGRES_COLUMNS))
         cur.execute(_ai_grading_credit_purchases_table_sql(AI_GRADING_CREDIT_PURCHASES_POSTGRES_COLUMNS))
+        cur.execute(_paper_rules_table_sql(PAPER_RULES_POSTGRES_COLUMNS))
 
         # column migrations for new tables (safe to run repeatedly)
         _postgres_add_missing_columns(cur, "topics", TOPICS_POSTGRES_COLUMNS)
@@ -987,6 +1050,7 @@ def _init_db_postgres() -> None:
         _postgres_add_missing_columns(cur, "ai_grading_usage", AI_GRADING_USAGE_POSTGRES_COLUMNS)
         _postgres_add_missing_columns(cur, "password_reset_tokens", PASSWORD_RESET_TOKENS_POSTGRES_COLUMNS)
         _postgres_add_missing_columns(cur, "ai_grading_credit_purchases", AI_GRADING_CREDIT_PURCHASES_POSTGRES_COLUMNS)
+        _postgres_add_missing_columns(cur, "paper_rules", PAPER_RULES_POSTGRES_COLUMNS)
 
         # *** COMMIT PHASE 1 — tables are now durable regardless of index errors ***
         db.commit()
@@ -1055,6 +1119,9 @@ def _init_db_postgres() -> None:
             "CREATE INDEX IF NOT EXISTS idx_agcp_user ON ai_grading_credit_purchases(user_identifier);",
             "CREATE INDEX IF NOT EXISTS idx_agcp_expires ON ai_grading_credit_purchases(expires_at);",
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_agcp_reference ON ai_grading_credit_purchases(payment_reference);",
+            # paper_rules
+            "CREATE INDEX IF NOT EXISTS idx_paper_rules_lookup ON paper_rules(exam, subject, paper, year);",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_rules_unique_row ON paper_rules(exam, subject, paper, year);",
         ]
 
         for sql in _indexes:
