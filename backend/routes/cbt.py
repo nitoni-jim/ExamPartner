@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from services.access_control import is_admin_user, is_paid_user
 from services.auth_utils import get_current_user
-from services.cbt_service import fetch_cbt_questions, get_cbt_papers, get_founding_status
+from services.cbt_service import fetch_cbt_questions, fetch_cbt_theory_paper, get_cbt_papers, get_founding_status
 
 router = APIRouter(tags=["cbt"])
 
@@ -82,3 +82,42 @@ def cbt_questions(
     paid = is_paid_user(user) or is_admin_user(user)
 
     return fetch_cbt_questions(subject=subject, exam=exam, is_paid=paid, paper=paper)
+
+
+@router.get("/cbt/theory-questions")
+def cbt_theory_questions(
+    subject: str = Query(...),
+    exam: str = Query(default="WAEC"),
+    paper: str = Query(...),
+    user: Optional[Dict[str, Any]] = Depends(get_current_user),
+):
+    """
+    Returns the section-grouped Theory CBT pool for one paper — gradeable
+    questions only, grouped by paper_rules.rules_json section structure.
+
+    Distinct from GET /questions/theory (Study mode): that endpoint returns
+    every Theory question including ungradeable ones (Study mode is for
+    reading/learning, not scored submission) and is year-scoped. This
+    endpoint is CBT-only, gradeable-only, and pools across years at the
+    section level, not the paper level — each question carries its own
+    sub-questions intact, so pooling Q1(2020) with Q3(2019) within the same
+    section is coherent (Theory CBT Section-Aware Implementation v2).
+
+    sections: [] in the response means no paper_rules.rules_json exists yet
+    for this exam+subject+paper — Android must fall back to the existing
+    flat-list Theory session behaviour, not treat this as an error.
+    """
+    subject = (subject or "").strip()
+    exam = (exam or "WAEC").strip()
+    paper = (paper or "").strip()
+
+    if not subject:
+        raise HTTPException(status_code=400, detail="subject is required.")
+    if not paper:
+        raise HTTPException(status_code=400, detail="paper is required.")
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required for CBT.")
+
+    paid = is_paid_user(user) or is_admin_user(user)
+
+    return fetch_cbt_theory_paper(exam=exam, subject=subject, paper=paper, is_paid=paid)
