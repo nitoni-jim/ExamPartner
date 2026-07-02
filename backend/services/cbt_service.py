@@ -3,13 +3,14 @@ services/cbt_service.py — CBT business logic for ExamPartner.
 
 Extracted from routes/cbt.py. Routes keep only HTTP concerns.
 """
+import json
 import os
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 
-from config import FOUNDING_CAP, db_conn
+from config import FOUNDING_CAP, db_conn, logger
 from services.access_control import get_free_year_for_subject
 from services.question_utils import (
     QUESTION_SELECT_COLS,
@@ -422,3 +423,216 @@ def _cbt_paper_sort_key(label: str) -> Tuple[int, str]:
         return (_CBT_PAPER_SORT_ORDER.index(label), label)
     except ValueError:
         return (len(_CBT_PAPER_SORT_ORDER), label)
+
+
+# ---------------------------------------------------------------------------
+# Theory CBT — section-aware pool (Theory CBT Section-Aware Implementation v2)
+#
+# Distinct from get_theory_questions() in question_service.py, which serves
+# GET /questions/theory for Study mode. Two deliberate differences, per
+# product decision (not a bug, not scope creep):
+#
+#   1. Gradeability filter — CBT Theory pool only ever contains questions
+#      the AI grader can actually score. Study mode intentionally shows
+#      ALL Theory questions, including ones missing examiner_points, since
+#      Study mode is for reading/learning (and doubles as the place Nitoni
+#      spots content that still needs marking rubrics added). Applying this
+#      filter to /questions/theory instead would silently hide legitimate
+#      study material — see the note under handover doc §7.1.
+#
+#   2. Section grouping — driven by paper_rules.rules_json for this
+#      exam+subject+paper (year=NULL row), NOT by year. Each question is
+#      pooled across all years as a self-contained atomic unit (a question's
+#      sub-parts always travel with it), so there is no year picker and no
+#      year filter here — mirrors the "CBT always queries year=NULL" rule
+#      from Sprint 3, applied at the section level instead of the paper
+#      level.
+#
+# If no paper_rules row / rules_json exists for this exam+subject+paper,
+# returns sections=[] — the route and Android must both treat that as "fall
+# back to the existing flat-list Theory session", never as an error.
+# ---------------------------------------------------------------------------
+
+def _is_gradeable_theory_row(row: Any) -> bool:
+    """
+    Mirrors theory_service.py's _fetch_question_data() gradeability check
+    exactly, so a question that enters the CBT pool is guaranteed to succeed
+    at POST /theory/grade — never a NotGradeable response through no fault
+    of the student.
+
+    English Language's essay/comprehension/summary grading modes are always
+    considered gradeable (same as theory_service.py — those modes carry
+    their own structured rubric by construction). The examiner_points check
+    only applies to grading_mode == "general", and accepts EITHER a
+    top-level examiner_points list OR per-sub-question examiner_points on
+    at least one sub-question — a question with only a top-level check
+    would wrongly exclude every sub-question-style Theory question (the
+    majority of the current Biology content).
+    """
+    metadata_raw = row_get(row, "metadata_json")
+    grading_mode = "general"
+    if metadata_raw:
+        try:
+            grading_mode = (json.loads(metadata_raw) or {}).get("grading_mode", "general")
+        except Exception:
+            grading_mode = "general"
+
+    if grading_mode != "general":
+        return True
+
+    examiner_points_raw = row_get(row, "examiner_points_json")
+    examiner_points = None
+    if examiner_points_raw:
+        try:
+            examiner_points = json.loads(examiner_points_raw)
+        except Exception:
+            examiner_points = None
+
+    sub_questions_raw = row_get(row, "sub_questions_json")
+    sub_questions: List[Any] = []
+    if sub_questions_raw:
+        try:
+            sub_questions = json.loads(sub_questions_raw)
+        except Exception:
+            sub_questions = []
+
+    sub_questions_have_rubric = (
+        isinstance(sub_questions, list)
+        and len(sub_questions) > 0
+        and any(sq.get("examiner_points") for sq in sub_questions if isinstance(sq, dict))
+    )
+    return bool(examiner_points) or sub_questions_have_rubric
+
+
+def _get_theory_section_rules(exam: str, subject: str, paper: str) -> List[Dict[str, Any]]:
+    """
+    Fetches the section structure for one Theory paper from
+    paper_rules.rules_json, using the same year-NULL, rule_source-preference
+    resolution order as Android's PaperRuleDao.findBestYearNull() (Sprint 3):
+    actual_paper > syllabus_default > legacy_placeholder.
+
+    Returns [] if no matching paper_rules row exists, or if rules_json is
+    null/empty/malformed — callers must treat that as "no section rules".
+    """
+    db = db_conn()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT rules_json FROM paper_rules
+            WHERE exam = ? AND subject = ? AND paper = ? AND year IS NULL
+            ORDER BY
+                CASE rule_source
+                    WHEN 'actual_paper' THEN 0
+                    WHEN 'syllabus_default' THEN 1
+                    WHEN 'legacy_placeholder' THEN 2
+                    ELSE 3
+                END
+            LIMIT 1
+            """,
+            (exam, subject, paper),
+        )
+        row = cur.fetchone()
+    finally:
+        db.close()
+
+    if not row:
+        return []
+
+    raw = row_get(row, "rules_json")
+    if not raw:
+        return []
+
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        logger.warning("Malformed rules_json for %s/%s/%s", exam, subject, paper)
+        return []
+
+    return parsed if isinstance(parsed, list) else []
+
+
+def fetch_cbt_theory_paper(
+    exam: str,
+    subject: str,
+    paper: str,
+    is_paid: bool,
+) -> Dict[str, Any]:
+    """
+    Fetches the full section-grouped Theory CBT pool for one paper in a
+    single response — one call per paper, not one per section, to avoid
+    both extra round-trips and any drift between what Android's cached
+    rulesJson says and what the backend actually pools against (this
+    function re-resolves rules_json live from paper_rules rather than
+    trusting a value Android sends).
+
+    is_paid is accepted for parity with fetch_cbt_questions() and future
+    use, but intentionally not yet enforced at the row level — Theory CBT
+    access is already gated upstream (requires_online / paywall, via
+    get_cbt_papers()), and Theory pools across all years for any
+    authenticated user who reaches this screen, same as it does today.
+
+    Pool size per section is uncapped (all gradeable questions, shuffled) —
+    required_count from rules_json is the only number the schema actually
+    defines; there's no "how many options to show" field to cap against,
+    and inventing one would be arbitrary. See handover doc §7.2/design note.
+    """
+    section_rules = _get_theory_section_rules(exam=exam, subject=subject, paper=paper)
+    if not section_rules:
+        return {
+            "exam": exam,
+            "subject": subject,
+            "paper": paper,
+            "sections": [],
+        }
+
+    db = db_conn()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            f"""
+            SELECT {QUESTION_SELECT_COLS}
+            FROM questions
+            WHERE qtype = ? AND exam = ? AND subject = ? AND paper = ?
+            ORDER BY id
+            """,
+            ("theory", exam, subject, paper),
+        )
+        rows = cur.fetchall()
+        passage_lookup = build_passage_lookup(db, rows)
+    finally:
+        db.close()
+
+    # Group gradeable rows by section. section_label must match questions.section
+    # verbatim as authored in rules_json (e.g. "Section A", not "A") — see
+    # handover doc §6.
+    rows_by_section: Dict[str, List[Any]] = {}
+    for row in rows:
+        if not _is_gradeable_theory_row(row):
+            continue
+        section_label = row_get(row, "section")
+        if not section_label:
+            continue
+        rows_by_section.setdefault(section_label, []).append(row)
+
+    sections_out: List[Dict[str, Any]] = []
+    for rule in section_rules:
+        section_label = rule.get("section")
+        section_rows = list(rows_by_section.get(section_label, []))
+        random.shuffle(section_rows)
+        sections_out.append({
+            "section": section_label,
+            "instruction": rule.get("instruction", ""),
+            "required_count": rule.get("required_count", 0),
+            "compulsory": bool(rule.get("compulsory", False)),
+            "marks_per_question": rule.get("marks_per_question", 0),
+            "total_marks": rule.get("total_marks", 0),
+            "questions": [row_to_question(r, passage_lookup) for r in section_rows],
+        })
+
+    return {
+        "exam": exam,
+        "subject": subject,
+        "paper": paper,
+        "sections": sections_out,
+    }
