@@ -576,6 +576,24 @@ def fetch_cbt_theory_paper(
     required_count from rules_json is the only number the schema actually
     defines; there's no "how many options to show" field to cap against,
     and inventing one would be arbitrary. See handover doc §7.2/design note.
+
+    Two queries, deliberately, not one:
+      1. An explicit-column query (id, section, sub_questions_json,
+         examiner_points_json, metadata_json) drives the gradeability
+         decision and section grouping. This does NOT use
+         QUESTION_SELECT_COLS — that constant drives the public-facing
+         Question/TheoryQuestion JSON shape, and examiner_points_json is a
+         grading secret with no equivalent field anywhere in the Android
+         model, so whether QUESTION_SELECT_COLS happens to include it is
+         unverified and this function must not gamble a silent, un-erroring
+         "every question looks ungradeable" failure on that assumption.
+         Mirrors theory_service.py's _fetch_question_data() explicit
+         column list exactly, for the same reason it exists there.
+      2. Once the gradeable id set is known, a second query using
+         QUESTION_SELECT_COLS (id IN (...)) builds the actual client-facing
+         rows via the existing row_to_question() — identical shape to every
+         other question-serving endpoint, guaranteed compatible with
+         Android's TheoryQuestion model.
     """
     section_rules = _get_theory_section_rules(exam=exam, subject=subject, paper=paper)
     if not section_rules:
@@ -590,36 +608,79 @@ def fetch_cbt_theory_paper(
     cur = db.cursor()
     try:
         cur.execute(
+            """
+            SELECT id, section, sub_questions_json, examiner_points_json, metadata_json
+            FROM questions
+            WHERE qtype = ? AND exam = ? AND subject = ? AND paper = ?
+            """,
+            ("theory", exam, subject, paper),
+        )
+        grading_rows = cur.fetchall()
+    finally:
+        db.close()
+
+    # section_label must match questions.section verbatim as authored in
+    # rules_json (e.g. "Section A", not "A") — see handover doc §6.
+    gradeable_ids_by_section: Dict[str, List[str]] = {}
+    for row in grading_rows:
+        if not _is_gradeable_theory_row(row):
+            continue
+        section_label = row_get(row, "section")
+        qid = row_get(row, "id")
+        if not section_label or not qid:
+            continue
+        gradeable_ids_by_section.setdefault(section_label, []).append(qid)
+
+    all_gradeable_ids = [qid for ids in gradeable_ids_by_section.values() for qid in ids]
+
+    if not all_gradeable_ids:
+        # No gradeable questions anywhere in this paper yet — still return
+        # the section shells with empty question lists (not an error), so
+        # the UI can show "No gradeable questions available in this section
+        # yet" per section rather than falling back or breaking.
+        return {
+            "exam": exam,
+            "subject": subject,
+            "paper": paper,
+            "sections": [
+                {
+                    "section": rule.get("section"),
+                    "instruction": rule.get("instruction", ""),
+                    "required_count": rule.get("required_count", 0),
+                    "compulsory": bool(rule.get("compulsory", False)),
+                    "marks_per_question": rule.get("marks_per_question", 0),
+                    "total_marks": rule.get("total_marks", 0),
+                    "questions": [],
+                }
+                for rule in section_rules
+            ],
+        }
+
+    db = db_conn()
+    cur = db.cursor()
+    try:
+        placeholders = ",".join(["?"] * len(all_gradeable_ids))
+        cur.execute(
             f"""
             SELECT {QUESTION_SELECT_COLS}
             FROM questions
-            WHERE qtype = ? AND exam = ? AND subject = ? AND paper = ?
-            ORDER BY id
+            WHERE id IN ({placeholders})
             """,
-            ("theory", exam, subject, paper),
+            tuple(all_gradeable_ids),
         )
         rows = cur.fetchall()
         passage_lookup = build_passage_lookup(db, rows)
     finally:
         db.close()
 
-    # Group gradeable rows by section. section_label must match questions.section
-    # verbatim as authored in rules_json (e.g. "Section A", not "A") — see
-    # handover doc §6.
-    rows_by_section: Dict[str, List[Any]] = {}
-    for row in rows:
-        if not _is_gradeable_theory_row(row):
-            continue
-        section_label = row_get(row, "section")
-        if not section_label:
-            continue
-        rows_by_section.setdefault(section_label, []).append(row)
+    questions_by_id = {row_get(r, "id"): r for r in rows}
 
     sections_out: List[Dict[str, Any]] = []
     for rule in section_rules:
         section_label = rule.get("section")
-        section_rows = list(rows_by_section.get(section_label, []))
-        random.shuffle(section_rows)
+        section_ids = list(gradeable_ids_by_section.get(section_label, []))
+        random.shuffle(section_ids)
+        section_question_rows = [questions_by_id[qid] for qid in section_ids if qid in questions_by_id]
         sections_out.append({
             "section": section_label,
             "instruction": rule.get("instruction", ""),
@@ -627,7 +688,7 @@ def fetch_cbt_theory_paper(
             "compulsory": bool(rule.get("compulsory", False)),
             "marks_per_question": rule.get("marks_per_question", 0),
             "total_marks": rule.get("total_marks", 0),
-            "questions": [row_to_question(r, passage_lookup) for r in section_rows],
+            "questions": [row_to_question(r, passage_lookup) for r in section_question_rows],
         })
 
     return {
