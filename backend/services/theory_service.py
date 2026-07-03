@@ -852,6 +852,90 @@ def _validate_english_response(result: Dict[str, Any], grading_mode: str) -> Non
         )
 
 
+def _reconcile_score_consistency(parsed: Dict[str, Any], grading_mode: str) -> Dict[str, Any]:
+    """
+    Recomputes the top-line score from the model's own itemized breakdown
+    (sub_scores or breakdown, depending on mode) and overrides the scalar
+    total when the two disagree, rather than trusting whichever number the
+    model happened to put in the top-level field.
+
+    Why the itemized sum wins over the scalar: a handful of small additions
+    written out explicitly (e.g. 2+2+2+2+0+0+0+0+0+0+0) is far less
+    error-prone for an LLM to get right than a single top-line arithmetic
+    claim with no working shown. Confirmed in production
+    (WAEC_2020_BIOLOGY_THEORY_Q6, 2026-07-03): sub_scores summed to 8,
+    matching the model's own prose feedback ("earning 8 marks out of a
+    possible 30") exactly, while total_marks_awarded claimed 12 — a
+    self-contradictory response that would otherwise have silently
+    overstated the student's score and the session's aggregate total.
+
+    Sets needs_review=True on any mismatch. Since this runs inside
+    _call_claude() — called for both the initial Haiku pass and any Sonnet
+    escalation — and grade_theory() checks needs_review immediately after
+    the first _call_claude() call, a Haiku mismatch automatically triggers
+    escalation to Sonnet with no new retry logic required. If Sonnet's
+    response also mismatches, this function catches that too (it runs on
+    every model call), and the reconciled value is still returned rather
+    than trusting a second wrong scalar.
+
+    Uses a small float tolerance rather than exact equality, since marks can
+    be fractional (e.g. half-marks in English mechanical accuracy).
+    """
+    TOLERANCE = 0.01
+
+    def _sum(items: Any, key: str) -> float:
+        if not isinstance(items, list):
+            return 0.0
+        return sum(float((item or {}).get(key, 0) or 0) for item in items if isinstance(item, dict))
+
+    def _apply(claimed_key: str, recomputed: float) -> None:
+        claimed = float(parsed.get(claimed_key, 0) or 0)
+        if abs(recomputed - claimed) <= TOLERANCE:
+            return
+        logger.warning(
+            "Score mismatch (%s) question=%s claimed=%s recomputed=%s — overriding with recomputed value",
+            grading_mode, parsed.get("question_id"), claimed, recomputed,
+        )
+        parsed[claimed_key] = recomputed
+        parsed["needs_review"] = True
+
+    if grading_mode == "essay_rubric":
+        breakdown = parsed.get("breakdown") or {}
+        recomputed = sum(
+            float((breakdown.get(k) or {}).get("score", 0) or 0)
+            for k in ("content", "organisation", "expression", "mechanical_accuracy")
+        )
+        _apply("score", recomputed)
+
+    elif grading_mode == "comprehension_point_based":
+        recomputed = _sum(parsed.get("sub_scores"), "score")
+        _apply("score", recomputed)
+
+    elif grading_mode == "summary_point_based":
+        breakdown = parsed.get("breakdown") or {}
+        recomputed = sum(
+            float((breakdown.get(k) or {}).get("score", 0) or 0)
+            for k in ("part_a", "part_b")
+        )
+        _apply("score", recomputed)
+
+    else:
+        # general theory grading
+        sub_scores = parsed.get("sub_scores")
+        if sub_scores:
+            recomputed = _sum(sub_scores, "marks_awarded")
+            before = float(parsed.get("total_marks_awarded", 0) or 0)
+            _apply("total_marks_awarded", recomputed)
+            # Keep percentage consistent with the (possibly overridden) total
+            # rather than leaving it computed against the old, wrong value.
+            if parsed.get("total_marks_awarded") != before:
+                max_marks = float(parsed.get("max_marks", 0) or 0)
+                if max_marks > 0:
+                    parsed["percentage"] = round((recomputed / max_marks) * 100, 2)
+
+    return parsed
+
+
 def _call_claude(prompt: str, model: str) -> Dict[str, Any]:
     """
     Calls the Anthropic API with the given prompt and model.
@@ -924,6 +1008,16 @@ def _call_claude(prompt: str, model: str) -> Dict[str, Any]:
         if missing:
             logger.error("Claude response missing fields %s: %s", missing, raw_text[:500])
             raise HTTPException(status_code=502, detail="AI grading response was incomplete. Please try again.")
+
+    # Recompute the top-line score from the model's own itemized breakdown
+    # and override it when the two disagree — see _reconcile_score_consistency()
+    # docstring for why (confirmed in production: sub_scores summed to 8 while
+    # total_marks_awarded claimed 12, for the same response). Also flags
+    # needs_review=True on a mismatch, which — since this runs before the
+    # confidence/needs_review check in grade_theory() — automatically
+    # triggers the existing Haiku→Sonnet escalation path for free, no new
+    # retry logic needed.
+    parsed = _reconcile_score_consistency(parsed, grading_mode_in_result)
 
     parsed["_meta"] = {
         "model":          model,
