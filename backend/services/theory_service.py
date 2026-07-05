@@ -854,10 +854,20 @@ def _validate_english_response(result: Dict[str, Any], grading_mode: str) -> Non
 
 def _reconcile_score_consistency(parsed: Dict[str, Any], grading_mode: str) -> Dict[str, Any]:
     """
-    Recomputes the top-line score from the model's own itemized breakdown
-    (sub_scores or breakdown, depending on mode) and overrides the scalar
-    total when the two disagree, rather than trusting whichever number the
-    model happened to put in the top-level field.
+    Two passes, in order:
+
+    1. Caps any individual sub-score/breakdown item that exceeds its own
+       stated max_marks/max_score, in place. Confirmed in production across
+       three separate WAEC Biology questions (2026-07-05): a single
+       sub-part awarded more marks than the question itself allocates to it
+       (e.g. 9/5, 10/5, 4/3), while the total still correctly equalled the
+       sum of parts — so pass 2 below never caught it on its own, since the
+       sum itself was already inflated by the overflowing part.
+
+    2. Recomputes the top-line score from the (now-capped) itemized
+       breakdown and overrides the scalar total when the two disagree,
+       rather than trusting whichever number the model put in the
+       top-level field.
 
     Why the itemized sum wins over the scalar: a handful of small additions
     written out explicitly (e.g. 2+2+2+2+0+0+0+0+0+0+0) is far less
@@ -869,14 +879,13 @@ def _reconcile_score_consistency(parsed: Dict[str, Any], grading_mode: str) -> D
     self-contradictory response that would otherwise have silently
     overstated the student's score and the session's aggregate total.
 
-    Sets needs_review=True on any mismatch. Since this runs inside
-    _call_claude() — called for both the initial Haiku pass and any Sonnet
-    escalation — and grade_theory() checks needs_review immediately after
-    the first _call_claude() call, a Haiku mismatch automatically triggers
-    escalation to Sonnet with no new retry logic required. If Sonnet's
-    response also mismatches, this function catches that too (it runs on
-    every model call), and the reconciled value is still returned rather
-    than trusting a second wrong scalar.
+    Sets needs_review=True whenever either pass changes anything. Since
+    this runs inside _call_claude() — called for both the initial Haiku
+    pass and any Sonnet escalation — and grade_theory() checks needs_review
+    immediately after the first _call_claude() call, a Haiku mismatch
+    automatically triggers escalation to Sonnet with no new retry logic
+    required. If Sonnet's response also mismatches or overflows, this
+    function catches that too (it runs on every model call).
 
     Uses a small float tolerance rather than exact equality, since marks can
     be fractional (e.g. half-marks in English mechanical accuracy).
@@ -888,9 +897,52 @@ def _reconcile_score_consistency(parsed: Dict[str, Any], grading_mode: str) -> D
             return 0.0
         return sum(float((item or {}).get(key, 0) or 0) for item in items if isinstance(item, dict))
 
-    def _apply(claimed_key: str, recomputed: float) -> None:
+    def _cap_items(items: Any, award_key: str, max_key: str) -> bool:
+        """Caps each list item's award_key at its own max_key, in place. Returns True if anything was capped."""
+        if not isinstance(items, list):
+            return False
+        capped_any = False
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            awarded = float(item.get(award_key, 0) or 0)
+            max_val = float(item.get(max_key, 0) or 0)
+            if awarded > max_val + TOLERANCE:
+                logger.warning(
+                    "Sub-score overflow (%s) question=%s label=%s awarded=%s max=%s — capping to max",
+                    grading_mode, parsed.get("question_id"), item.get("label"), awarded, max_val,
+                )
+                item[award_key] = max_val
+                capped_any = True
+        return capped_any
+
+    def _cap_breakdown(breakdown: Dict[str, Any], keys: tuple, score_key: str, max_key: str) -> bool:
+        """Caps each named breakdown section's score_key at its own max_key, in place. Returns True if anything was capped."""
+        capped_any = False
+        for k in keys:
+            section = breakdown.get(k)
+            if not isinstance(section, dict):
+                continue
+            awarded = float(section.get(score_key, 0) or 0)
+            max_val = float(section.get(max_key, 0) or 0)
+            if awarded > max_val + TOLERANCE:
+                logger.warning(
+                    "Sub-score overflow (%s) question=%s section=%s awarded=%s max=%s — capping to max",
+                    grading_mode, parsed.get("question_id"), k, awarded, max_val,
+                )
+                section[score_key] = max_val
+                capped_any = True
+        return capped_any
+
+    def _apply(claimed_key: str, recomputed: float, capped: bool = False) -> None:
         claimed = float(parsed.get(claimed_key, 0) or 0)
         if abs(recomputed - claimed) <= TOLERANCE:
+            if capped:
+                # Sub-parts were capped but the total still happens to match
+                # the (now-capped) sum — still flag for review since a
+                # sub-part overflow happened, even though no total override
+                # was needed here.
+                parsed["needs_review"] = True
             return
         logger.warning(
             "Score mismatch (%s) question=%s claimed=%s recomputed=%s — overriding with recomputed value",
@@ -901,31 +953,32 @@ def _reconcile_score_consistency(parsed: Dict[str, Any], grading_mode: str) -> D
 
     if grading_mode == "essay_rubric":
         breakdown = parsed.get("breakdown") or {}
-        recomputed = sum(
-            float((breakdown.get(k) or {}).get("score", 0) or 0)
-            for k in ("content", "organisation", "expression", "mechanical_accuracy")
-        )
-        _apply("score", recomputed)
+        keys = ("content", "organisation", "expression", "mechanical_accuracy")
+        capped = _cap_breakdown(breakdown, keys, "score", "max_score")
+        recomputed = sum(float((breakdown.get(k) or {}).get("score", 0) or 0) for k in keys)
+        _apply("score", recomputed, capped)
 
     elif grading_mode == "comprehension_point_based":
-        recomputed = _sum(parsed.get("sub_scores"), "score")
-        _apply("score", recomputed)
+        sub_scores = parsed.get("sub_scores")
+        capped = _cap_items(sub_scores, "score", "max_score")
+        recomputed = _sum(sub_scores, "score")
+        _apply("score", recomputed, capped)
 
     elif grading_mode == "summary_point_based":
         breakdown = parsed.get("breakdown") or {}
-        recomputed = sum(
-            float((breakdown.get(k) or {}).get("score", 0) or 0)
-            for k in ("part_a", "part_b")
-        )
-        _apply("score", recomputed)
+        keys = ("part_a", "part_b")
+        capped = _cap_breakdown(breakdown, keys, "score", "max_score")
+        recomputed = sum(float((breakdown.get(k) or {}).get("score", 0) or 0) for k in keys)
+        _apply("score", recomputed, capped)
 
     else:
         # general theory grading
         sub_scores = parsed.get("sub_scores")
         if sub_scores:
+            capped = _cap_items(sub_scores, "marks_awarded", "max_marks")
             recomputed = _sum(sub_scores, "marks_awarded")
             before = float(parsed.get("total_marks_awarded", 0) or 0)
-            _apply("total_marks_awarded", recomputed)
+            _apply("total_marks_awarded", recomputed, capped)
             # Keep percentage consistent with the (possibly overridden) total
             # rather than leaving it computed against the old, wrong value.
             if parsed.get("total_marks_awarded") != before:
