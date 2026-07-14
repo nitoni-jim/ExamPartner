@@ -5,7 +5,18 @@ Business logic lives in services/theory_service.py.
 
 Endpoint:
   POST /theory/grade
-    Request:  { "question_id": str, "student_answer": str }
+    Request:  { "question_id": str,
+                "student_answer": str | list[dict] }
+      student_answer is either a plain string (legacy — English essay/
+      comprehension/summary, or any question with no sub_questions) or the
+      structured sub_answers payload (locked spec
+      ExamPartner_Spec_Editable_Table_Submission.docx §2.2): a list of
+      {"label", "type", "answer"|"rows", "table_key"?} objects, one per
+      sub-question, built by Android's buildSubAnswersPayload(). Validation
+      and normalization of either shape happens inside grade_theory() via
+      _normalize_sub_answers()/_sub_answers_are_blank() — this route no
+      longer does its own string-only blank check, since that would break
+      on the list shape.
     Response: grading result JSON + usage block
     Errors:
       401 — not authenticated
@@ -15,7 +26,7 @@ Endpoint:
       503 — ANTHROPIC_API_KEY not configured
       502 — Claude error or invalid response
 """
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -27,8 +38,11 @@ router = APIRouter(tags=["theory"])
 
 
 class GradeRequest(BaseModel):
-    question_id:    str
-    student_answer: str
+    question_id: str
+    # Union order matters for Pydantic: str is tried first, so a JSON array
+    # payload (which cannot match str) correctly falls through to the list
+    # branch rather than being coerced/rejected against str first.
+    student_answer: Union[str, List[Dict[str, Any]]]
 
 
 @router.get("/ai-grading/quota")
@@ -68,16 +82,16 @@ def grade_theory_route(
     if not identifier:
         raise HTTPException(status_code=401, detail="Authentication required for AI theory grading.")
 
-    question_id    = (body.question_id or "").strip()
-    student_answer = (body.student_answer or "").strip()
-
+    question_id = (body.question_id or "").strip()
     if not question_id:
         raise HTTPException(status_code=400, detail="question_id is required.")
-    if not student_answer:
-        raise HTTPException(status_code=400, detail="student_answer cannot be empty.")
 
+    # student_answer is intentionally NOT .strip()'d or blank-checked here —
+    # it may be a list, which has no .strip(). grade_theory() normalizes
+    # either shape via _normalize_sub_answers() and raises 400 itself via
+    # _sub_answers_are_blank() if the (normalized) answer is empty.
     return grade_theory(
         identifier=identifier,
         question_id=question_id,
-        student_answer=student_answer,
+        student_answer=body.student_answer,
     )
