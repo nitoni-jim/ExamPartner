@@ -14,6 +14,7 @@ duration/count/marks apply to free and paid users alike. The write path
 (upsert_paper_rule) is admin-only, enforced at the route layer via
 require_admin(), the same pattern routes/admin.py already uses.
 """
+import json
 import secrets
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -184,6 +185,169 @@ def list_paper_rules(
 # Admin write path — for populating rows from audit data
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# rules_json validation — write-time gate
+# ---------------------------------------------------------------------------
+#
+# rules_json is stored as an opaque TEXT blob and was previously never
+# inspected on write. That is a silent-failure surface, and an unusually
+# costly one here for two reasons:
+#
+#   1. Section labels must match questions.section VERBATIM. cbt_service's
+#      fetch_cbt_theory_paper() builds its output by iterating the authored
+#      section list, so a label that doesn't match any real section (a stray
+#      trailing space, "A" instead of "Section A") yields a section that is
+#      served empty forever, with no error anywhere. The mirror image — a
+#      real section with no authored rule — is now caught at read time by the
+#      orphaned-section warning in cbt_service.py, but that only logs; this
+#      is the half that can be refused outright.
+#
+#   2. Android's PaperRulesSyncService caches the whole table locally for
+#      offline CBT. A bad row therefore replicates to every device and keeps
+#      serving wrong until each one next syncs — a later server-side fix does
+#      not reach an offline client. Write time is the only reliable gate.
+#
+# Deliberately NOT validated here: anything requiring simulation of the
+# two-stage reserve-and-pool aggregation. That is Sprint E Phase 3's job and
+# cannot be done cheaply at write time. This function only checks what is
+# structurally decidable from the row plus the questions table.
+#
+# Ordering note: this runs BEFORE any write, and opens its own connection.
+# Callers that already hold one should be refactored to pass a cursor if this
+# ever shows up in profiling; at manual-authoring volume it is irrelevant.
+
+def validate_rules_json(
+    rules_json: Optional[str],
+    exam: str,
+    subject: str,
+    paper: str,
+    total_marks: Optional[int] = None,
+) -> None:
+    """
+    Raises HTTPException(400) if rules_json is malformed or inconsistent.
+    Returns None on success. A null/empty rules_json is valid — plenty of
+    rows carry only duration/count/marks and no section structure at all.
+    """
+    if rules_json is None or not str(rules_json).strip():
+        return
+
+    # --- Rule 1: parse + shape -------------------------------------------
+    # _get_theory_section_rules() requires a list of objects and silently
+    # returns [] for anything else, so a wrong shape here means the paper
+    # falls back to flat mode with no indication that it did.
+    try:
+        parsed = json.loads(rules_json)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"rules_json is not valid JSON: {exc}")
+
+    if not isinstance(parsed, list):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "rules_json must be a JSON list of section objects, not "
+                f"{type(parsed).__name__}. An object wrapper is silently "
+                "ignored by the parser and the paper falls back to flat mode."
+            ),
+        )
+    if not parsed:
+        raise HTTPException(
+            status_code=400,
+            detail="rules_json is an empty list. Omit the field entirely instead.",
+        )
+    for i, entry in enumerate(parsed):
+        if not isinstance(entry, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"rules_json[{i}] is {type(entry).__name__}, expected an object.",
+            )
+        if not str(entry.get("section") or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail=f"rules_json[{i}] has no non-empty 'section' label.",
+            )
+
+    labels = [entry["section"] for entry in parsed]
+    duplicates = sorted({lbl for lbl in labels if labels.count(lbl) > 1})
+    if duplicates:
+        # Not merged by the reader — the later entry wins and the earlier
+        # one's marks silently vanish from the paper.
+        raise HTTPException(
+            status_code=400,
+            detail=f"rules_json has duplicate section label(s): {duplicates}",
+        )
+
+    # --- Rule 2: labels must exist verbatim in questions.section ----------
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute(
+            "SELECT DISTINCT section FROM questions WHERE exam = ? AND subject = ? AND paper = ?",
+            (exam, subject, paper),
+        )
+        actual = {
+            _row_to_dict(r)["section"]
+            for r in cur.fetchall()
+            if _row_to_dict(r).get("section")
+        }
+    finally:
+        db.close()
+
+    if actual:
+        unknown = sorted(set(labels) - actual)
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"rules_json section label(s) {unknown} do not match any "
+                    f"section in the questions table for {exam}/{subject}/{paper}. "
+                    f"Labels must match verbatim (note whitespace and casing). "
+                    f"Known sections: {sorted(actual)}"
+                ),
+            )
+    # If `actual` is empty the paper has no questions ingested yet. Authoring
+    # the rule first is a legitimate order of operations, so this is not an
+    # error — the read-time orphan warning covers the case where questions
+    # arrive later under a label the rule doesn't list.
+
+    # --- Rule 3: the dead-section combination ----------------------------
+    # in_pool false-or-absent with required_count 0 caps the section at zero
+    # AND excludes it from the shared pool, so it can never contribute to a
+    # score under any pattern — while still rendering, still being tappable,
+    # and still spending AI-grading credits.
+    #
+    # SCOPING — do not simplify this condition. A genuine Pattern C section
+    # is in_pool TRUE with required_count 0, which is exactly what Chemistry,
+    # both Mathematics papers, NECO Biology and both Commerce papers need.
+    # Rejecting on required_count == 0 alone would break every one of them.
+    for i, entry in enumerate(parsed):
+        if not entry.get("in_pool", False) and int(entry.get("required_count", 0) or 0) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"rules_json[{i}] ('{entry['section']}') has required_count 0 "
+                    "with in_pool false or absent, so it can never contribute to a "
+                    "score. Set in_pool true for a Pattern C pooled section, or give "
+                    "it a non-zero required_count."
+                ),
+            )
+
+    # --- Rule 4: section marks must reconcile with the row ----------------
+    # This is the failure that opened this whole workstream: a hand-authored
+    # row whose total_marks did not equal the sum of its sections. It shipped
+    # once. With this check it cannot recur across the subjects still to be
+    # authored.
+    if total_marks is not None and all("total_marks" in e for e in parsed):
+        section_sum = sum(int(e.get("total_marks") or 0) for e in parsed)
+        if section_sum != int(total_marks):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Section total_marks sum to {section_sum} but the row's "
+                    f"total_marks is {total_marks}. One of the two is wrong."
+                ),
+            )
+
+
 def upsert_paper_rule(
     exam: str,
     subject: str,
@@ -226,6 +390,18 @@ def upsert_paper_rule(
         )
     if not exam or not subject or not paper:
         raise HTTPException(status_code=400, detail="exam, subject, and paper are required.")
+
+    # Structural gate on rules_json. Lives here rather than in the route so
+    # that every caller is covered — notably the bulk-import endpoint the
+    # route docstring anticipates, which would bypass a route-level check
+    # while being the one path authoring rows in volume.
+    validate_rules_json(
+        rules_json=rules_json,
+        exam=exam,
+        subject=subject,
+        paper=paper,
+        total_marks=total_marks,
+    )
 
     db = db_conn()
     try:
