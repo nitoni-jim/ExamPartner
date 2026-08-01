@@ -73,6 +73,14 @@ class UpsertPaperRuleRequest(BaseModel):
     total_marks:      Optional[int] = None
     rules_json:       Optional[str] = None
 
+    # Opt-in acknowledgement that omitted fields should be nulled on an
+    # existing row. Defaults False: the service rejects an update that would
+    # silently clear a populated field, because the UPDATE sets every column
+    # unconditionally and an omitted field is indistinguishable from an
+    # explicit null at this layer. Send the complete row, or set this true
+    # when the clearing is genuinely intended. Ignored on insert.
+    allow_clearing:   bool = False
+
 
 @router.post("/paper-rules")
 def upsert_paper_rules_route(
@@ -87,6 +95,11 @@ def upsert_paper_rules_route(
     automated pipeline. No bulk-import endpoint exists yet; each row is
     upserted individually. A bulk variant can be added later if the volume
     of confirmed audit rows makes one-at-a-time impractical.
+
+    Note for whoever builds that bulk variant: rules_json validation and the
+    partial-update guard both live in upsert_paper_rule() rather than here,
+    specifically so a second entry point cannot bypass them. Call the service
+    function; do not reimplement the write.
     """
     require_admin(user)
     return upsert_paper_rule(
@@ -99,4 +112,5 @@ def upsert_paper_rules_route(
         question_count=body.question_count,
         total_marks=body.total_marks,
         rules_json=body.rules_json,
+        allow_clearing=body.allow_clearing,
     )
