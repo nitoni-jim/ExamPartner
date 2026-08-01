@@ -336,7 +336,21 @@ def validate_rules_json(
     # row whose total_marks did not equal the sum of its sections. It shipped
     # once. With this check it cannot recur across the subjects still to be
     # authored.
-    if total_marks is not None and all("total_marks" in e for e in parsed):
+    marked = [e for e in parsed if "total_marks" in e]
+    if marked and len(marked) != len(parsed):
+        # Partial marks authoring silently disabled this check before, which
+        # is exactly how the failure it guards against slipped through once.
+        missing = sorted(e["section"] for e in parsed if "total_marks" not in e)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Some sections declare total_marks and others do not (missing: "
+                f"{missing}). Declare it on every section or none — a partial set "
+                "silently skips the marks-reconciliation check."
+            ),
+        )
+
+    if total_marks is not None and marked:
         section_sum = sum(int(e.get("total_marks") or 0) for e in parsed)
         if section_sum != int(total_marks):
             raise HTTPException(
@@ -358,6 +372,7 @@ def upsert_paper_rule(
     question_count: Optional[int] = None,
     total_marks: Optional[int] = None,
     rules_json: Optional[str] = None,
+    allow_clearing: bool = False,
 ) -> Dict[str, Any]:
     """
     Inserts or updates a paper_rules row, keyed by (exam, subject, paper, year)
@@ -409,12 +424,14 @@ def upsert_paper_rule(
 
         if year is not None:
             cur.execute(
-                "SELECT id FROM paper_rules WHERE exam = ? AND subject = ? AND paper = ? AND year = ?",
+                "SELECT id, duration_minutes, question_count, total_marks, rules_json "
+                "FROM paper_rules WHERE exam = ? AND subject = ? AND paper = ? AND year = ?",
                 (exam, subject, paper, year),
             )
         else:
             cur.execute(
-                "SELECT id FROM paper_rules WHERE exam = ? AND subject = ? AND paper = ? AND year IS NULL AND rule_source = ?",
+                "SELECT id, duration_minutes, question_count, total_marks, rules_json "
+                "FROM paper_rules WHERE exam = ? AND subject = ? AND paper = ? AND year IS NULL AND rule_source = ?",
                 (exam, subject, paper, rule_source),
             )
         existing = cur.fetchone()
@@ -422,7 +439,44 @@ def upsert_paper_rule(
         now = _now_iso()
 
         if existing:
-            existing_id = _row_to_dict(existing)["id"]
+            existing_row = _row_to_dict(existing)
+            existing_id = existing_row["id"]
+
+            # Partial-update guard.
+            #
+            # The UPDATE below sets every column unconditionally, so any field
+            # the caller omitted arrives as None and overwrites whatever was
+            # there. That is a real data-loss path, and the validator above
+            # makes it MORE likely to be hit, not less: the natural way to fix
+            # a row the validator rejected is to re-POST it, and a re-POST
+            # carrying only the corrected field silently nulls the rest.
+            #
+            # Rather than making the UPDATE skip None values — which would
+            # remove any way to deliberately clear a field — reject the write
+            # and say so. Deliberate clearing stays possible via
+            # allow_clearing=True.
+            if not allow_clearing:
+                _incoming = {
+                    "duration_minutes": duration_minutes,
+                    "question_count":   question_count,
+                    "total_marks":      total_marks,
+                    "rules_json":       rules_json,
+                }
+                _would_clear = sorted(
+                    field for field, value in _incoming.items()
+                    if value is None and existing_row.get(field) is not None
+                )
+                if _would_clear:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"This update would clear {_would_clear} on an existing row "
+                            "because those fields were omitted. Re-send the complete row "
+                            "including their current values, or pass allow_clearing=true "
+                            "if you really intend to null them."
+                        ),
+                    )
+
             cur.execute(
                 """
                 UPDATE paper_rules
