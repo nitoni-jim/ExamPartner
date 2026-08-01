@@ -58,6 +58,12 @@ CBT_PAPER_DURATION_MINUTES = {
 _DEFAULT_OBJECTIVE_DURATION = 60
 _DEFAULT_THEORY_DURATION    = 120
 
+# Papers already warned about for orphaned sections (see fetch_cbt_theory_paper).
+# Deduped per process so a misconfigured paper logs once rather than on every
+# fetch; process restarts re-surface it, which is the behaviour we want — the
+# condition is persistent, so a periodic reminder beats either spam or silence.
+_ORPHAN_SECTION_WARNED: set = set()
+
 
 def get_paper_duration_minutes(paper: Optional[str], qtype: str) -> int:
     """
@@ -632,6 +638,33 @@ def fetch_cbt_theory_paper(
         gradeable_ids_by_section.setdefault(section_label, []).append(qid)
 
     all_gradeable_ids = [qid for ids in gradeable_ids_by_section.values() for qid in ids]
+
+    # Orphaned-section guard.
+    #
+    # sections_out below is built by iterating section_rules, so a section that
+    # holds gradeable questions but has no matching entry in rules_json is
+    # dropped entirely — never served, in any mode, with no error raised. That
+    # is sometimes correct (WAEC Biology "Section B" is the Ghana-only variant,
+    # deliberately omitted from the row because Ghana is out of scope), but it
+    # is indistinguishable from an authoring mistake, because section_label
+    # must match questions.section verbatim (see the note above) — a stray
+    # trailing space in an authored label silently empties that whole section.
+    #
+    # This does not change behaviour; it just makes the drop visible. Removing
+    # the ambiguity properly needs the planned nullable `country` column on
+    # paper_rules, so an intentional exclusion can be declared rather than
+    # implied. Until then: log it.
+    _orphans = sorted(set(gradeable_ids_by_section) - {r.get("section") for r in section_rules})
+    if _orphans:
+        _key = (exam, subject, paper)
+        if _key not in _ORPHAN_SECTION_WARNED:
+            _ORPHAN_SECTION_WARNED.add(_key)
+            logger.warning(
+                "Orphaned section(s) for %s/%s/%s: %s hold gradeable questions "
+                "but have no rules_json entry, so they will not be served. "
+                "Intentional exclusion, or a section-label mismatch?",
+                exam, subject, paper, ", ".join(repr(o) for o in _orphans),
+            )
 
     if not all_gradeable_ids:
         # No gradeable questions anywhere in this paper yet — still return
