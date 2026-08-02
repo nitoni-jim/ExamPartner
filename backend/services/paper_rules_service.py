@@ -28,6 +28,30 @@ RULE_SOURCE_ACTUAL   = "actual_paper"
 RULE_SOURCE_SYLLABUS = "syllabus_default"
 RULE_SOURCE_LEGACY   = "legacy_placeholder"
 
+# Candidate countries, ISO 3166-1 alpha-2.
+#
+# The convention is enforced rather than merely documented because it has to
+# agree across three places that are written at different times — this column,
+# the candidate profile field, and whatever the capture UI stores. A mismatch
+# ("NGA", "Nigeria", "ng") does not fail loudly: it simply never matches, so
+# the country-specific row is silently skipped and the agnostic row is served
+# instead. That is indistinguishable from correct behaviour until someone
+# notices the wrong paper structure.
+#
+# alpha-2 specifically: it matches the device locale used to pre-select the
+# country, and it sidesteps the "Gambia" / "The Gambia" naming problem.
+#
+# Scope is the four non-Ghana WAEC/NECO countries. Ghana is deliberately
+# absent — it is the exclusion boundary for the whole platform, not an
+# unsupported-yet entry. Add to this set only alongside a decision to serve
+# that country's content.
+SUPPORTED_COUNTRIES = frozenset({
+    "NG",  # Nigeria
+    "GM",  # The Gambia
+    "LR",  # Liberia
+    "SL",  # Sierra Leone
+})
+
 # Preference order when more than one year-NULL row exists for the same
 # (exam, subject, paper) — real evidence beats syllabus policy beats guess.
 _RULE_SOURCE_PREFERENCE = {
@@ -484,6 +508,20 @@ def upsert_paper_rule(
         )
     if not exam or not subject or not paper:
         raise HTTPException(status_code=400, detail="exam, subject, and paper are required.")
+
+    # country is NULL-or-known. Rejecting an unrecognised value at write time
+    # is the only cheap place to catch it — downstream a bad code degrades
+    # silently into "no country-specific row matched", which looks exactly
+    # like correct fallback behaviour.
+    if country is not None and country not in SUPPORTED_COUNTRIES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"country must be null or one of {sorted(SUPPORTED_COUNTRIES)} "
+                f"(ISO 3166-1 alpha-2); got {country!r}. Null means the rule "
+                "applies to every candidate country."
+            ),
+        )
 
     # Structural gate on rules_json. Lives here rather than in the route so
     # that every caller is covered — notably the bulk-import endpoint the
