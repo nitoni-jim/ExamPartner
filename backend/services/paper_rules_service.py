@@ -202,10 +202,17 @@ def list_paper_rules(
 #      orphaned-section warning in cbt_service.py, but that only logs; this
 #      is the half that can be refused outright.
 #
-#   2. Android's PaperRulesSyncService caches the whole table locally for
-#      offline CBT. A bad row therefore replicates to every device and keeps
-#      serving wrong until each one next syncs — a later server-side fix does
-#      not reach an offline client. Write time is the only reliable gate.
+#   2. A bad row is not merely a bad response — it is cached. Android's
+#      PaperRulesSyncService does a full-table replace into paper_rules_cache
+#      on a 24-hour cycle, and the DAO reads durationMinutes / questionCount
+#      / totalMarks straight from that cache, so a wrong value survives a
+#      server-side fix for up to a day on every device already synced.
+#      (Narrower than it first appears for rules_json specifically: the
+#      cached rulesJson column is dead weight — theory sections are resolved
+#      live by GET /cbt/theory-questions, so a rules_json fix does reach
+#      clients immediately. The caching argument is real for the numeric
+#      columns, not for rules_json. Recorded precisely because the sloppier
+#      version of this claim was made first and was wrong.)
 #
 # Deliberately NOT validated here: anything requiring simulation of the
 # two-stage reserve-and-pool aggregation. That is Sprint E Phase 3's job and
