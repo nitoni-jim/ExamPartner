@@ -62,14 +62,28 @@ def resolve_paper_rule(
     paper: str,
     year: Optional[int] = None,
     qtype: str = "objective",
+    country: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Resolves the effective duration/count/marks for one paper, using the
     three-tier order described in db.py's paper_rules comment:
 
-      1. exact match (exam, subject, paper, year)
-      2. best year-NULL match for (exam, subject, paper), preferring
-         actual_paper > syllabus_default > legacy_placeholder
+      1. exact match (exam, subject, paper, year), country-specific first
+      2. best year-NULL match for (exam, subject, paper), country-specific
+         first, then preferring actual_paper > syllabus_default >
+         legacy_placeholder
+
+    Country handling: a row with country IS NULL applies to every candidate.
+    A country-specific row, where one exists, WINS over the agnostic row at
+    the same tier — it is a more specific match, never a competitor. Passing
+    country=None resolves as it always did, against country-agnostic rows
+    only, which is what every pre-existing caller and every pre-existing row
+    expects.
+
+    Ordering is explicit rather than incidental. The previous implementation
+    called fetchone() on an unordered query, which returned an arbitrary row
+    once more than one matched — nondeterministic, and potentially different
+    between SQLite locally and Postgres on Render.
       3. hardcoded fallback in cbt_service.py (get_paper_duration_minutes,
          get_cbt_cap) — used only when paper_rules has no row at all for
          this (exam, subject, paper) combination, in either form above.
@@ -87,12 +101,19 @@ def resolve_paper_rule(
                 """
                 SELECT * FROM paper_rules
                 WHERE exam = ? AND subject = ? AND paper = ? AND year = ?
+                  AND (country = ? OR country IS NULL)
                 """,
-                (exam, subject, paper, year),
+                (exam, subject, paper, year, country),
             )
-            exact = cur.fetchone()
-            if exact:
-                result = _row_to_dict(exact)
+            exact_rows = [_row_to_dict(r) for r in cur.fetchall()]
+            if exact_rows:
+                # Country-specific beats country-agnostic; then rule_source
+                # preference, matching tier 2's ordering.
+                exact_rows.sort(key=lambda r: (
+                    0 if r.get("country") is not None else 1,
+                    _RULE_SOURCE_PREFERENCE.get(r.get("rule_source"), 99),
+                ))
+                result = exact_rows[0]
                 result["resolved_from"] = "exact_year"
                 return result
 
@@ -100,17 +121,19 @@ def resolve_paper_rule(
             """
             SELECT * FROM paper_rules
             WHERE exam = ? AND subject = ? AND paper = ? AND year IS NULL
+              AND (country = ? OR country IS NULL)
             """,
-            (exam, subject, paper),
+            (exam, subject, paper, country),
         )
         year_null_rows = [_row_to_dict(r) for r in cur.fetchall()]
     finally:
         db.close()
 
     if year_null_rows:
-        year_null_rows.sort(
-            key=lambda r: _RULE_SOURCE_PREFERENCE.get(r.get("rule_source"), 99)
-        )
+        year_null_rows.sort(key=lambda r: (
+            0 if r.get("country") is not None else 1,
+            _RULE_SOURCE_PREFERENCE.get(r.get("rule_source"), 99),
+        ))
         best = year_null_rows[0]
         best["resolved_from"] = "year_null"
         return best
@@ -123,6 +146,7 @@ def resolve_paper_rule(
         "subject":          subject,
         "paper":            paper,
         "year":             None,
+        "country":          None,
         "duration_minutes": get_paper_duration_minutes(paper, qtype),
         "question_count":   get_cbt_cap(subject=subject, exam=exam, paper=paper),
         "total_marks":      None,
@@ -141,6 +165,7 @@ def list_paper_rules(
     subject: Optional[str] = None,
     paper: Optional[str] = None,
     year: Optional[int] = None,
+    country: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Returns paper_rules rows matching the given filters (all optional).
@@ -164,6 +189,14 @@ def list_paper_rules(
     if year is not None:
         where.append("year = ?")
         params.append(year)
+    if country:
+        # Country-specific rows PLUS the country-agnostic ones, since an
+        # agnostic row still applies to this candidate. Omitting country
+        # returns everything, which is what PaperRulesSyncService wants for
+        # its full-table cache — see the rollout note in the seed doc before
+        # relying on that for country-variant rows.
+        where.append("(country = ? OR country IS NULL)")
+        params.append(country)
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
@@ -379,6 +412,7 @@ def upsert_paper_rule(
     question_count: Optional[int] = None,
     total_marks: Optional[int] = None,
     rules_json: Optional[str] = None,
+    country: Optional[str] = None,
     allow_clearing: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -394,6 +428,16 @@ def upsert_paper_rule(
     resolve_paper_rule() fall through to tier 3. This function still
     accepts the value for completeness (e.g. explicitly migrating an old
     hardcoded constant into the table, if ever desired).
+
+    country=None means the rule applies regardless of candidate country —
+    the same "applies regardless" semantics year=None already carries, and
+    the state every pre-existing row is in. Because year and country are
+    INDEPENDENTLY nullable, row identity is a 2x2 matrix and the lookup
+    below has four branches, not two. Getting this wrong is not a loud
+    failure: a country-blind predicate would find the Nigeria Geography row
+    while authoring the Gambia one, take the update path, and overwrite it.
+    Every field would be populated, so the partial-update guard would not
+    fire either — it is the right shape of write aimed at the wrong row.
 
     For year=None upserts (a syllabus_default or legacy_placeholder row),
     uniqueness is checked by (exam, subject, paper, year IS NULL,
@@ -429,17 +473,25 @@ def upsert_paper_rule(
     try:
         cur = db.cursor()
 
+        # Row-identity lookup. year and country are independently nullable,
+        # so this is a 2x2 matrix. SQL's `= NULL` never matches, so each
+        # nullable dimension needs an explicit IS NULL branch — a single
+        # parameterised `country = ?` would silently match nothing and turn
+        # every country-agnostic upsert into a duplicate insert.
+        _sel = ("SELECT id, duration_minutes, question_count, total_marks, rules_json "
+                "FROM paper_rules WHERE exam = ? AND subject = ? AND paper = ? ")
+        _country_clause = "AND country = ?" if country is not None else "AND country IS NULL"
+        _country_param = (country,) if country is not None else ()
+
         if year is not None:
             cur.execute(
-                "SELECT id, duration_minutes, question_count, total_marks, rules_json "
-                "FROM paper_rules WHERE exam = ? AND subject = ? AND paper = ? AND year = ?",
-                (exam, subject, paper, year),
+                _sel + "AND year = ? " + _country_clause,
+                (exam, subject, paper, year) + _country_param,
             )
         else:
             cur.execute(
-                "SELECT id, duration_minutes, question_count, total_marks, rules_json "
-                "FROM paper_rules WHERE exam = ? AND subject = ? AND paper = ? AND year IS NULL AND rule_source = ?",
-                (exam, subject, paper, rule_source),
+                _sel + "AND year IS NULL AND rule_source = ? " + _country_clause,
+                (exam, subject, paper, rule_source) + _country_param,
             )
         existing = cur.fetchone()
 
@@ -499,11 +551,11 @@ def upsert_paper_rule(
             cur.execute(
                 """
                 INSERT INTO paper_rules
-                  (id, exam, subject, paper, year, duration_minutes, question_count,
+                  (id, exam, subject, paper, year, country, duration_minutes, question_count,
                    total_marks, rule_source, rules_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (row_id, exam, subject, paper, year, duration_minutes, question_count,
+                (row_id, exam, subject, paper, year, country, duration_minutes, question_count,
                  total_marks, rule_source, rules_json, now, now),
             )
 
