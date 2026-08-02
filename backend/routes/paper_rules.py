@@ -26,6 +26,16 @@ def paper_rules(
     paper: Optional[str] = Query(default=None),
     year: Optional[int] = Query(default=None),
     country: Optional[str] = Query(default=None),
+    supports_country: bool = Query(
+        default=False,
+        description=(
+            "Client capability flag. Set true only if the caller can "
+            "distinguish country-specific paper_rules rows from "
+            "country-agnostic ones. Defaults false, which withholds "
+            "country-specific rows — the safe answer for clients built "
+            "before country support existed."
+        ),
+    ),
 ):
     """
     Returns paper_rules rows matching the given filters (all optional).
@@ -34,14 +44,17 @@ def paper_rules(
     agnostic row still applies to that candidate. Omitting it returns every
     row, including country-specific ones.
 
-    ROLLOUT WARNING: PaperRulesSyncService calls this with no filters and
-    does a full-table replace into its local cache. Clients that predate
-    country support map rows without it and select on
-    (exam, subject, paper, year) alone, so they would match BOTH variants of
-    a country-varying paper and pick arbitrarily. Do not author any
-    country-specific row until either the country-aware client has shipped,
-    or this endpoint withholds variant rows from clients that do not ask for
-    them. See the country sequencing section in the implementation seed.
+    ROLLOUT SAFETY: PaperRulesSyncService calls this with no filters and does
+    a full-table replace into its local cache, and clients built before
+    country support select on (exam, subject, paper, year) alone — so they
+    would match BOTH variants of a country-varying paper and pick
+    arbitrarily, on a device that is offline by design.
+
+    supports_country is the guard. Absent (the default), country-specific
+    rows are withheld entirely and the caller sees exactly what it saw before
+    country existed. Country-varying rows can therefore be authored at any
+    time without waiting on client adoption; old installs keep resolving as
+    they always have, and pick up variants only once updated.
 
     No authentication required — paper_rules is structural exam metadata
     (timing, question counts, marks), not paid content, unlike /cbt/questions
@@ -51,7 +64,10 @@ def paper_rules(
     full table (no filters) on app launch/login and caches it locally in
     paper_rules_cache for fully offline CBT runtime use.
     """
-    return list_paper_rules(exam=exam, subject=subject, paper=paper, year=year, country=country)
+    return list_paper_rules(
+        exam=exam, subject=subject, paper=paper, year=year,
+        country=country, supports_country=supports_country,
+    )
 
 
 @router.get("/paper-rules/resolve")
