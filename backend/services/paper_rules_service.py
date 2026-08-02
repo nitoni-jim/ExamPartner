@@ -166,6 +166,7 @@ def list_paper_rules(
     paper: Optional[str] = None,
     year: Optional[int] = None,
     country: Optional[str] = None,
+    supports_country: bool = False,
 ) -> Dict[str, Any]:
     """
     Returns paper_rules rows matching the given filters (all optional).
@@ -173,6 +174,29 @@ def list_paper_rules(
     PaperRulesSyncService to pull the full table (or a filtered slice) for
     local caching. For runtime single-paper lookups with fallback, use
     resolve_paper_rule() instead.
+
+    supports_country is a CLIENT-CAPABILITY flag, not a filter. It exists
+    because this endpoint feeds a full-table replace into an on-device cache
+    that then does its own row selection, and clients built before country
+    support select on (exam, subject, paper, year) alone. Ship a
+    country-varying paper's two rows to such a client and it matches both and
+    picks arbitrarily — a wrong paper structure, on a device that is offline
+    by design and cannot be corrected from the server.
+
+    Default False, i.e. the safe answer for any caller that does not
+    explicitly claim the capability. Old clients keep receiving exactly what
+    they received before country existed: the country-agnostic rows only.
+    New clients pass supports_country=true and get everything.
+
+    This decouples content authoring from client adoption. Without it,
+    authoring the first country-specific row would be unsafe until an
+    adoption curve you do not control has passed — with it, authoring is safe
+    immediately and old installs simply keep resolving as they always have.
+
+    Note this is deliberately NOT versioned on an app build number. The
+    question that matters is behavioural — can the caller distinguish country
+    variants — and a capability flag answers it directly, without the server
+    needing a table of which builds understand what.
     """
     where: List[str] = []
     params: List[Any] = []
@@ -191,12 +215,16 @@ def list_paper_rules(
         params.append(year)
     if country:
         # Country-specific rows PLUS the country-agnostic ones, since an
-        # agnostic row still applies to this candidate. Omitting country
-        # returns everything, which is what PaperRulesSyncService wants for
-        # its full-table cache — see the rollout note in the seed doc before
-        # relying on that for country-variant rows.
+        # agnostic row still applies to this candidate.
         where.append("(country = ? OR country IS NULL)")
         params.append(country)
+    elif not supports_country:
+        # Capability gate. A caller that neither names a country nor claims
+        # country support cannot safely be handed variant rows: it would
+        # cache several rows that look identical on the keys it selects by.
+        # Withhold them. A caller that DID name a country is fine either way,
+        # which is why this is the elif branch rather than an independent one.
+        where.append("country IS NULL")
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
