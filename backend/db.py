@@ -496,11 +496,26 @@ AI_GRADING_CREDIT_PURCHASES_POSTGRES_COLUMNS = [
 # year-agnostic rule (syllabus-derived or a temporary fallback) — see
 # rule_source below for which kind.
 #
+# country IS NULL means the rule applies regardless of candidate country —
+# the same "applies regardless" semantics year IS NULL already carries, and
+# the state every pre-existing row is in. A non-NULL country marks a rule
+# that applies ONLY to that country. Needed because WAEC Geography runs a
+# different section/count STRUCTURE per country (Nigeria: fixed allocation;
+# Gambia/Liberia/Sierra Leone: distributed minimum), which rules_json alone
+# cannot express — duration_minutes, question_count and total_marks are
+# columns, outside that JSON entirely.
+#
+# year and country are INDEPENDENTLY nullable, so row identity is a 2x2
+# matrix, not a single toggle. upsert_paper_rule() branches on all four
+# combinations; see the comment there before changing either predicate.
+#
 # Resolution order (implemented in services/paper_rules_service.py):
-#   1. exact match: exam + subject + paper + year
-#   2. best year-NULL match for exam + subject + paper, preferring
+#   1. exact match: exam + subject + paper + year + country
+#   2. best year-NULL match for exam + subject + paper + country, preferring
 #      rule_source = 'actual_paper' over 'syllabus_default' over
 #      'legacy_placeholder' if more than one year-NULL row exists
+#      (country-specific rows are preferred over country-agnostic ones at
+#      each tier — a NULL-country row is the fallback, never a competitor)
 #   3. if nothing in the table at all, the route falls back to the existing
 #      hardcoded CBT_PAPER_DURATION_MINUTES / get_cbt_cap() in cbt_service.py
 #      — paper_rules never needs every row populated to be useful.
@@ -519,6 +534,7 @@ PAPER_RULES_COLUMNS = [
     ("subject",           "TEXT NOT NULL"),
     ("paper",              "TEXT NOT NULL"),
     ("year",               "INTEGER"),                 # NULL = year-agnostic rule
+    ("country",            "TEXT"),                    # NULL = applies to every candidate country
     ("duration_minutes",   "INTEGER"),                  # this paper's own duration only
     ("question_count",     "INTEGER"),                  # nullable — not always known
     ("total_marks",        "INTEGER"),                  # nullable — not always known
@@ -888,7 +904,20 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_agcp_reference ON ai_grading_credit_purchases(payment_reference);",
             # paper_rules
             "CREATE INDEX IF NOT EXISTS idx_paper_rules_lookup ON paper_rules(exam, subject, paper, year);",
-            "CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_rules_unique_row ON paper_rules(exam, subject, paper, year);",
+            # Unique row identity widened to include country. The old index is
+            # dropped by name rather than recreated in place, because
+            # CREATE UNIQUE INDEX IF NOT EXISTS is a no-op when the name
+            # already exists — it would silently keep the narrow definition on
+            # any existing database. Versioning the name makes the migration
+            # idempotent and greppable; the DROP is safe to run forever.
+            #
+            # Note this index does NOT deduplicate country-agnostic rows:
+            # both engines treat NULLs as distinct in unique indexes (same
+            # caveat as `year` above). The real guard against overwriting the
+            # wrong row is the four-branch predicate in upsert_paper_rule();
+            # this index catches a different, louder failure.
+            "DROP INDEX IF EXISTS ux_paper_rules_unique_row;",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_rules_unique_row_v2 ON paper_rules(exam, subject, paper, year, country);",
         ]
 
         for sql in _sqlite_indexes:
@@ -1121,7 +1150,20 @@ def _init_db_postgres() -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_agcp_reference ON ai_grading_credit_purchases(payment_reference);",
             # paper_rules
             "CREATE INDEX IF NOT EXISTS idx_paper_rules_lookup ON paper_rules(exam, subject, paper, year);",
-            "CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_rules_unique_row ON paper_rules(exam, subject, paper, year);",
+            # Unique row identity widened to include country. The old index is
+            # dropped by name rather than recreated in place, because
+            # CREATE UNIQUE INDEX IF NOT EXISTS is a no-op when the name
+            # already exists — it would silently keep the narrow definition on
+            # any existing database. Versioning the name makes the migration
+            # idempotent and greppable; the DROP is safe to run forever.
+            #
+            # Note this index does NOT deduplicate country-agnostic rows:
+            # both engines treat NULLs as distinct in unique indexes (same
+            # caveat as `year` above). The real guard against overwriting the
+            # wrong row is the four-branch predicate in upsert_paper_rule();
+            # this index catches a different, louder failure.
+            "DROP INDEX IF EXISTS ux_paper_rules_unique_row;",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_rules_unique_row_v2 ON paper_rules(exam, subject, paper, year, country);",
         ]
 
         for sql in _indexes:
