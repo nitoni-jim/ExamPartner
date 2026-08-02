@@ -1134,6 +1134,167 @@ def _store_attempt(
 
 
 # ---------------------------------------------------------------------------
+# Structured sub-answer normalization
+# ---------------------------------------------------------------------------
+#
+# POST /theory/grade accepts student_answer in two shapes:
+#
+#   (A) a plain string — legacy path, still used for English essay /
+#       comprehension / summary and for any question with no sub_questions.
+#
+#   (B) a list of per-sub-question objects — the sub_answers payload
+#       (spec: ExamPartner_Spec_Editable_Table_Submission.docx §2.2), built
+#       by Android's buildSubAnswersPayload(). Each entry carries "label",
+#       "type", and either "answer" (free text) or "rows" (a table), plus an
+#       optional "table_key".
+#
+# routes/theory.py, ApiService.kt and TheoryGradeRequest all documented these
+# helpers as the place where shape (B) is handled — but they were never
+# actually written, so shape (B) reached `(student_answer or "").strip()` and
+# raised AttributeError: 'list' object has no attribute 'strip'. Every
+# multi-part theory question returned HTTP 500 as a result.
+#
+# Everything downstream of grade_theory() expects a string: all four prompt
+# builders interpolate student_answer into an f-string, and _store_attempt()
+# writes it to a TEXT column. So normalization happens once, up front, and
+# the rest of the pipeline is untouched.
+#
+# Defensive about "rows": the exact table shape is defined in the spec doc
+# and in buildSubAnswersPayload(), neither of which was available when this
+# was written. Rather than guess one shape and crash on the others, every
+# plausible form is handled — list of lists, list of dicts, list of scalars.
+# If the real shape is known later this can be tightened, but it should not
+# be narrowed to the point of raising: a grading request that reaches here
+# has ALREADY consumed nothing, but a crash here is a 500 to a student
+# mid-exam.
+
+def _render_table_rows(rows: Any) -> str:
+    """
+    Renders a table-type sub-answer as readable text for the grading prompt.
+    Tolerant of row shape — see the note above.
+    """
+    if not isinstance(rows, list):
+        return str(rows or "").strip()
+
+    lines = []
+    for row in rows:
+        if isinstance(row, dict):
+            # {"column": "value"} or {"cells": [...]}
+            if "cells" in row and isinstance(row["cells"], list):
+                cells = [str(c or "").strip() for c in row["cells"]]
+            else:
+                cells = [f"{k}: {str(v or '').strip()}" for k, v in row.items()]
+        elif isinstance(row, list):
+            cells = [str(c or "").strip() for c in row]
+        else:
+            cells = [str(row or "").strip()]
+
+        line = " | ".join(c for c in cells if c)
+        if line:
+            lines.append(f"    {line}")
+
+    return "\n".join(lines)
+
+
+def _normalize_sub_answers(student_answer: Any) -> str:
+    """
+    Collapses either accepted student_answer shape into the single string the
+    prompt builders and theory_attempts storage both expect.
+
+    A string passes through stripped, byte-for-byte as before — the legacy
+    path is deliberately unchanged.
+
+    A list is rendered label-by-label, which mirrors how _build_prompt()
+    already presents the sub-questions themselves. Keeping the two in the
+    same order and labelling scheme matters: the model is asked to return
+    per-label sub_scores, and it can only do that reliably if the answer
+    block is labelled the same way the question block is.
+
+    Sub-answers left blank are rendered explicitly as "(no answer given)"
+    rather than omitted. Omitting them would make an unanswered sub-question
+    indistinguishable from one the student never saw, and the marking rules
+    require awarding 0 for a blank — not silently dropping it from the paper.
+    """
+    if student_answer is None:
+        return ""
+
+    if isinstance(student_answer, str):
+        return student_answer.strip()
+
+    if not isinstance(student_answer, list):
+        # Defensive: neither documented shape. Stringify rather than raise —
+        # a surprising payload should degrade to a gradeable prompt, not a 500.
+        logger.warning(
+            "Unexpected student_answer type %s — coercing to string",
+            type(student_answer).__name__,
+        )
+        return str(student_answer).strip()
+
+    blocks = []
+    for entry in student_answer:
+        if not isinstance(entry, dict):
+            text = str(entry or "").strip()
+            if text:
+                blocks.append(text)
+            continue
+
+        label = str(entry.get("label") or "").strip()
+        if "rows" in entry and entry.get("rows"):
+            body = _render_table_rows(entry.get("rows"))
+            table_key = str(entry.get("table_key") or "").strip()
+            if body and table_key:
+                body = f"  [table: {table_key}]\n{body}"
+        else:
+            body = str(entry.get("answer") or "").strip()
+
+        if not body:
+            body = "(no answer given)"
+
+        if not label:
+            blocks.append(body)
+        elif "\n" in body:
+            # Multi-line (a table): label on its own line so the rendered
+            # rows stay column-aligned instead of being pushed out of line
+            # by the label's width.
+            blocks.append(f"{label}\n{body}")
+        else:
+            blocks.append(f"{label} {body}")
+
+    return "\n\n".join(blocks).strip()
+
+
+def _sub_answers_are_blank(student_answer: Any) -> bool:
+    """
+    True when the submission carries no actual content, in either shape.
+
+    Checked against the RAW payload rather than the normalized string,
+    because normalization inserts "(no answer given)" placeholders — a
+    fully blank structured submission normalizes to a non-empty string and
+    would otherwise sail past an emptiness test on the rendered text.
+    """
+    if student_answer is None:
+        return True
+
+    if isinstance(student_answer, str):
+        return not student_answer.strip()
+
+    if not isinstance(student_answer, list):
+        return not str(student_answer).strip()
+
+    for entry in student_answer:
+        if not isinstance(entry, dict):
+            if str(entry or "").strip():
+                return False
+            continue
+        if str(entry.get("answer") or "").strip():
+            return False
+        if _render_table_rows(entry.get("rows")).strip():
+            return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Public entry points
 # ---------------------------------------------------------------------------
 
@@ -1170,7 +1331,7 @@ def get_ai_grading_quota(identifier: str) -> Dict[str, Any]:
     }
 
 
-def grade_theory(identifier: str, question_id: str, student_answer: str) -> Dict[str, Any]:
+def grade_theory(identifier: str, question_id: str, student_answer: Any) -> Dict[str, Any]:
     """
     Orchestrates the full AI grading flow:
       1. Validate student_answer
@@ -1186,9 +1347,13 @@ def grade_theory(identifier: str, question_id: str, student_answer: str) -> Dict
     Returns the grading result dict (without internal _meta key).
     Raises HTTPException for all error cases.
     """
-    student_answer = (student_answer or "").strip()
-    if not student_answer:
+    # student_answer arrives as either a plain string or the structured
+    # sub_answers list — see _normalize_sub_answers() above. Blankness is
+    # tested against the RAW payload, before normalization inserts its
+    # "(no answer given)" placeholders.
+    if _sub_answers_are_blank(student_answer):
         raise HTTPException(status_code=400, detail="student_answer cannot be empty.")
+    student_answer = _normalize_sub_answers(student_answer)
 
     # 1. Fetch and validate question BEFORE consuming any allowance
     question_data = _fetch_question_data(question_id)
