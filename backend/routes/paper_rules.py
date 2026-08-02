@@ -25,9 +25,23 @@ def paper_rules(
     subject: Optional[str] = Query(default=None),
     paper: Optional[str] = Query(default=None),
     year: Optional[int] = Query(default=None),
+    country: Optional[str] = Query(default=None),
 ):
     """
     Returns paper_rules rows matching the given filters (all optional).
+
+    country returns that country's rows PLUS country-agnostic ones, since an
+    agnostic row still applies to that candidate. Omitting it returns every
+    row, including country-specific ones.
+
+    ROLLOUT WARNING: PaperRulesSyncService calls this with no filters and
+    does a full-table replace into its local cache. Clients that predate
+    country support map rows without it and select on
+    (exam, subject, paper, year) alone, so they would match BOTH variants of
+    a country-varying paper and pick arbitrarily. Do not author any
+    country-specific row until either the country-aware client has shipped,
+    or this endpoint withholds variant rows from clients that do not ask for
+    them. See the country sequencing section in the implementation seed.
 
     No authentication required — paper_rules is structural exam metadata
     (timing, question counts, marks), not paid content, unlike /cbt/questions
@@ -37,7 +51,7 @@ def paper_rules(
     full table (no filters) on app launch/login and caches it locally in
     paper_rules_cache for fully offline CBT runtime use.
     """
-    return list_paper_rules(exam=exam, subject=subject, paper=paper, year=year)
+    return list_paper_rules(exam=exam, subject=subject, paper=paper, year=year, country=country)
 
 
 @router.get("/paper-rules/resolve")
@@ -47,6 +61,7 @@ def paper_rules_resolve(
     paper: str = Query(...),
     year: Optional[int] = Query(default=None),
     qtype: str = Query(default="objective"),
+    country: Optional[str] = Query(default=None),
 ):
     """
     Resolves the effective duration/count/marks for ONE paper, applying the
@@ -59,7 +74,7 @@ def paper_rules_resolve(
     admin tooling that wants to preview what a given (exam, subject, paper,
     year) would currently resolve to without needing the full table dump.
     """
-    return resolve_paper_rule(exam=exam, subject=subject, paper=paper, year=year, qtype=qtype)
+    return resolve_paper_rule(exam=exam, subject=subject, paper=paper, year=year, qtype=qtype, country=country)
 
 
 class UpsertPaperRuleRequest(BaseModel):
@@ -72,6 +87,12 @@ class UpsertPaperRuleRequest(BaseModel):
     question_count:   Optional[int] = None
     total_marks:      Optional[int] = None
     rules_json:       Optional[str] = None
+
+    # NULL = applies to every candidate country, which is the state of every
+    # pre-existing row. A value marks a rule that applies only to that
+    # country — needed because WAEC Geography's section STRUCTURE differs by
+    # country, not just its content.
+    country:          Optional[str] = None
 
     # Opt-in acknowledgement that omitted fields should be nulled on an
     # existing row. Defaults False: the service rejects an update that would
@@ -112,5 +133,6 @@ def upsert_paper_rules_route(
         question_count=body.question_count,
         total_marks=body.total_marks,
         rules_json=body.rules_json,
+        country=body.country,
         allow_clearing=body.allow_clearing,
     )
