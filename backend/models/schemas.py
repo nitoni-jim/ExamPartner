@@ -17,6 +17,11 @@ class RegisterReq(BaseModel):
     identifier: str
     password: str
     full_name: Optional[str] = None
+    # Candidate country, ISO 3166-1 alpha-2 (see config.SUPPORTED_COUNTRIES).
+    # Optional so the web client and any older caller keep working; a null
+    # country resolves against country-agnostic paper_rules rows exactly as
+    # before. Users can set or correct it later via POST /me/country.
+    country: Optional[str] = None
     device_id: Optional[str] = None
     device_name: Optional[str] = None
     platform: Optional[str] = None
