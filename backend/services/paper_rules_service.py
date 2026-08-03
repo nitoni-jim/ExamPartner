@@ -21,36 +21,15 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 
-from config import db_conn
+from config import SUPPORTED_COUNTRIES, db_conn
 from services.cbt_service import get_paper_duration_minutes, get_cbt_cap
 
 RULE_SOURCE_ACTUAL   = "actual_paper"
 RULE_SOURCE_SYLLABUS = "syllabus_default"
 RULE_SOURCE_LEGACY   = "legacy_placeholder"
 
-# Candidate countries, ISO 3166-1 alpha-2.
-#
-# The convention is enforced rather than merely documented because it has to
-# agree across three places that are written at different times — this column,
-# the candidate profile field, and whatever the capture UI stores. A mismatch
-# ("NGA", "Nigeria", "ng") does not fail loudly: it simply never matches, so
-# the country-specific row is silently skipped and the agnostic row is served
-# instead. That is indistinguishable from correct behaviour until someone
-# notices the wrong paper structure.
-#
-# alpha-2 specifically: it matches the device locale used to pre-select the
-# country, and it sidesteps the "Gambia" / "The Gambia" naming problem.
-#
-# Scope is the four non-Ghana WAEC/NECO countries. Ghana is deliberately
-# absent — it is the exclusion boundary for the whole platform, not an
-# unsupported-yet entry. Add to this set only alongside a decision to serve
-# that country's content.
-SUPPORTED_COUNTRIES = frozenset({
-    "NG",  # Nigeria
-    "GM",  # The Gambia
-    "LR",  # Liberia
-    "SL",  # Sierra Leone
-})
+# SUPPORTED_COUNTRIES now lives in config.py — users.country validates
+# against the same set, and two copies could silently diverge.
 
 # Preference order when more than one year-NULL row exists for the same
 # (exam, subject, paper) — real evidence beats syllabus policy beats guess.
