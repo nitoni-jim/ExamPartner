@@ -757,6 +757,15 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
             ("is_founding", "INTEGER NOT NULL DEFAULT 0"),
             ("full_name", "TEXT"),
             ("is_admin", "INTEGER NOT NULL DEFAULT 0"),
+            # Candidate country, ISO 3166-1 alpha-2, validated against
+            # config.SUPPORTED_COUNTRIES. NULL = not yet stated, which is the
+            # state of every account created before this column existed.
+            #
+            # Needed because WAEC Geography runs a different section/count
+            # STRUCTURE per country, so resolving the right paper_rules row
+            # requires knowing the candidate's country — content curation
+            # alone cannot express it. See paper_rules.country in this file.
+            ("country", "TEXT"),
         ])
 
         cur.execute(
@@ -997,6 +1006,10 @@ def _init_db_postgres() -> None:
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_founding BOOLEAN NOT NULL DEFAULT FALSE;")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name TEXT;")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;")
+        # Candidate country — see the SQLite branch above for why this exists.
+        # Kept in step with that list: users migrations are declared in two
+        # places in this file, unlike paper_rules' single column list.
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS country TEXT;")
 
         cur.execute(
             """
