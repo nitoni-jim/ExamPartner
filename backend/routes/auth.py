@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path
 from fastapi.responses import JSONResponse
 
-from config import db_conn, logger
+from config import SUPPORTED_COUNTRIES, db_conn, logger
 from models.schemas import AuthReq, AuthResp, LoginReq, RefreshReq, RegisterReq
 from services.access_control import is_admin_identifier, is_paid_user
 from services.auth_utils import get_current_user, make_token
@@ -47,6 +47,38 @@ class PreAuthRemoveBody(BaseModel):
     identifier: str
     password:   str
     device_id:  str
+
+
+def _normalize_country(raw: Optional[str]) -> Optional[str]:
+    """
+    Validates and normalizes a candidate country to ISO 3166-1 alpha-2.
+
+    Returns None for anything absent or blank — "not stated" is a legitimate
+    state, and every account created before this column existed is in it. A
+    null country resolves against country-agnostic paper_rules rows, which is
+    exactly the behaviour that existed before countries did.
+
+    Raises 400 for a value that is present but unrecognised, rather than
+    silently discarding it. A bad code stored as-is would never match any
+    paper_rules row, so the candidate would quietly fall back to the
+    country-agnostic paper forever — indistinguishable from correct
+    behaviour, and impossible to notice from the outside. Same reasoning as
+    the identical check on paper_rules.country.
+    """
+    if raw is None:
+        return None
+    value = str(raw).strip().upper()
+    if not value:
+        return None
+    if value not in SUPPORTED_COUNTRIES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"country must be one of {sorted(SUPPORTED_COUNTRIES)} "
+                f"(ISO 3166-1 alpha-2); got {raw!r}."
+            ),
+        )
+    return value
 
 
 def _hash_pw(password: str, salt: str) -> str:
@@ -87,6 +119,7 @@ def register(body: RegisterReq):
         raise HTTPException(status_code=400, detail="Invalid identifier/password")
 
     full_name = (body.full_name or "").strip() or None
+    country   = _normalize_country(body.country)
     salt      = secrets.token_hex(16)
     pw_hash   = _hash_pw(body.password, salt)
 
@@ -94,8 +127,9 @@ def register(body: RegisterReq):
     cur = db.cursor()
     try:
         cur.execute(
-            "INSERT INTO users (identifier, salt, pw_hash, is_paid, full_name) VALUES (?, ?, ?, ?, ?)",
-            (identifier, salt, pw_hash, False, full_name),
+            "INSERT INTO users (identifier, salt, pw_hash, is_paid, full_name, country) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (identifier, salt, pw_hash, False, full_name, country),
         )
         db.commit()
     except Exception as e:
@@ -281,7 +315,7 @@ def me(user: Optional[Dict[str, Any]] = Depends(get_current_user)):
     db = db_conn()
     cur = db.cursor()
     cur.execute(
-        "SELECT is_paid, paid_until, plan, is_founding, email, is_admin, full_name "
+        "SELECT is_paid, paid_until, plan, is_founding, email, is_admin, full_name, country "
         "FROM users WHERE identifier = ?",
         (identifier,),
     )
@@ -303,6 +337,10 @@ def me(user: Optional[Dict[str, Any]] = Depends(get_current_user)):
         "plan":           row_get(row, "plan") or "free",
         "is_founding":    bool(row_get(row, "is_founding") or False),
         "email":          row_get(row, "email"),
+        # NULL until the candidate states one. The client treats null as
+        # "unknown" and passes it straight through to paper-rule resolution,
+        # where it matches country-agnostic rows only.
+        "country":        row_get(row, "country"),
         "is_admin":       is_admin_identifier(identifier) or bool(row_get(row, "is_admin") or False),
         "device_limit":   2 if is_paid_active else 1,
     }
@@ -406,3 +444,40 @@ def update_email(
     db.close()
 
     return {"ok": True, "email": email}
+
+
+@router.post("/me/country")
+def update_country(
+    payload: Dict[str, Any],
+    user: Optional[Dict[str, Any]] = Depends(get_current_user),
+):
+    """
+    Sets or corrects the candidate's country.
+
+    Exists because country is optional at registration and did not exist at
+    all for accounts created earlier, so there has to be a way to state it
+    afterwards. Also the correction path: a candidate who picked wrong, or
+    whose device locale pre-selected wrong, would otherwise be served another
+    country's paper structure with no way to fix it.
+
+    An explicit null clears the field back to "not stated" rather than being
+    rejected — clearing is a legitimate action here, unlike on paper_rules
+    where an omitted field silently nulling a populated one was a data-loss
+    bug. The difference is that this endpoint takes exactly one field, so an
+    omission cannot be accidental.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    identifier = user.get("sub")
+    if not identifier:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    country = _normalize_country(payload.get("country"))
+
+    db = db_conn()
+    cur = db.cursor()
+    cur.execute("UPDATE users SET country = ? WHERE identifier = ?", (country, identifier))
+    db.commit()
+    db.close()
+
+    return {"ok": True, "country": country}
