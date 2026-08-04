@@ -11,15 +11,17 @@ GET /content/version
     content_version: total question count in the DB. Always increases
                      when new questions are added. Used as a simple
                      monotonic version number.
-    latest_updated_at: rowid-based proxy for newest question — the highest
-                       rowid row's creation order. Since questions table has
-                       no updated_at column, we use MAX(rowid) as a proxy.
+    latest_updated_at: always null. The questions table has no updated_at
+                       column and there is no portable substitute, so this
+                       has never carried a real value. Kept in the response
+                       shape for client compatibility.
     has_updates: always true if content_version > 0. The Android app
                  compares this against its last-synced count stored locally.
     message: human-readable status string shown to the user.
 """
 from fastapi import APIRouter
 from config import db_conn, logger
+from services.question_utils import row_get
 
 router = APIRouter(prefix="/content", tags=["content"])
 
@@ -30,37 +32,39 @@ def content_version():
     Returns the current content version derived from the questions table.
 
     content_version = COUNT(*) of all questions.
-    latest_updated_at = ISO timestamp of the most-recently inserted row
-                        (approximated via MAX(rowid) join).
+    latest_updated_at = always null (see module docstring).
 
     This endpoint is unauthenticated — no sensitive data is returned.
     """
+    db = None
     try:
         db  = db_conn()
         cur = db.cursor()
 
-        # Total question count — used as content_version
-        cur.execute("SELECT COUNT(*) FROM questions")
+        # Total question count — used as content_version.
+        #
+        # The column is ALIASED rather than read positionally. Postgres runs
+        # with RealDictCursor, whose rows are dict-like and reject integer
+        # indexing with KeyError rather than IndexError — so `row[0]` raised
+        # on every Postgres request, and the handler below quietly returned
+        # content_version 0 with HTTP 200. ProfileScreen took the success
+        # branch and showed the server as holding zero questions.
+        #
+        # Guessing the unaliased column name does not work either: SQLite
+        # calls it "COUNT(*)" and Postgres calls it "count". row_get() is the
+        # codebase's existing helper for exactly this dialect difference, so
+        # use it against a name we control.
+        cur.execute("SELECT COUNT(*) AS total FROM questions")
         row = cur.fetchone()
-        total = int(row[0] if not hasattr(row, "keys") else row["COUNT(*)"] if "COUNT(*)" in (row.keys() if hasattr(row, "keys") else []) else row[0])
+        total = int(row_get(row, "total") or 0)
 
-        # Most recent insert approximation — questions have no updated_at,
-        # so we join on MAX(rowid) to get the newest row's id as a proxy.
-        # We only need the id for ordering purposes; we return a count-based
-        # version number, not a timestamp.
+        # latest_updated_at is always None: the questions table has no
+        # updated_at column, and there is no portable substitute. A previous
+        # MAX(rowid) block was removed rather than fixed — it discarded its
+        # own result and set this to None on every path, so it computed
+        # nothing, while being invalid SQL on Postgres (rowid is SQLite-only).
+        # The field is kept in the response for client compatibility.
         latest_at = None
-        try:
-            cur.execute(
-                "SELECT id FROM questions WHERE rowid = (SELECT MAX(rowid) FROM questions)"
-            )
-            latest_row = cur.fetchone()
-            # We can't get a real timestamp, so we return None — Android
-            # will display "Unknown" for this field gracefully.
-            latest_at = None
-        except Exception:
-            latest_at = None
-
-        db.close()
 
         return {
             "ok":               True,
@@ -79,3 +83,12 @@ def content_version():
             "has_updates":      False,
             "message":          "Could not fetch content version.",
         }
+
+    finally:
+        # Previously closed only on the success path, so any failure leaked
+        # the connection.
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
