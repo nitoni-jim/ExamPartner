@@ -36,6 +36,21 @@ MODEL_SONNET = "claude-sonnet-4-6"
 # Escalate to Sonnet when Haiku confidence is below this threshold
 ESCALATION_THRESHOLD = 0.6
 
+# Output token budget per grading call.
+#
+# Was 2048, which silently capped large questions. Confirmed in production
+# (WAEC_2020_BIOLOGY_THEORY_Q6, a 30-mark question, 2026-08-04): the response
+# schema requires a point_breakdown entry WITH a comment for every examiner
+# point, plus sub_scores, missed_points, overall_feedback and improvement_tip.
+# A question with that many marking points cannot fit, so the JSON was cut
+# mid-token and failed to parse — surfacing to the student as "AI grading
+# returned an unexpected response" AFTER their grading credit was spent.
+#
+# Cost of raising this is zero for small questions: output tokens are billed
+# as generated, not as budgeted. The ceiling only has to be high enough that
+# no legitimate response hits it.
+MAX_OUTPUT_TOKENS = 8192
+
 # Approximate cost per 1 000 tokens (USD) — update when pricing changes
 # Source: Anthropic pricing page
 _COST_PER_1K = {
@@ -267,6 +282,76 @@ def _deduct_extra_credit(identifier: str) -> None:
         db.commit()
     finally:
         db.close()
+
+
+def _refund_grading_charge(identifier: str, usage: Dict[str, Any]) -> None:
+    """
+    Reverses the charge taken by _check_and_increment_usage().
+
+    Called only when the charge was taken and then nothing was delivered —
+    a backend-side failure such as a truncated model response, an unreachable
+    API, or an unparseable result. NOT called when the student simply dislikes
+    a grade they received: the increment happens before the model call
+    specifically so a completed grading cannot be retried for free, and that
+    property is preserved here.
+
+    Confirmed necessary in production (2026-08-04): a 30-mark Biology question
+    exceeded the output token budget, so three credits were spent across three
+    attempts and two of them returned nothing. The student paid for our
+    misconfiguration.
+
+    Never raises. A refund that fails must not convert a 502 the caller is
+    already reporting into a 500 — the student's error message matters more
+    than the ledger, and a failed refund is logged loudly enough to be
+    corrected by hand.
+    """
+    try:
+        db = db_conn()
+        cur = db.cursor()
+        try:
+            if usage.get("used_topup_credit"):
+                # Return the credit to the oldest purchase that has one spent.
+                # That is the same selection rule _deduct_extra_credit() used
+                # to take it, so under normal sequential use it lands back
+                # where it came from.
+                cur.execute(
+                    """
+                    SELECT id FROM ai_grading_credit_purchases
+                    WHERE user_identifier = ?
+                      AND credits_used > 0
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """,
+                    (identifier,),
+                )
+                row = cur.fetchone()
+                if row:
+                    cur.execute(
+                        "UPDATE ai_grading_credit_purchases "
+                        "SET credits_used = credits_used - 1 WHERE id = ?",
+                        (row_get(row, "id"),),
+                    )
+            else:
+                # Floor at zero: a refund must never be able to drive the
+                # counter negative, which would silently grant extra gradings.
+                cur.execute(
+                    "UPDATE ai_grading_usage SET used_count = used_count - 1, updated_at = ? "
+                    "WHERE user_id = ? AND period_key = ? AND used_count > 0",
+                    (_now_iso(), identifier, usage.get("period_key")),
+                )
+            db.commit()
+            logger.info(
+                "Refunded AI grading charge: user=%s period=%s topup=%s",
+                identifier, usage.get("period_key"), usage.get("used_topup_credit", False),
+            )
+        finally:
+            db.close()
+    except Exception:
+        logger.exception(
+            "Failed to refund AI grading charge for user=%s period=%s — "
+            "credit consumed without a result, may need manual correction.",
+            identifier, usage.get("period_key"),
+        )
 
 
 def _fetch_passage_text(passage_id: str) -> str:
@@ -990,6 +1075,21 @@ def _reconcile_score_consistency(parsed: Dict[str, Any], grading_mode: str) -> D
     return parsed
 
 
+def _question_id_hint(prompt: str) -> str:
+    """
+    Best-effort question id for log lines, pulled from the prompt's own
+    response-schema block. Diagnostic only — never affects grading. Returns
+    "unknown" rather than raising, since a logging helper must not be able to
+    break a grading request.
+    """
+    try:
+        marker = '"question_id": "'
+        i = prompt.index(marker) + len(marker)
+        return prompt[i:prompt.index('"', i)]
+    except Exception:
+        return "unknown"
+
+
 def _call_claude(prompt: str, model: str) -> Dict[str, Any]:
     """
     Calls the Anthropic API with the given prompt and model.
@@ -1011,7 +1111,7 @@ def _call_claude(prompt: str, model: str) -> Dict[str, Any]:
     try:
         message = client.messages.create(
             model=model,
-            max_tokens=2048,
+            max_tokens=MAX_OUTPUT_TOKENS,
             messages=[{"role": "user", "content": prompt}],
         )
     except anthropic.APIStatusError as exc:
@@ -1027,7 +1127,22 @@ def _call_claude(prompt: str, model: str) -> Dict[str, Any]:
     stop_reason   = message.stop_reason or "unknown"
 
     if stop_reason == "max_tokens":
-        logger.warning("Claude response truncated (max_tokens hit): model=%s tokens=%d", model, output_tokens)
+        # Fail here rather than falling through to json.loads(). A truncated
+        # response is valid JSON that simply stops mid-structure, so the parse
+        # error below would report "non-JSON response" and misattribute the
+        # cause — which is exactly what happened in production before this
+        # branch existed. Diagnosing it took reading the raw log; the error
+        # message said the model returned something unreadable when in fact
+        # the model was cut off mid-sentence by our own budget.
+        logger.error(
+            "Claude response truncated at max_tokens: model=%s output_tokens=%d budget=%d "
+            "question=%s — raise MAX_OUTPUT_TOKENS if this recurs on legitimate questions.",
+            model, output_tokens, MAX_OUTPUT_TOKENS, _question_id_hint(prompt),
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="AI grading response was cut short. Please try again.",
+        )
 
     # Strip markdown code fences — Haiku sometimes wraps JSON in ```json ... ```
     # despite being instructed not to. Also handles truncated responses where
@@ -1386,24 +1501,41 @@ def grade_theory(identifier: str, question_id: str, student_answer: Any) -> Dict
     else:
         prompt = _build_prompt(question_data, student_answer)
 
-    # 6a. Call Haiku
-    result = _call_claude(prompt, MODEL_HAIKU)
+    # 6. Model calls, refunding the charge if we fail to deliver a result.
+    #
+    # The charge is taken BEFORE the model call on purpose, so a completed
+    # grading cannot be retried for free. That is the right default, but it
+    # also means a backend-side failure bills the student for nothing. Every
+    # failure reachable from here is ours — a truncated response, an
+    # unreachable API, an unparseable result, a missing API key — so the
+    # charge is reversed before the error propagates.
+    #
+    # Deliberately scoped to this block only. Failures BEFORE the increment
+    # (question not found, not gradeable, quota exhausted) never charged, and
+    # _store_attempt() below swallows its own errors, so a storage failure
+    # still leaves the student with a valid grade they should pay for.
+    try:
+        # 6a. Call Haiku
+        result = _call_claude(prompt, MODEL_HAIKU)
 
-    # 6b. Validate English response shape (general shape validated inside _call_claude)
-    if grading_mode != "general":
-        _validate_english_response(result, grading_mode)
-
-    # 6c. Escalate to Sonnet if needed
-    confidence   = float(result.get("confidence", 1.0))
-    needs_review = bool(result.get("needs_review", False))
-    if confidence < ESCALATION_THRESHOLD or needs_review:
-        logger.info(
-            "Escalating to Sonnet: user=%s question=%s confidence=%.2f needs_review=%s",
-            identifier, question_id, confidence, needs_review,
-        )
-        result = _call_claude(prompt, MODEL_SONNET)
+        # 6b. Validate English response shape (general shape validated inside _call_claude)
         if grading_mode != "general":
             _validate_english_response(result, grading_mode)
+
+        # 6c. Escalate to Sonnet if needed
+        confidence   = float(result.get("confidence", 1.0))
+        needs_review = bool(result.get("needs_review", False))
+        if confidence < ESCALATION_THRESHOLD or needs_review:
+            logger.info(
+                "Escalating to Sonnet: user=%s question=%s confidence=%.2f needs_review=%s",
+                identifier, question_id, confidence, needs_review,
+            )
+            result = _call_claude(prompt, MODEL_SONNET)
+            if grading_mode != "general":
+                _validate_english_response(result, grading_mode)
+    except Exception:
+        _refund_grading_charge(identifier, usage)
+        raise
 
     # 7. Store attempt
     _store_attempt(identifier, question_id, student_answer, result)
