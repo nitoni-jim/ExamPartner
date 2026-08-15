@@ -41,6 +41,10 @@ QUESTIONS_COLUMNS = [
     ("metadata_json", "TEXT"),
     ("passage_id", "TEXT"),
     ("passage_snapshot", "TEXT"),
+    # Prescribed set text this question is bound to (e.g. "Hamlet").
+    # Absent/NULL means the question is not tied to any set text and is
+    # always eligible. See set_text filtering note below.
+    ("set_text", "TEXT"),
 ]
 
 PASSAGES_COLUMNS = [
@@ -53,6 +57,9 @@ PASSAGES_COLUMNS = [
     ("title", "TEXT"),
     ("passage_type", "TEXT"),
     ("passage_text", "TEXT"),
+    # Mirrors questions.set_text so a set-text query returns the extracts
+    # alongside the questions that reference them.
+    ("set_text", "TEXT"),
     ("metadata_json", "TEXT"),
     ("created_at", "TEXT"),
 ]
@@ -858,8 +865,13 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
             "CREATE INDEX IF NOT EXISTS idx_questions_qtype ON questions(qtype);",
             "CREATE INDEX IF NOT EXISTS idx_questions_sort_key ON questions(sort_key);",
             "CREATE INDEX IF NOT EXISTS idx_questions_passage_id ON questions(passage_id);",
+            # Partial: only set-text-bound rows are indexed. The vast majority of
+            # questions have set_text NULL and are filtered by the IS NULL branch,
+            # which this index deliberately does not cover.
+            "CREATE INDEX IF NOT EXISTS idx_questions_set_text ON questions(set_text) WHERE set_text IS NOT NULL;",
             # passages / feedback / audit
             "CREATE INDEX IF NOT EXISTS idx_passages_lookup ON passages(exam, year, subject, paper, section);",
+            "CREATE INDEX IF NOT EXISTS idx_passages_set_text ON passages(set_text) WHERE set_text IS NOT NULL;",
             "CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at);",
             "CREATE INDEX IF NOT EXISTS idx_feedback_question_id ON feedback(question_id);",
             "CREATE INDEX IF NOT EXISTS idx_admin_audit_created_at ON admin_audit_log(created_at);",
@@ -1108,8 +1120,13 @@ def _init_db_postgres() -> None:
             "CREATE INDEX IF NOT EXISTS idx_questions_qtype ON questions(qtype);",
             "CREATE INDEX IF NOT EXISTS idx_questions_sort_key ON questions(sort_key);",
             "CREATE INDEX IF NOT EXISTS idx_questions_passage_id ON questions(passage_id);",
+            # Partial: only set-text-bound rows are indexed. The vast majority of
+            # questions have set_text NULL and are filtered by the IS NULL branch,
+            # which this index deliberately does not cover.
+            "CREATE INDEX IF NOT EXISTS idx_questions_set_text ON questions(set_text) WHERE set_text IS NOT NULL;",
             # passages / feedback / audit
             "CREATE INDEX IF NOT EXISTS idx_passages_lookup ON passages(exam, year, subject, paper, section);",
+            "CREATE INDEX IF NOT EXISTS idx_passages_set_text ON passages(set_text) WHERE set_text IS NOT NULL;",
             "CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at);",
             "CREATE INDEX IF NOT EXISTS idx_feedback_question_id ON feedback(question_id);",
             "CREATE INDEX IF NOT EXISTS idx_admin_audit_created_at ON admin_audit_log(created_at);",
