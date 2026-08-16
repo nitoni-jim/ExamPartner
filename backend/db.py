@@ -38,6 +38,12 @@ QUESTIONS_COLUMNS = [
     ("concepts_json", "TEXT"),
     ("common_traps_json", "TEXT"),
     ("references_json", "TEXT"),
+    # Official marking guide where available (v16.1 theory pipeline).
+    # Written by import_exam_jsonl_full.py from the `marking_scheme` field.
+    # Present in the deployed Neon database but previously absent from this
+    # list, so freshly provisioned databases lacked it and question imports
+    # failed against them.
+    ("marking_scheme_json", "TEXT"),
     ("metadata_json", "TEXT"),
     ("passage_id", "TEXT"),
     ("passage_snapshot", "TEXT"),
