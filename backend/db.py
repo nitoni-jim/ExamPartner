@@ -414,6 +414,71 @@ THEORY_ATTEMPTS_POSTGRES_COLUMNS = [
 ]
 
 # ----------------------------
+# theory_attachments — candidate diagram uploads (Sprint A)
+# ----------------------------
+# One row per stored image or PDF that a candidate uploads as part of a
+# theory answer.
+#
+# Separate from theory_attempts rather than a column on it, because an
+# attachment exists BEFORE grading. The upload has to complete before the
+# grading request is sent — otherwise a slow connection burns a grading
+# credit on a file that never arrived — and theory_attempts rows are only
+# written after grading returns. The attachment cannot hang off a row that
+# does not exist yet.
+#
+# Column notes:
+#   user_id            The identifier (email/phone), matching the convention
+#                      already used by theory_attempts, NOT users.id.
+#   attempt_key        Client-generated, stable across retakes within one
+#                      submission. This is what makes a retake REPLACE the
+#                      previous photo instead of appending a second one —
+#                      see attachment_service._supersede_pending(). Without
+#                      it, grading could find two candidate images for one
+#                      sub-question and have no basis to choose.
+#   sub_question_label NULL means a whole-question diagram. Nullable rather
+#                      than defaulted to "" because the supersede predicate
+#                      has to distinguish "no label" from a label, and SQL's
+#                      NULL comparison rules make that explicit rather than
+#                      accidental.
+#   storage_key        The object key in R2. UNIQUE because it is the handle
+#                      the grading path passes around; a duplicate would make
+#                      ownership ambiguous.
+#   width / height     NULL for PDFs — there is no single raster to measure.
+#   status             pending | consumed | deleted. Rows are tombstoned
+#                      rather than removed, so "my diagram vanished" is
+#                      answerable from support.
+#   theory_attempt_id  Set when a grading attempt reads the attachment,
+#                      linking it back to the attempt it belongs to.
+THEORY_ATTACHMENTS_COLUMNS = [
+    ("id",                  "TEXT PRIMARY KEY"),
+    ("user_id",             "TEXT NOT NULL"),
+    ("question_id",         "TEXT NOT NULL"),
+    ("sub_question_label",  "TEXT"),
+    ("attempt_key",         "TEXT NOT NULL"),
+    ("storage_key",         "TEXT NOT NULL UNIQUE"),
+    ("content_type",        "TEXT NOT NULL"),
+    ("byte_size",           "INTEGER NOT NULL"),
+    ("width",               "INTEGER"),
+    ("height",              "INTEGER"),
+    ("sha256",              "TEXT"),
+    ("status",              "TEXT NOT NULL DEFAULT 'pending'"),
+    ("theory_attempt_id",   "TEXT"),
+    ("consumed_at",         "TEXT"),
+    ("expires_at",          "TEXT"),
+    ("created_at",          "TEXT"),
+]
+
+THEORY_ATTACHMENTS_SQLITE_COLUMNS = [
+    *THEORY_ATTACHMENTS_COLUMNS[:-1],
+    ("created_at", "TEXT NOT NULL DEFAULT (datetime('now'))"),
+]
+
+THEORY_ATTACHMENTS_POSTGRES_COLUMNS = [
+    *THEORY_ATTACHMENTS_COLUMNS[:-1],
+    ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+]
+
+# ----------------------------
 # ai_grading_usage — usage counter per user per period
 # ----------------------------
 # period_key values:
@@ -691,6 +756,10 @@ def _theory_attempts_table_sql(columns: list[tuple[str, str]]) -> str:
     return _table_sql("theory_attempts", columns)
 
 
+def _theory_attachments_table_sql(columns: list[tuple[str, str]]) -> str:
+    return _table_sql("theory_attachments", columns)
+
+
 def _ai_grading_usage_table_sql(columns: list[tuple[str, str]]) -> str:
     return _table_sql("ai_grading_usage", columns)
 
@@ -843,6 +912,7 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         cur.execute(_user_sessions_table_sql(USER_SESSIONS_SQLITE_COLUMNS))
         cur.execute(_user_devices_table_sql(USER_DEVICES_SQLITE_COLUMNS))
         cur.execute(_theory_attempts_table_sql(THEORY_ATTEMPTS_SQLITE_COLUMNS))
+        cur.execute(_theory_attachments_table_sql(THEORY_ATTACHMENTS_SQLITE_COLUMNS))
         cur.execute(_ai_grading_usage_table_sql(AI_GRADING_USAGE_SQLITE_COLUMNS))
         cur.execute(_password_reset_tokens_table_sql(PASSWORD_RESET_TOKENS_SQLITE_COLUMNS))
         cur.execute(_ai_grading_credit_purchases_table_sql(AI_GRADING_CREDIT_PURCHASES_SQLITE_COLUMNS))
@@ -856,6 +926,7 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         _sqlite_add_missing_columns(cur, "subtopics", SUBTOPICS_COLUMNS)
         _sqlite_add_missing_columns(cur, "lesson_notes", LESSON_NOTES_COLUMNS)
         _sqlite_add_missing_columns(cur, "theory_attempts", THEORY_ATTEMPTS_COLUMNS)
+        _sqlite_add_missing_columns(cur, "theory_attachments", THEORY_ATTACHMENTS_COLUMNS)
         _sqlite_add_missing_columns(cur, "ai_grading_usage", AI_GRADING_USAGE_COLUMNS)
         _sqlite_add_missing_columns(cur, "password_reset_tokens", PASSWORD_RESET_TOKENS_COLUMNS)
         _sqlite_add_missing_columns(cur, "ai_grading_credit_purchases", AI_GRADING_CREDIT_PURCHASES_COLUMNS)
@@ -919,6 +990,10 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
             "CREATE INDEX IF NOT EXISTS idx_theory_attempts_user ON theory_attempts(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_theory_attempts_question ON theory_attempts(question_id);",
             "CREATE INDEX IF NOT EXISTS idx_theory_attempts_created ON theory_attempts(created_at);",
+            # theory_attachments
+            "CREATE INDEX IF NOT EXISTS idx_theory_attachments_lookup ON theory_attachments(user_id, question_id, attempt_key);",
+            "CREATE INDEX IF NOT EXISTS idx_theory_attachments_key ON theory_attachments(storage_key);",
+            "CREATE INDEX IF NOT EXISTS idx_theory_attachments_sweep ON theory_attachments(status, expires_at);",
             # ai_grading_usage
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_grading_usage_user_period ON ai_grading_usage(user_id, period_key);",
             "CREATE INDEX IF NOT EXISTS idx_ai_grading_usage_user ON ai_grading_usage(user_id);",
@@ -1091,6 +1166,7 @@ def _init_db_postgres() -> None:
         cur.execute(_user_sessions_table_sql(USER_SESSIONS_POSTGRES_COLUMNS))
         cur.execute(_user_devices_table_sql(USER_DEVICES_POSTGRES_COLUMNS))
         cur.execute(_theory_attempts_table_sql(THEORY_ATTEMPTS_POSTGRES_COLUMNS))
+        cur.execute(_theory_attachments_table_sql(THEORY_ATTACHMENTS_POSTGRES_COLUMNS))
         cur.execute(_ai_grading_usage_table_sql(AI_GRADING_USAGE_POSTGRES_COLUMNS))
         cur.execute(_password_reset_tokens_table_sql(PASSWORD_RESET_TOKENS_POSTGRES_COLUMNS))
         cur.execute(_ai_grading_credit_purchases_table_sql(AI_GRADING_CREDIT_PURCHASES_POSTGRES_COLUMNS))
@@ -1107,6 +1183,7 @@ def _init_db_postgres() -> None:
         _postgres_add_missing_columns(cur, "user_sessions", USER_SESSIONS_POSTGRES_COLUMNS)
         _postgres_add_missing_columns(cur, "user_devices", USER_DEVICES_POSTGRES_COLUMNS)
         _postgres_add_missing_columns(cur, "theory_attempts", THEORY_ATTEMPTS_POSTGRES_COLUMNS)
+        _postgres_add_missing_columns(cur, "theory_attachments", THEORY_ATTACHMENTS_POSTGRES_COLUMNS)
         _postgres_add_missing_columns(cur, "ai_grading_usage", AI_GRADING_USAGE_POSTGRES_COLUMNS)
         _postgres_add_missing_columns(cur, "password_reset_tokens", PASSWORD_RESET_TOKENS_POSTGRES_COLUMNS)
         _postgres_add_missing_columns(cur, "ai_grading_credit_purchases", AI_GRADING_CREDIT_PURCHASES_POSTGRES_COLUMNS)
@@ -1174,6 +1251,10 @@ def _init_db_postgres() -> None:
             "CREATE INDEX IF NOT EXISTS idx_theory_attempts_user ON theory_attempts(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_theory_attempts_question ON theory_attempts(question_id);",
             "CREATE INDEX IF NOT EXISTS idx_theory_attempts_created ON theory_attempts(created_at);",
+            # theory_attachments
+            "CREATE INDEX IF NOT EXISTS idx_theory_attachments_lookup ON theory_attachments(user_id, question_id, attempt_key);",
+            "CREATE INDEX IF NOT EXISTS idx_theory_attachments_key ON theory_attachments(storage_key);",
+            "CREATE INDEX IF NOT EXISTS idx_theory_attachments_sweep ON theory_attachments(status, expires_at);",
             # ai_grading_usage
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_grading_usage_user_period ON ai_grading_usage(user_id, period_key);",
             "CREATE INDEX IF NOT EXISTS idx_ai_grading_usage_user ON ai_grading_usage(user_id);",
