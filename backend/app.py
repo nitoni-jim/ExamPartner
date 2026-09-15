@@ -27,6 +27,7 @@ from routes.questions import router as questions_router
 from routes.theory import router as theory_router
 from routes.content import router as content_router
 from routes.paper_rules import router as paper_rules_router
+from routes.attachments import router as attachments_router
 
 # ---------------------------------------------------------------------------
 # App
@@ -58,6 +59,7 @@ app.include_router(cbt_router)
 app.include_router(admin_router)
 app.include_router(paystack_router)   # payments — already uses APIRouter
 app.include_router(theory_router)     # AI theory grading
+app.include_router(attachments_router)  # candidate diagram uploads (Sprint A)
 app.include_router(content_router)    # content version / sync awareness
 app.include_router(paper_rules_router)  # paper_rules — CBT timing/count/marks metadata (Sprint 3)
 
@@ -76,10 +78,18 @@ def startup():
 # ---------------------------------------------------------------------------
 @app.get("/health")
 def health():
+    # attachment_storage is reported here so a misconfigured deploy is
+    # visible without reading logs. "local-ephemeral" in production means
+    # R2 credentials are missing and every uploaded diagram will be lost on
+    # the next deploy — a failure whose symptom (a missing file at grading
+    # time, days later) points nowhere near its cause.
+    from services import storage_service
+
     return {
         "ok": True,
         "service": "ExamPartner API",
         "version": "2.0.0",
         "db_path": DB_PATH,
         "db_mode": ("postgres" if os.getenv("DATABASE_URL") else "sqlite"),
+        "attachment_storage": ("r2" if storage_service.is_durable() else "local-ephemeral"),
     }
