@@ -1,0 +1,23 @@
+# Development and test dependencies for ExamPartner backend.
+#
+# NOT used by Render. The build command runs `pip install -r requirements.txt`,
+# so nothing here reaches production — a test runner has no business being
+# installed on a live web service.
+#
+# Local setup:
+#     pip install -r requirements-dev.txt
+#
+# The line below pulls in the full production set, so one command gives you
+# both and the two files can never drift out of sync.
+-r requirements.txt
+
+# Test runner.
+pytest==8.3.4
+
+# Required by fastapi.testclient.TestClient — without it the route-level
+# tests in tests/test_attachments.py cannot run at all.
+#
+# Pinned to the version the Render build already resolves as an `anthropic`
+# dependency, so local and production agree rather than silently running
+# different httpx versions.
+httpx==0.28.1
