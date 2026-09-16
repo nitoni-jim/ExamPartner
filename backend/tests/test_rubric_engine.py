@@ -379,3 +379,98 @@ def test_groups_are_capped_independently():
     )
     assert r.awarded == 3          # labels capped at 2, details 1
     assert r.effective_max == 4
+
+
+# ---------------------------------------------------------------------------
+# absolute_scale — the second excluded capability
+# ---------------------------------------------------------------------------
+
+def test_absolute_scale_is_excluded_like_positional():
+    """WAEC 2010 Biology Q1(c): "Drawing is 8-10 cm long as specified."
+    A photo of a notebook page has no scale reference, so this is not
+    judgeable and its mark leaves the denominator."""
+    r = run(
+        [crit("title", "g", 1),
+         crit("size", "g", 1, capability="absolute_scale"),
+         crit("clarity", "g", 1, capability="positional")],
+        [{"id": "g", "rule": "sum", "max_marks": 3}],
+        {"title": True},
+    )
+    assert r.awarded == 1
+    assert r.effective_max == 1
+    assert r.excluded_marks == 2
+
+
+def test_the_two_excluded_capabilities_stay_distinct():
+    """They must be re-enableable independently: clearing positional grading
+    in R&D must not silently enable scale judgement, which needs a scale
+    reference in the frame and no model improvement provides one."""
+    from services.rubric_engine import (
+        CAPABILITY_ABSOLUTE_SCALE,
+        CAPABILITY_POSITIONAL,
+        EXCLUDED_CAPABILITIES,
+    )
+    assert CAPABILITY_POSITIONAL != CAPABILITY_ABSOLUTE_SCALE
+    assert EXCLUDED_CAPABILITIES == {CAPABILITY_POSITIONAL, CAPABILITY_ABSOLUTE_SCALE}
+
+
+def test_excluded_criteria_are_absent_from_the_prompt():
+    cs, _ = parse_scope(
+        [crit("a", "g", 1),
+         crit("s", "g", 1, capability="absolute_scale"),
+         crit("p", "g", 1, capability="positional")],
+        [{"id": "g", "rule": "sum", "max_marks": 3}],
+    )
+    rendered = render_criteria_for_prompt(cs)
+    assert "[a]" in rendered and "[s]" not in rendered and "[p]" not in rendered
+    assert expected_judgement_ids(cs) == ["a"]
+
+
+# ---------------------------------------------------------------------------
+# strict mode — authoring gate vs runtime backstop
+# ---------------------------------------------------------------------------
+
+def test_all_or_nothing_with_an_excluded_criterion_is_rejected_at_authoring():
+    """Mis-modelled content: the rule awards nothing for partial work, so a
+    partly unjudgeable group means either the criteria are divisible (use
+    sum) or none of them can be judged (exclude them all)."""
+    with pytest.raises(RubricError, match="mis-modelled"):
+        parse_scope(
+            [crit("a", "g", 1), crit("p", "g", 1, capability="positional")],
+            [{"id": "g", "rule": "all_or_nothing", "max_marks": 2}],
+            strict=True,
+        )
+
+
+def test_the_same_rubric_still_grades_at_runtime():
+    """Refusing to grade is worse for the candidate than a reduced total, and
+    a record ingested before this rule existed must still be gradeable. The
+    runtime backstop drops the group — safe, not generous."""
+    cs, gs = parse_scope(
+        [crit("a", "g", 1), crit("p", "g", 1, capability="positional")],
+        [{"id": "g", "rule": "all_or_nothing", "max_marks": 2}],
+    )
+    r = score_scope(cs, gs, {"a": True})
+    assert r.awarded == 0 and r.effective_max == 0
+
+
+def test_a_fully_excluded_all_or_nothing_group_passes_authoring():
+    """Excluding every criterion is one of the two correct author responses,
+    so it must not be rejected."""
+    cs, gs = parse_scope(
+        [crit("a", "g", 1, capability="positional"),
+         crit("b", "g", 1, capability="positional")],
+        [{"id": "g", "rule": "all_or_nothing", "max_marks": 2}],
+        strict=True,
+    )
+    assert score_scope(cs, gs, {}).effective_max == 0
+
+
+def test_strict_mode_does_not_change_valid_content():
+    for strict in (False, True):
+        cs, gs = parse_scope(
+            [crit("a", "g", 1), crit("b", "g", 1)],
+            [{"id": "g", "rule": "sum", "max_marks": 2}],
+            strict=strict,
+        )
+        assert score_scope(cs, gs, {"a": True, "b": True}).awarded == 2
