@@ -21,6 +21,14 @@ from fastapi import HTTPException
 
 from config import db_conn, logger
 from services.question_utils import row_get
+from services.rubric_engine import RubricError
+from services.theory_rubric_grading import (
+    build_content_blocks,
+    build_rubric_prompt,
+    parse_question_scopes,
+    question_uses_rubric_engine,
+    score_from_response,
+)
 
 # ---------------------------------------------------------------------------
 # Configurable limits — move to env vars or a plan config table post-launch
@@ -445,63 +453,6 @@ def _fetch_question_data(question_id: str) -> Dict[str, Any]:
             detail="This theory question does not yet have a verified marking rubric for AI scoring.",
         )
 
-    # ---- Rule 16b forward-compatibility guard -----------------------------
-    # TEMPORARY. Delete this block when the Rule 16b scoring engine ships.
-    #
-    # Refuses a record whose examiner_points are v16.3 criterion OBJECTS on a
-    # backend that can only render the v16.2 string form. _build_prompt()
-    # interpolates each point with f"    - {pt}", so a criterion object
-    # reaches the model as a Python dict repr — {'id': 'c1', 'group': ...} —
-    # and the gradeability check above only tests truthiness, which a dict
-    # passes. Without this guard the result is a silent mis-grade that the
-    # student has paid for.
-    #
-    # Placed HERE, inside _fetch_question_data(), because this is before
-    # _check_and_increment_usage(). _build_prompt() would be too late: it is
-    # called after the charge is taken and outside the try block that
-    # refunds it, so a refusal raised from there would bill the student
-    # while telling them it had not.
-    #
-    # Both scopes are checked. Rule 16a puts examiner_points on the
-    # sub-questions wherever a record has them, leaving the top level
-    # absent — so a top-level-only check would miss exactly the records
-    # this guard exists for.
-    def _is_pre_16b_rubric(points: Any) -> bool:
-        # A dict is the English essay rubric object, a different grading
-        # path entirely (grading_mode "essay_rubric"). Excluded explicitly
-        # rather than by luck: iterating that dict yields its keys, which
-        # happen to be strings today, so a naive isinstance check over it
-        # passes for the wrong reason.
-        if not isinstance(points, list):
-            return True
-        return all(isinstance(p, str) for p in points)
-
-    _structured_scopes = []
-    if isinstance(examiner_points, list) and not _is_pre_16b_rubric(examiner_points):
-        _structured_scopes.append("top-level")
-    if isinstance(sub_questions, list):
-        for _sq in sub_questions:
-            if not isinstance(_sq, dict):
-                continue
-            if not _is_pre_16b_rubric(_sq.get("examiner_points") or []):
-                _structured_scopes.append(str(_sq.get("label") or "?"))
-
-    if _structured_scopes:
-        logger.error(
-            "Rule 16b rubric reached a pre-engine backend: question=%s scopes=%s",
-            question_id,
-            ",".join(_structured_scopes),
-        )
-        # 503, not 500: the condition is temporary and self-correcting —
-        # content arrived ahead of the engine. The detail string is shown
-        # to the candidate verbatim by routes/theory.py, so it says what
-        # they need (not now, not charged) and nothing about rubrics.
-        raise HTTPException(
-            status_code=503,
-            detail="This question is being updated and cannot be graded right now. "
-                   "You have not been charged.",
-        )
-    # ---- end Rule 16b guard -----------------------------------------------
 
     # Resolve passage text for comprehension and summary
     passage_text = ""
@@ -1148,12 +1099,28 @@ def _question_id_hint(prompt: str) -> str:
         return "unknown"
 
 
-def _call_claude(prompt: str, model: str) -> Dict[str, Any]:
+def _call_claude(
+    prompt: Any,
+    model: str,
+    response_kind: str = "general",
+) -> Dict[str, Any]:
     """
     Calls the Anthropic API with the given prompt and model.
     Returns the parsed JSON response dict.
     Raises HTTP 503 if ANTHROPIC_API_KEY is missing.
     Raises HTTP 502 if Claude returns invalid JSON or an unexpected error.
+
+    prompt is a plain string for every text-only grading path, or a list of
+    content blocks when the candidate submitted a drawing. The string form
+    produces a request identical to the one this function has always sent;
+    the blocks path is additive rather than a rewrite of it.
+
+    response_kind selects the schema check below. A "rubric" response carries
+    per-criterion judgements and no totals, because Rule 16b makes totals
+    code's job. Validating one against the general schema would reject it for
+    missing exactly the fields that path deliberately never asks for, and
+    _reconcile_score_consistency() would have no model arithmetic to
+    reconcile.
     """
     import anthropic
 
@@ -1178,6 +1145,16 @@ def _call_claude(prompt: str, model: str) -> Dict[str, Any]:
     except anthropic.APIConnectionError:
         logger.exception("Anthropic API connection error")
         raise HTTPException(status_code=502, detail="Could not reach the AI grading service. Please try again.")
+    except anthropic.BadRequestError:
+        # Usually an oversized or undecodable image. Split out from the
+        # generic status error above so the log names the likely cause: the
+        # two have entirely different fixes, and a generic message here sends
+        # you looking at the API key and the model name first.
+        logger.exception("Anthropic rejected the request — commonly an image problem")
+        raise HTTPException(
+            status_code=502,
+            detail="The AI grading service could not read your submission. Please try again.",
+        )
 
     raw_text = message.content[0].text if message.content else ""
     input_tokens  = message.usage.input_tokens  if message.usage else 0
@@ -1219,6 +1196,20 @@ def _call_claude(prompt: str, model: str) -> Dict[str, Any]:
     except json.JSONDecodeError:
         logger.error("Claude returned non-JSON response: %s", raw_text[:500])
         raise HTTPException(status_code=502, detail="AI grading returned an unreadable response. Please try again.")
+
+    # A rubric-engine response has its own shape and its own validator.
+    # Returning here is what keeps it away from both the general
+    # required-fields check and _reconcile_score_consistency() below.
+    if response_kind == "rubric":
+        from services.theory_rubric_grading import validate_rubric_response
+        validate_rubric_response(parsed)
+        parsed["_meta"] = {
+            "model":          model,
+            "input_tokens":   input_tokens,
+            "output_tokens":  output_tokens,
+            "estimated_cost": _estimate_cost(model, input_tokens, output_tokens),
+        }
+        return parsed
 
     # Basic schema validation — only for general theory grading.
     # English grading modes have different schemas validated by _validate_english_response().
@@ -1369,6 +1360,76 @@ def _render_table_rows(rows: Any) -> str:
     return "\n".join(lines)
 
 
+def _load_attachments_for_grading(
+    identifier: str,
+    attachment_refs: List[tuple],
+    usage: Dict[str, Any],
+) -> List[tuple]:
+    """
+    Loads the candidate's drawings for grading, ownership-checked.
+
+    Returns [(label, raw_bytes, content_type), ...].
+
+    A key that cannot be loaded is FATAL, with a refund — not a fall back to
+    text-only grading. Grading without the image would mark every diagram
+    criterion unsatisfied, producing a real-looking low score that the
+    candidate would read as their drawing being wrong, when the drawing was
+    never seen. A student penalised for our storage failure, silently, is a
+    worse outcome than a refused attempt they can retry for free.
+
+    Ownership is enforced inside attachment_service by a SQL predicate on
+    user_id, so another student's key returns None here and takes the same
+    path as a missing one.
+    """
+    from services import storage_service
+    from services.attachment_service import get_attachment_record, load_attachment_bytes
+
+    loaded: List[tuple] = []
+    for label, key in attachment_refs:
+        try:
+            record = get_attachment_record(key, identifier)
+            raw = load_attachment_bytes(key, identifier)
+        except storage_service.StorageError:
+            logger.exception("Attachment backend failure for key=%s", key)
+            record, raw = None, None
+
+        if not record or raw is None:
+            logger.error(
+                "Attachment unavailable at grading time: user=%s label=%s key=%s",
+                identifier, label, key,
+            )
+            _refund_grading_charge(identifier, usage)
+            raise HTTPException(
+                status_code=502,
+                detail="Your drawing could not be loaded for marking. "
+                       "Please try submitting again — you have not been charged.",
+            )
+
+        loaded.append((label, raw, record["content_type"]))
+
+    return loaded
+
+
+def _collect_attachment_keys(student_answer: Any) -> List[tuple]:
+    """
+    Returns [(label, attachment_key), ...] in sub-answer order.
+
+    Order matters: build_content_blocks() emits the images in this order and
+    tags each with its label, so the model can tell which drawing answers
+    which part.
+    """
+    if not isinstance(student_answer, list):
+        return []
+    out = []
+    for entry in student_answer:
+        if not isinstance(entry, dict):
+            continue
+        key = str(entry.get("attachment_key") or "").strip()
+        if key:
+            out.append((str(entry.get("label") or "main"), key))
+    return out
+
+
 def _normalize_sub_answers(student_answer: Any) -> str:
     """
     Collapses either accepted student_answer shape into the single string the
@@ -1421,7 +1482,13 @@ def _normalize_sub_answers(student_answer: Any) -> str:
             body = str(entry.get("answer") or "").strip()
 
         if not body:
-            body = "(no answer given)"
+            # An attachment with no typed text is an answered part, not a
+            # blank one, and must not be rendered as "(no answer given)" —
+            # grading rule 5 tells the model to fail every criterion for a
+            # blank part, which would zero a complete drawing.
+            body = ("(answered as a drawing — see the attached image)"
+                    if str(entry.get("attachment_key") or "").strip()
+                    else "(no answer given)")
 
         if not label:
             blocks.append(body)
@@ -1462,6 +1529,12 @@ def _sub_answers_are_blank(student_answer: Any) -> bool:
         if str(entry.get("answer") or "").strip():
             return False
         if _render_table_rows(entry.get("rows")).strip():
+            return False
+        if str(entry.get("attachment_key") or "").strip():
+            # A drawing with no typed text is a complete answer, not a blank
+            # one. Without this the 400 below fires before any charge — which
+            # is at least free, but tells a student who photographed a full
+            # diagram that they submitted nothing.
             return False
 
     return True
@@ -1526,6 +1599,9 @@ def grade_theory(identifier: str, question_id: str, student_answer: Any) -> Dict
     # "(no answer given)" placeholders.
     if _sub_answers_are_blank(student_answer):
         raise HTTPException(status_code=400, detail="student_answer cannot be empty.")
+    # Captured before normalization, which renders the payload down to a
+    # single string and drops the keys with it.
+    attachment_refs = _collect_attachment_keys(student_answer)
     student_answer = _normalize_sub_answers(student_answer)
 
     # 1. Fetch and validate question BEFORE consuming any allowance
@@ -1550,7 +1626,41 @@ def grade_theory(identifier: str, question_id: str, student_answer: Any) -> Dict
     )
 
     # 5. Build prompt
-    if grading_mode == "essay_rubric":
+    #
+    # The rubric-engine path is selected on the CONTENT, not on grading_mode:
+    # a question carries Rule 16b criterion objects or it carries strings, and
+    # that is a property of the record rather than of the subject. Both paths
+    # coexist until every subject is regenerated.
+    rubric_scopes = None
+    attachments = []
+    if grading_mode == "general" and question_uses_rubric_engine(question_data):
+        try:
+            rubric_scopes = parse_question_scopes(question_data)
+        except RubricError as exc:
+            # A malformed rubric is a content defect, never the candidate's
+            # fault — so refund before raising. Everything else in this
+            # function that can fail after the charge is inside the try block
+            # below; this one sits before it and must reverse the charge
+            # itself.
+            logger.error("Rubric parse failed for question %s: %s", question_id, exc)
+            _refund_grading_charge(identifier, usage)
+            raise HTTPException(
+                status_code=503,
+                detail="This question cannot be graded automatically right now. "
+                       "You have not been charged.",
+            )
+
+        attachments = _load_attachments_for_grading(identifier, attachment_refs, usage)
+        prompt = build_content_blocks(
+            build_rubric_prompt(
+                question_data,
+                rubric_scopes,
+                student_answer,
+                attachment_labels=[label for label, _, _ in attachments],
+            ),
+            attachments,
+        )
+    elif grading_mode == "essay_rubric":
         prompt = _build_english_essay_prompt(question_data, student_answer)
     elif grading_mode == "comprehension_point_based":
         prompt = _build_english_comprehension_prompt(question_data, student_answer)
@@ -1574,7 +1684,8 @@ def grade_theory(identifier: str, question_id: str, student_answer: Any) -> Dict
     # still leaves the student with a valid grade they should pay for.
     try:
         # 6a. Call Haiku
-        result = _call_claude(prompt, MODEL_HAIKU)
+        response_kind = "rubric" if rubric_scopes else "general"
+        result = _call_claude(prompt, MODEL_HAIKU, response_kind)
 
         # 6b. Validate English response shape (general shape validated inside _call_claude)
         if grading_mode != "general":
@@ -1588,15 +1699,37 @@ def grade_theory(identifier: str, question_id: str, student_answer: Any) -> Dict
                 "Escalating to Sonnet: user=%s question=%s confidence=%.2f needs_review=%s",
                 identifier, question_id, confidence, needs_review,
             )
-            result = _call_claude(prompt, MODEL_SONNET)
+            result = _call_claude(prompt, MODEL_SONNET, response_kind)
             if grading_mode != "general":
                 _validate_english_response(result, grading_mode)
+
+        # 6d. Score in code. Rule 16b: the model returned judgements, not
+        # marks — every number the candidate sees is produced here.
+        if rubric_scopes:
+            model_meta = result.get("_meta")
+            result = score_from_response(question_data, rubric_scopes, result)
+            if model_meta:
+                result["_meta"] = model_meta
     except Exception:
         _refund_grading_charge(identifier, usage)
         raise
 
     # 7. Store attempt
     _store_attempt(identifier, question_id, student_answer, result)
+
+    # 7b. Link the drawings to the attempt that read them. Best-effort and
+    # silent on failure, matching _store_attempt(): bookkeeping must not turn
+    # a successful, paid-for grading into an error the candidate sees.
+    if attachment_refs:
+        try:
+            from services.attachment_service import mark_consumed
+            mark_consumed(
+                [key for _, key in attachment_refs],
+                identifier,
+                str(result.get("question_id") or question_id),
+            )
+        except Exception:
+            logger.exception("Failed to mark attachments consumed")
 
     # 8. Return clean response (strip internal _meta)
     clean = {k: v for k, v in result.items() if k != "_meta"}
