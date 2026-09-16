@@ -445,6 +445,64 @@ def _fetch_question_data(question_id: str) -> Dict[str, Any]:
             detail="This theory question does not yet have a verified marking rubric for AI scoring.",
         )
 
+    # ---- Rule 16b forward-compatibility guard -----------------------------
+    # TEMPORARY. Delete this block when the Rule 16b scoring engine ships.
+    #
+    # Refuses a record whose examiner_points are v16.3 criterion OBJECTS on a
+    # backend that can only render the v16.2 string form. _build_prompt()
+    # interpolates each point with f"    - {pt}", so a criterion object
+    # reaches the model as a Python dict repr — {'id': 'c1', 'group': ...} —
+    # and the gradeability check above only tests truthiness, which a dict
+    # passes. Without this guard the result is a silent mis-grade that the
+    # student has paid for.
+    #
+    # Placed HERE, inside _fetch_question_data(), because this is before
+    # _check_and_increment_usage(). _build_prompt() would be too late: it is
+    # called after the charge is taken and outside the try block that
+    # refunds it, so a refusal raised from there would bill the student
+    # while telling them it had not.
+    #
+    # Both scopes are checked. Rule 16a puts examiner_points on the
+    # sub-questions wherever a record has them, leaving the top level
+    # absent — so a top-level-only check would miss exactly the records
+    # this guard exists for.
+    def _is_pre_16b_rubric(points: Any) -> bool:
+        # A dict is the English essay rubric object, a different grading
+        # path entirely (grading_mode "essay_rubric"). Excluded explicitly
+        # rather than by luck: iterating that dict yields its keys, which
+        # happen to be strings today, so a naive isinstance check over it
+        # passes for the wrong reason.
+        if not isinstance(points, list):
+            return True
+        return all(isinstance(p, str) for p in points)
+
+    _structured_scopes = []
+    if isinstance(examiner_points, list) and not _is_pre_16b_rubric(examiner_points):
+        _structured_scopes.append("top-level")
+    if isinstance(sub_questions, list):
+        for _sq in sub_questions:
+            if not isinstance(_sq, dict):
+                continue
+            if not _is_pre_16b_rubric(_sq.get("examiner_points") or []):
+                _structured_scopes.append(str(_sq.get("label") or "?"))
+
+    if _structured_scopes:
+        logger.error(
+            "Rule 16b rubric reached a pre-engine backend: question=%s scopes=%s",
+            question_id,
+            ",".join(_structured_scopes),
+        )
+        # 503, not 500: the condition is temporary and self-correcting —
+        # content arrived ahead of the engine. The detail string is shown
+        # to the candidate verbatim by routes/theory.py, so it says what
+        # they need (not now, not charged) and nothing about rubrics.
+        raise HTTPException(
+            status_code=503,
+            detail="This question is being updated and cannot be graded right now. "
+                   "You have not been charged.",
+        )
+    # ---- end Rule 16b guard -----------------------------------------------
+
     # Resolve passage text for comprehension and summary
     passage_text = ""
     passage_id   = row_get(row, "passage_id")
