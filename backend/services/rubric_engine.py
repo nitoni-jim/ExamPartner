@@ -35,10 +35,11 @@ scope at a time.
 
 --- capability ---
 
-    absent | "supported"  -> gradeable
-    "positional"          -> excluded from the prompt, the numerator AND the
-                             denominator
-    anything else         -> RubricError
+    absent | "supported"   -> gradeable
+    "positional"           -> excluded from the prompt, the numerator AND
+                              the denominator
+    "absolute_scale"       -> likewise excluded
+    anything else          -> RubricError
 
 Rejecting unknown values is deliberate. A typo like "postional" silently
 falling through to gradeable would put a criterion the grader cannot judge
@@ -59,7 +60,27 @@ VALID_RULES = frozenset({"sum", "any_n", "all_or_nothing"})
 
 CAPABILITY_SUPPORTED = "supported"
 CAPABILITY_POSITIONAL = "positional"
-VALID_CAPABILITIES = frozenset({CAPABILITY_SUPPORTED, CAPABILITY_POSITIONAL})
+CAPABILITY_ABSOLUTE_SCALE = "absolute_scale"
+
+# Values that remove a criterion from the prompt, the numerator and the
+# denominator. Separate values rather than one "unsupported", because each
+# has its own recovery path and they must be re-enabled independently:
+#
+#   positional      relative placement, connection, whether a label line
+#                   reaches the structure it names. Measured at 77% on a
+#                   planted error in the R&D track. Clears when positional
+#                   grading passes R&D.
+#   absolute_scale  physical size of the drawing — "8-10 cm long". A photo
+#                   of a notebook page carries no scale reference: unknown
+#                   camera distance, unknown zoom, no ruler in frame. No
+#                   vision improvement recovers this. It clears only if a
+#                   scale reference enters the frame, which is a product
+#                   change and not an R&D outcome.
+#
+# Collapsing these into one value would mean the day positional grading
+# ships, scale judgement silently ships with it.
+EXCLUDED_CAPABILITIES = frozenset({CAPABILITY_POSITIONAL, CAPABILITY_ABSOLUTE_SCALE})
+VALID_CAPABILITIES = frozenset({CAPABILITY_SUPPORTED}) | EXCLUDED_CAPABILITIES
 
 
 class RubricError(ValueError):
@@ -83,9 +104,16 @@ class Criterion:
     capability: str = CAPABILITY_SUPPORTED
     depends_on: Sequence[str] = field(default_factory=tuple)
 
+    # Whether the source record omitted capability entirely, as opposed to
+    # stating "supported". Both grade the same way — the Rule 21 gate needs
+    # to tell them apart, because on an expects_diagram scope an omission is an
+    # author who has not made the judgement, while an explicit "supported"
+    # is an author who has.
+    capability_was_absent: bool = False
+
     @property
     def is_gradeable(self) -> bool:
-        return self.capability != CAPABILITY_POSITIONAL
+        return self.capability not in EXCLUDED_CAPABILITIES
 
 
 @dataclass(frozen=True)
@@ -147,9 +175,19 @@ def parse_scope(
     examiner_points: Any,
     rubric_groups: Any,
     scope_label: str = "top-level",
+    strict: bool = False,
 ) -> tuple[List[Criterion], List[Group]]:
     """
     Parses and structurally validates one scope.
+
+    strict=True adds the authoring-time conditions: defects that must never
+    enter the content set, but that production should degrade around rather
+    than refuse over if a record predating the rule is already ingested. The
+    validator passes strict=True; grading uses the default.
+
+    Keeping both behind one function means the validator and production can
+    never disagree about what a valid rubric IS — only about where the line
+    is enforced.
 
     Enforces the Rule 21 conditions that are checkable from structure alone
     (spec lines 641-653). Raises RubricError on the first defect found, with
@@ -234,6 +272,7 @@ def parse_scope(
         if marks < 0:
             raise RubricError(f"{scope_label}: criterion {cid!r} marks must not be negative")
 
+        capability_absent = "capability" not in raw
         capability = raw.get("capability", CAPABILITY_SUPPORTED)
         if capability not in VALID_CAPABILITIES:
             raise RubricError(
@@ -252,12 +291,52 @@ def parse_scope(
                 criterion=text,
                 marks=marks,
                 capability=capability,
+                capability_was_absent=capability_absent,
                 depends_on=tuple(depends_on),
             )
         )
 
     _validate_cross_references(criteria, groups, scope_label)
+    if strict:
+        _validate_authoring_only(criteria, groups, scope_label)
     return criteria, groups
+
+
+def _validate_authoring_only(
+    criteria: Sequence[Criterion],
+    groups: Sequence[Group],
+    scope_label: str,
+) -> None:
+    """
+    Conditions rejected at authoring but tolerated at runtime.
+
+    An all_or_nothing group holding an excluded criterion is mis-modelled
+    content, not a scoring question. all_or_nothing means the scheme awards
+    nothing for partial work — the "[2 or 0]" form, as in WAEC 2020
+    Chemistry Q3(c). If part of such a group cannot be judged, then either
+    the criteria are not really indivisible, in which case the rule should be
+    sum, or the whole group is ungradeable, in which case every criterion in
+    it should be excluded. That is an author's judgement and it is cheap to
+    make at authoring time.
+
+    It is not rejected at runtime because refusing to grade a question at all
+    is worse for the candidate than grading it out of a reduced total, and a
+    record ingested before this rule existed should still be gradeable.
+    _effective_group_max() is the runtime backstop: it drops the group, which
+    fails safe rather than generous.
+    """
+    for g in groups:
+        if g.rule != "all_or_nothing":
+            continue
+        excluded = [c.id for c in criteria if c.group == g.id and not c.is_gradeable]
+        if excluded and len(excluded) < len([c for c in criteria if c.group == g.id]):
+            raise RubricError(
+                f"{scope_label}: group {g.id!r} has rule all_or_nothing but "
+                f"{', '.join(excluded)} is excluded by capability. The rule awards "
+                f"nothing for partial work, so a partly unjudgeable group is "
+                f"mis-modelled: use rule sum if the criteria are divisible, or "
+                f"exclude every criterion in the group if none can be judged"
+            )
 
 
 def _validate_cross_references(
