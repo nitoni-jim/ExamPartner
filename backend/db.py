@@ -35,6 +35,22 @@ QUESTIONS_COLUMNS = [
     ("keywords_json", "TEXT"),
     ("tags_json", "TEXT"),
     ("examiner_points_json", "TEXT"),
+    # Rule 16b siblings to examiner_points, for FLAT theory records only.
+    #
+    # Where a record has sub_questions, Rule 16a puts examiner_points,
+    # rubric_groups and expects_diagram on the parts, and they ride inside
+    # sub_questions_json as ordinary JSON — no column is involved and none is
+    # needed. These two exist for the other branch: a theory question with no
+    # sub-parts, which carries all three at top level.
+    #
+    # Without them the fields are silently dropped at ingestion and the
+    # question becomes permanently ungradeable: parse_scope() raises
+    # "rubric_groups must be a non-empty array", the candidate gets a 503 and
+    # is not charged, and nothing in the log points at a missing column.
+    ("rubric_groups_json", "TEXT"),
+    # 0 or 1. Kept as INTEGER rather than BOOLEAN so the SQLite and Postgres
+    # column lists stay identical, as every other flag in this table does.
+    ("expects_diagram", "INTEGER"),
     ("concepts_json", "TEXT"),
     ("common_traps_json", "TEXT"),
     ("references_json", "TEXT"),
