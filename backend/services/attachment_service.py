@@ -25,7 +25,6 @@ theory_attempts row once grading produces one.
 The tombstone matters for support: "my diagram vanished" is answerable from
 a deleted row and unanswerable from a missing one.
 """
-import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
