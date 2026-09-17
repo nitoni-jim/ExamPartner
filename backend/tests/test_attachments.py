@@ -262,12 +262,14 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setattr(storage_service, "LOCAL_ATTACHMENTS_DIR", str(tmp_path / "att"))
-    try:
-        from fastapi.testclient import TestClient
-        from app import app
-        from db import init_db
-    except Exception as exc:
-        pytest.skip(f"app not importable in this environment: {exc}")
+    # NOT wrapped in try/except. An app that will not import is a real
+    # failure and must read as one — see tests/test_app_imports.py for what
+    # swallowing it cost. A missing auth fixture below is a legitimate skip;
+    # a broken app is not.
+    from fastapi.testclient import TestClient
+    from app import app
+    from db import init_db
+
     init_db()
     return TestClient(app)
 
