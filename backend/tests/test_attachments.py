@@ -259,7 +259,26 @@ def test_local_backend_reports_itself_as_non_durable(monkeypatch):
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    db_file = str(tmp_path / "test.db")
+
+    # BOTH of these are required, because the two paths resolve the database
+    # differently:
+    #
+    #   init_db() -> _init_db_sqlite() reads os.getenv("DB_PATH") at CALL time
+    #   config.db_conn() -> get_db(DB_PATH) uses the module constant, bound at
+    #                       IMPORT time
+    #
+    # Setting only the environment variable moves the schema into the temp
+    # database while every request keeps writing to the real exam_partner.db —
+    # which then fails with "no such table: theory_attachments" and, worse,
+    # would write test rows into the working database if the table did exist.
+    #
+    # This is benign in production because DATABASE_URL is set there and both
+    # paths use the Postgres URL. It only diverges on SQLite.
+    import config
+
+    monkeypatch.setenv("DB_PATH", db_file)
+    monkeypatch.setattr(config, "DB_PATH", db_file)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setattr(storage_service, "LOCAL_ATTACHMENTS_DIR", str(tmp_path / "att"))
     # NOT wrapped in try/except. An app that will not import is a real
