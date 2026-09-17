@@ -6,7 +6,6 @@ response is stubbed, which is the point — everything the candidate sees is
 computed from judgements by code, so the whole scoring path is testable
 without a network.
 """
-import json
 import os
 import sys
 
@@ -280,3 +279,46 @@ def test_evidence_reaches_the_candidate_breakdown():
     })
     title = next(p for p in out["point_breakdown"] if "Title" in p["point"])
     assert "Flame cell" in title["comment"]
+
+
+# ---------------------------------------------------------------------------
+# Grading rules added after the first live run
+# ---------------------------------------------------------------------------
+
+def test_prompt_requires_a_label_to_actually_exist():
+    """The false positive from run 5: "Label: cytoplasmic process" awarded with
+    evidence reading "not explicitly labeled ... but the structures are present
+    and context suggests they are meant to represent them."
+
+    Rule 1's equivalent-meaning latitude was being applied to whether a label
+    EXISTS rather than to how it is worded. A mark gained without being earned
+    is worse than one lost, because nothing flags it."""
+    prompt = build_rubric_prompt(QUESTION, parse_question_scopes(QUESTION), "answer")
+    assert "satisfied only by a label the candidate actually wrote" in prompt
+    assert "inferable from the rest of the diagram does NOT satisfy it" in prompt
+
+
+def test_prompt_binds_near_synonym_criteria_separately():
+    """A drawing labelling both "Excretory tubule" and "To excretory tube" had
+    the two criteria bound inconsistently across five runs. The scheme lists
+    both, so the rubric is correct and the instruction has to do the work."""
+    prompt = build_rubric_prompt(QUESTION, parse_question_scopes(QUESTION), "answer")
+    assert "each needs its own label" in prompt
+    assert "One label cannot satisfy both" in prompt
+
+
+def test_prompt_separates_illegible_from_absent():
+    """"Cell lumen" was clearly written and missed on two of five runs. Evidence
+    reading "no label is visible" cannot be told apart from the candidate having
+    omitted it, which hides a legibility problem behind a content one."""
+    prompt = build_rubric_prompt(QUESTION, parse_question_scopes(QUESTION), "answer")
+    assert "not legible" in prompt
+    assert "never that the candidate omitted it" in prompt
+
+
+def test_equivalent_wording_latitude_is_retained():
+    """Rule 2 must not undo rule 1: "tuft of cilia" still has to satisfy a
+    criterion written as "cilium"."""
+    prompt = build_rubric_prompt(QUESTION, parse_question_scopes(QUESTION), "answer")
+    assert "equivalent meaning, not exact wording" in prompt
+    assert "Tuft of cilia" in prompt
