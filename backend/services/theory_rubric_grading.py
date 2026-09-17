@@ -31,13 +31,10 @@ side until every subject is regenerated.
 from __future__ import annotations
 
 import base64
-import json
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 from config import logger
 from services.rubric_engine import (
-    Criterion,
-    Group,
     RubricError,
     ScopeResult,
     parse_scope,
