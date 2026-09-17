@@ -15,7 +15,7 @@ import json
 import os
 import secrets
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from fastapi import HTTPException
 
@@ -396,6 +396,7 @@ def _fetch_question_data(question_id: str) -> Dict[str, Any]:
         cur.execute(
             """
             SELECT id, question_text, sub_questions_json, examiner_points_json,
+                   rubric_groups_json, expects_diagram,
                    marks, topic, subtopic, subject, exam, year,
                    metadata_json, passage_id, passage_snapshot
             FROM questions
@@ -440,6 +441,22 @@ def _fetch_question_data(question_id: str) -> Dict[str, Any]:
         except Exception:
             sub_questions = []
 
+    # Rule 16b siblings, for FLAT records only. Where the record has
+    # sub_questions these live inside sub_questions_json and are already
+    # decoded above; these columns carry the other branch.
+    #
+    # A malformed rubric_groups raises rather than degrading to None. The two
+    # are a matched pair: examiner_points without its groups parses as "no
+    # rubric", which reads as an unmarked question rather than a broken one —
+    # so silence here would turn a data defect into a wrong-looking grade.
+    rubric_groups_raw = row_get(row, "rubric_groups_json")
+    rubric_groups = None
+    if rubric_groups_raw:
+        try:
+            rubric_groups = json.loads(rubric_groups_raw)
+        except Exception:
+            raise HTTPException(status_code=500, detail="Rubric groups data is malformed.")
+
     # For non-English general theory: require EITHER top-level examiner_points
     # OR sub_questions that each carry their own examiner_points list.
     sub_questions_have_rubric = (
@@ -477,6 +494,10 @@ def _fetch_question_data(question_id: str) -> Dict[str, Any]:
         "question_text":    row_get(row, "question_text"),
         "sub_questions":    sub_questions,
         "examiner_points":  examiner_points,
+        # Flat-record Rule 16b fields. None / False where the record has
+        # sub_questions and carries them on the parts instead.
+        "rubric_groups":    rubric_groups,
+        "expects_diagram":  bool(row_get(row, "expects_diagram")),
         "marks":            row_get(row, "marks") or 0,
         "topic":            row_get(row, "topic"),
         "subtopic":         row_get(row, "subtopic"),
@@ -1139,22 +1160,25 @@ def _call_claude(
             max_tokens=MAX_OUTPUT_TOKENS,
             messages=[{"role": "user", "content": prompt}],
         )
+    except anthropic.BadRequestError:
+        # MUST precede APIStatusError: BadRequestError subclasses it, so the
+        # order here is what decides whether this branch is ever reached.
+        #
+        # A 400 from this endpoint is usually an oversized or undecodable
+        # image. Split out so the log names the likely cause — a generic
+        # status error sends you checking the API key and the model name
+        # first, which is the wrong half of the system.
+        logger.exception("Anthropic rejected the request — commonly an image problem")
+        raise HTTPException(
+            status_code=502,
+            detail="The AI grading service could not read your submission. Please try again.",
+        )
     except anthropic.APIStatusError as exc:
         logger.exception("Anthropic API error: status=%s", exc.status_code)
         raise HTTPException(status_code=502, detail="AI grading service returned an error. Please try again.")
     except anthropic.APIConnectionError:
         logger.exception("Anthropic API connection error")
         raise HTTPException(status_code=502, detail="Could not reach the AI grading service. Please try again.")
-    except anthropic.BadRequestError:
-        # Usually an oversized or undecodable image. Split out from the
-        # generic status error above so the log names the likely cause: the
-        # two have entirely different fixes, and a generic message here sends
-        # you looking at the API key and the model name first.
-        logger.exception("Anthropic rejected the request — commonly an image problem")
-        raise HTTPException(
-            status_code=502,
-            detail="The AI grading service could not read your submission. Please try again.",
-        )
 
     raw_text = message.content[0].text if message.content else ""
     input_tokens  = message.usage.input_tokens  if message.usage else 0
