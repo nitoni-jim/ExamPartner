@@ -1707,18 +1707,51 @@ def grade_theory(identifier: str, question_id: str, student_answer: Any) -> Dict
     # _store_attempt() below swallows its own errors, so a storage failure
     # still leaves the student with a valid grade they should pay for.
     try:
-        # 6a. Call Haiku
+        # 6a. Choose the model.
+        #
+        # A scope the candidate answered with a DRAWING goes straight to
+        # Sonnet, skipping Haiku entirely rather than calling both.
+        #
+        # Measured, not assumed. Ten Haiku gradings of one flame-cell diagram
+        # scored between 3.0 and 4.0 out of 4 — a full mark of spread on
+        # identical input. The correct score was 4.0 every time; the losses
+        # were misreads of labels the candidate had plainly written, and one
+        # label was credited from a structure that was drawn but not labelled
+        # at all. Every one of those runs reported confidence around 0.85, so
+        # none of them tripped ESCALATION_THRESHOLD (0.6) — the existing
+        # escalation path could not have caught this, because the model was
+        # confidently wrong rather than uncertain.
+        #
+        # Reading pencil handwriting off a phone photograph is a vision task.
+        # Haiku earns its place on text grading, where the escalation path
+        # works as designed; that argument does not carry over to this.
+        #
+        # Cost is ~12x per token (see MODEL_PRICING), but diagram questions
+        # are a small minority of theory questions, and calling Sonnet first
+        # avoids paying for a Haiku pass that is about to be discarded.
         response_kind = "rubric" if rubric_scopes else "general"
-        result = _call_claude(prompt, MODEL_HAIKU, response_kind)
+        has_drawing = bool(attachment_refs) or bool(
+            rubric_scopes and any(sc.expects_diagram for sc in rubric_scopes)
+        )
+        first_model = MODEL_SONNET if has_drawing else MODEL_HAIKU
+        if has_drawing:
+            logger.info(
+                "Diagram scope: grading with Sonnet directly. user=%s question=%s",
+                identifier, question_id,
+            )
+
+        result = _call_claude(prompt, first_model, response_kind)
 
         # 6b. Validate English response shape (general shape validated inside _call_claude)
         if grading_mode != "general":
             _validate_english_response(result, grading_mode)
 
-        # 6c. Escalate to Sonnet if needed
+        # 6c. Escalate to Sonnet if needed. Skipped when Sonnet already ran —
+        # there is nothing above it to escalate to, and re-running the same
+        # model would bill the student twice for the same judgement.
         confidence   = float(result.get("confidence", 1.0))
         needs_review = bool(result.get("needs_review", False))
-        if confidence < ESCALATION_THRESHOLD or needs_review:
+        if first_model != MODEL_SONNET and (confidence < ESCALATION_THRESHOLD or needs_review):
             logger.info(
                 "Escalating to Sonnet: user=%s question=%s confidence=%.2f needs_review=%s",
                 identifier, question_id, confidence, needs_review,
