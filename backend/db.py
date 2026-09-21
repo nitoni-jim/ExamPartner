@@ -48,6 +48,25 @@ QUESTIONS_COLUMNS = [
     # "rubric_groups must be a non-empty array", the candidate gets a 503 and
     # is not charged, and nothing in the log points at a missing column.
     ("rubric_groups_json", "TEXT"),
+    # Whether this question may be served in CBT. NULL or 1 = yes, 0 = no.
+    #
+    # NULL rather than a DEFAULT 1 so every existing row keeps its current
+    # behaviour exactly, with no backfill: the filters read
+    # (cbt_eligible IS NULL OR cbt_eligible = 1).
+    #
+    # Exists because CBT needs a paper's structure confirmed against a
+    # complete source before it can allocate from it, and Study mode does
+    # not. WAEC 2010 Biology is the case that forced it: the per-question
+    # content is audited and sound, but the source copy is missing Part II
+    # entirely, so the paper's real section structure cannot be derived from
+    # it. Without this column the only lever is ingest-or-don't, which keeps
+    # sound content out of Study as well.
+    #
+    # Distinct from the `country` column planned for paper_rules (see the
+    # orphaned-section guard in cbt_service). That one declares "this section
+    # is out of scope for our candidates"; this one declares "this paper's
+    # structure is not confirmed yet". A record can need either, or both.
+    ("cbt_eligible", "INTEGER"),
     # 0 or 1. Kept as INTEGER rather than BOOLEAN so the SQLite and Postgres
     # column lists stay identical, as every other flag in this table does.
     ("expects_diagram", "INTEGER"),

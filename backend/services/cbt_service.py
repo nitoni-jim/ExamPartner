@@ -58,6 +58,27 @@ CBT_PAPER_DURATION_MINUTES = {
 _DEFAULT_OBJECTIVE_DURATION = 60
 _DEFAULT_THEORY_DURATION    = 120
 
+# --- CBT eligibility ---------------------------------------------------------
+#
+# Every query in this module that selects questions for a CBT session filters
+# on (cbt_eligible IS NULL OR cbt_eligible = 1). NULL means eligible, so no
+# existing row changed behaviour when the column was added.
+#
+# The distinction it draws is between per-question content quality, which the
+# audit already covers and which applies equally to Study mode, and whether a
+# PAPER's structure has been confirmed against a complete source. CBT allocates
+# from paper_rules; Study mode does not. A paper whose real section structure
+# cannot be derived — because the available copy is missing a section, or
+# because paper_rules describes a different year — cannot be allocated from,
+# regardless of how sound its individual questions are.
+#
+# Before this column existed the only lever was ingest-or-don't, which kept
+# audited content out of Study as well. The orphaned-section guard in
+# fetch_cbt_theory_paper() below was doing the job by accident: a record whose
+# section label has no rules_json entry is silently dropped, so mislabelled
+# records were excluded for the wrong reason — and correcting the labels, which
+# looks like tidying, would have started serving them.
+
 # Papers already warned about for orphaned sections (see fetch_cbt_theory_paper).
 # Deduped per process so a misconfigured paper logs once rather than on every
 # fetch; process restarts re-surface it, which is the behaviour we want — the
@@ -179,6 +200,7 @@ def fetch_cbt_questions(
                     SELECT {QUESTION_SELECT_COLS}
                     FROM questions
                     WHERE qtype = ? AND exam = ? AND subject = ? AND year = ? AND paper = ?
+                      AND (cbt_eligible IS NULL OR cbt_eligible = 1)
                     ORDER BY id
                     """,
                     ("objective", exam, subject, year_filter, paper),
@@ -189,6 +211,7 @@ def fetch_cbt_questions(
                     SELECT {QUESTION_SELECT_COLS}
                     FROM questions
                     WHERE qtype = ? AND exam = ? AND subject = ? AND year = ?
+                      AND (cbt_eligible IS NULL OR cbt_eligible = 1)
                     ORDER BY id
                     """,
                     ("objective", exam, subject, year_filter),
@@ -200,6 +223,7 @@ def fetch_cbt_questions(
                     SELECT {QUESTION_SELECT_COLS}
                     FROM questions
                     WHERE qtype = ? AND exam = ? AND subject = ? AND paper = ?
+                      AND (cbt_eligible IS NULL OR cbt_eligible = 1)
                     ORDER BY id
                     """,
                     ("objective", exam, subject, paper),
@@ -210,6 +234,7 @@ def fetch_cbt_questions(
                     SELECT {QUESTION_SELECT_COLS}
                     FROM questions
                     WHERE qtype = ? AND exam = ? AND subject = ?
+                      AND (cbt_eligible IS NULL OR cbt_eligible = 1)
                     ORDER BY id
                     """,
                     ("objective", exam, subject),
@@ -618,6 +643,7 @@ def fetch_cbt_theory_paper(
             SELECT id, section, sub_questions_json, examiner_points_json, metadata_json
             FROM questions
             WHERE qtype = ? AND exam = ? AND subject = ? AND paper = ?
+              AND (cbt_eligible IS NULL OR cbt_eligible = 1)
             """,
             ("theory", exam, subject, paper),
         )
