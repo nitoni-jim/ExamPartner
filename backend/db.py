@@ -15,7 +15,7 @@ QUESTIONS_COLUMNS = [
     ("qtype", "TEXT NOT NULL"),
     ("sort_key", "INTEGER"),
     ("page", "INTEGER"),
-    ("marks", "INTEGER"),
+    ("marks", "DOUBLE PRECISION"),  # half marks — see _POSTGRES_COLUMN_TYPE_CHANGES
     ("question_text", "TEXT NOT NULL"),
     ("options_json", "TEXT"),
     ("answer", "TEXT"),
@@ -650,7 +650,7 @@ PAPER_RULES_COLUMNS = [
     ("country",            "TEXT"),                    # NULL = applies to every candidate country
     ("duration_minutes",   "INTEGER"),                  # this paper's own duration only
     ("question_count",     "INTEGER"),                  # nullable — not always known
-    ("total_marks",        "INTEGER"),                  # nullable — not always known
+    ("total_marks",        "DOUBLE PRECISION"),                  # nullable — not always known
     ("rule_source",        "TEXT NOT NULL"),             # actual_paper | syllabus_default | legacy_placeholder
     ("rules_json",         "TEXT"),                      # reserved for future structured rules; unused for now
     ("created_at",         "TEXT"),
@@ -838,6 +838,42 @@ def _postgres_add_missing_columns(cur, table_name: str, columns: list[tuple[str,
 
 def _postgres_add_missing_question_columns(cur) -> None:
     _postgres_add_missing_columns(cur, "questions", QUESTIONS_COLUMNS)
+
+
+# Columns whose TYPE changed after the table was first created. ADD COLUMN IF
+# NOT EXISTS never touches an existing column, so a type change needs its own
+# step, run on every init_db() and a no-op once applied.
+#
+# Half marks (spec v16.4): NECO 2021 Financial Accounting Q1-Q4 are worth 12.5.
+# Postgres does not reject 12.5 going into an INTEGER column; it rounds it to
+# 13 with no error, and the grading prompt and percentage then use 13.
+# DOUBLE PRECISION rather than NUMERIC: halves are exact in binary floating
+# point, and psycopg2 returns NUMERIC as Decimal, which json.dumps cannot
+# encode — _store_attempt() would swallow that error and silently not save.
+_POSTGRES_COLUMN_TYPE_CHANGES = [
+    ("questions", "marks", "DOUBLE PRECISION"),
+    ("paper_rules", "total_marks", "DOUBLE PRECISION"),
+]
+_POSTGRES_INTEGER_TYPES = {"smallint", "integer", "bigint"}
+
+
+def _postgres_apply_column_type_changes(cur) -> None:
+    for table, column, target in _POSTGRES_COLUMN_TYPE_CHANGES:
+        cur.execute(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
+            (table, column),
+        )
+        row = cur.fetchone()
+        if not row:
+            continue
+        data_type = str(row.get("data_type") if hasattr(row, "get") else row[0]).lower()
+        if data_type in _POSTGRES_INTEGER_TYPES:
+            cur.execute(
+                f"ALTER TABLE {table} ALTER COLUMN {column} TYPE {target} "
+                f"USING {column}::{target}"
+            )
+            logger.info("Widened %s.%s from %s to %s", table, column, data_type, target)
 
 
 # ----------------------------
@@ -1223,6 +1259,7 @@ def _init_db_postgres() -> None:
         _postgres_add_missing_columns(cur, "password_reset_tokens", PASSWORD_RESET_TOKENS_POSTGRES_COLUMNS)
         _postgres_add_missing_columns(cur, "ai_grading_credit_purchases", AI_GRADING_CREDIT_PURCHASES_POSTGRES_COLUMNS)
         _postgres_add_missing_columns(cur, "paper_rules", PAPER_RULES_POSTGRES_COLUMNS)
+        _postgres_apply_column_type_changes(cur)
 
         # *** COMMIT PHASE 1 — tables are now durable regardless of index errors ***
         db.commit()

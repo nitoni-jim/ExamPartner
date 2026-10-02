@@ -6,6 +6,7 @@ No route logic lives here — pure data transformation and query helpers.
 """
 import json
 import re
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -29,6 +30,29 @@ def jloads(x: Optional[str]) -> Any:
         return json.loads(x) if x else None
     except Exception:
         return None
+
+
+def normalize_marks(value: Any) -> Any:
+    """
+    Whole marks as int, half marks as float, anything else unchanged.
+
+    questions.marks and paper_rules.total_marks are DOUBLE PRECISION so a half
+    mark is stored exactly (NECO 2021 Financial Accounting Q1-Q4 are worth
+    12.5). That column returns 15.0 for a whole mark, though, and every reader
+    printed it as-is: the app would show "15.0 marks" and the grading prompt
+    "Total marks available: 15.0". Normalising at the read boundary keeps
+    whole marks exactly as they looked when the column was INTEGER, and lets
+    only genuine half marks carry a decimal point.
+
+    Decimal is converted as well, because json.dumps cannot encode it.
+    """
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, Decimal):
+        value = float(value)
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +161,7 @@ def row_to_question(row: Any, passage_lookup: Optional[Dict[str, Any]] = None) -
         "section": row_get(row, "section"),
         "type": qtype,
         "page": row_get(row, "page"),
-        "marks": row_get(row, "marks"),
+        "marks": normalize_marks(row_get(row, "marks")),
         "section_instruction": row_get(row, "section_instruction"),
         "question_text": row["question_text"],
         "options": jloads(row_get(row, "options_json")),

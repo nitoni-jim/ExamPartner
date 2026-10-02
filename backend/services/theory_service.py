@@ -20,7 +20,7 @@ from typing import Any, Dict, List
 from fastapi import HTTPException
 
 from config import db_conn, logger
-from services.question_utils import row_get
+from services.question_utils import normalize_marks, row_get
 from services.rubric_engine import RubricError
 from services.theory_rubric_grading import (
     build_content_blocks,
@@ -498,7 +498,7 @@ def _fetch_question_data(question_id: str) -> Dict[str, Any]:
         # sub_questions and carries them on the parts instead.
         "rubric_groups":    rubric_groups,
         "expects_diagram":  bool(row_get(row, "expects_diagram")),
-        "marks":            row_get(row, "marks") or 0,
+        "marks":            normalize_marks(row_get(row, "marks")) or 0,
         "topic":            row_get(row, "topic"),
         "subtopic":         row_get(row, "subtopic"),
         "subject":          row_get(row, "subject"),

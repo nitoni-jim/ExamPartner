@@ -101,7 +101,7 @@ class UpsertPaperRuleRequest(BaseModel):
     year:             Optional[int] = None
     duration_minutes: Optional[int] = None
     question_count:   Optional[int] = None
-    total_marks:      Optional[int] = None
+    total_marks:      Optional[float] = None   # halves allowed, e.g. 12.5
     rules_json:       Optional[str] = None
 
     # NULL = applies to every candidate country, which is the state of every

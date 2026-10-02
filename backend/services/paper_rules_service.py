@@ -23,6 +23,7 @@ from fastapi import HTTPException
 
 from config import SUPPORTED_COUNTRIES, db_conn
 from services.cbt_service import get_paper_duration_minutes, get_cbt_cap
+from services.question_utils import normalize_marks
 
 RULE_SOURCE_ACTUAL   = "actual_paper"
 RULE_SOURCE_SYLLABUS = "syllabus_default"
@@ -51,8 +52,15 @@ def _row_to_dict(row) -> Dict[str, Any]:
     throughout access_control.py and theory_service.py in this codebase.
     """
     if hasattr(row, "keys"):
-        return {k: row[k] for k in row.keys()}
-    return dict(row)
+        out = {k: row[k] for k in row.keys()}
+    else:
+        out = dict(row)
+    # total_marks is DOUBLE PRECISION so a half-mark paper can be described.
+    # A whole total comes back as 60.0; normalise it to 60 so the API, and
+    # the app's cache, read exactly as they did when the column was INTEGER.
+    if "total_marks" in out:
+        out["total_marks"] = normalize_marks(out["total_marks"])
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +300,7 @@ def validate_rules_json(
     exam: str,
     subject: str,
     paper: str,
-    total_marks: Optional[int] = None,
+    total_marks: Optional[float] = None,
 ) -> None:
     """
     Raises HTTPException(400) if rules_json is malformed or inconsistent.
@@ -421,14 +429,32 @@ def validate_rules_json(
             ),
         )
 
+    # Section marks may be halves (NECO 2021 Financial Accounting is 12.5 a
+    # question), so they are summed as numbers. int() turned two 12.5-mark
+    # sections into 24 and refused a correct 25-mark row, and crashed with a
+    # 500 on a string such as "12.5".
+    for entry in parsed:
+        for key in ("total_marks", "marks_per_question"):
+            value = entry.get(key)
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"rules_json section '{entry['section']}' has {key} {value!r}; "
+                        "it must be a non-negative number (halves allowed, e.g. 12.5)."
+                    ),
+                )
+
     if total_marks is not None and marked:
-        section_sum = sum(int(e.get("total_marks") or 0) for e in parsed)
-        if section_sum != int(total_marks):
+        section_sum = sum(float(e.get("total_marks") or 0) for e in parsed)
+        if abs(section_sum - float(total_marks)) > 1e-9:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Section total_marks sum to {section_sum} but the row's "
-                    f"total_marks is {total_marks}. One of the two is wrong."
+                    f"Section total_marks sum to {section_sum:g} but the row's "
+                    f"total_marks is {float(total_marks):g}. One of the two is wrong."
                 ),
             )
 
@@ -441,7 +467,7 @@ def upsert_paper_rule(
     year: Optional[int] = None,
     duration_minutes: Optional[int] = None,
     question_count: Optional[int] = None,
-    total_marks: Optional[int] = None,
+    total_marks: Optional[float] = None,
     rules_json: Optional[str] = None,
     country: Optional[str] = None,
     allow_clearing: bool = False,
