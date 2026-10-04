@@ -289,6 +289,65 @@ def fetch_cbt_questions(
 # discovery query that respects the same access tier the question fetch uses.
 # ---------------------------------------------------------------------------
 
+# Same preference order as _get_theory_section_rules() below and
+# paper_rules_service.resolve_paper_rule(): real evidence beats syllabus
+# policy beats guess.
+_RULE_SOURCE_RANK = {"actual_paper": 0, "syllabus_default": 1, "legacy_placeholder": 2}
+
+
+def _paper_rules_durations(cur, exam: str, subject: str) -> Dict[str, int]:
+    """
+    Returns {paper: duration_minutes} from paper_rules for one exam+subject.
+
+    Reads the rows CBT uses everywhere else: year NULL (CBT has no year
+    picker) and country NULL (no country-specific rows until Sprint B, and
+    this endpoint is not told the candidate's country). Where more than one
+    rule_source exists for a paper, the best-ranked one wins. Rows with no
+    duration, or a non-positive one, are ignored.
+
+    Queried directly rather than through paper_rules_service, which imports
+    this module — importing it back would be circular.
+
+    Never raises: on any failure it logs and returns {}, so every paper falls
+    back to the CBT_PAPER_DURATION_MINUTES map exactly as before this change.
+    """
+    try:
+        cur.execute(
+            "SELECT paper, rule_source, duration_minutes FROM paper_rules "
+            "WHERE exam = ? AND subject = ? AND year IS NULL AND country IS NULL "
+            "AND duration_minutes IS NOT NULL",
+            (exam, subject),
+        )
+        found = cur.fetchall()
+    except Exception:
+        logger.warning("Could not read paper_rules durations for %s/%s", exam, subject, exc_info=True)
+        return {}
+
+    best: Dict[str, Tuple[int, int]] = {}
+    for r in found:
+        paper = row_get(r, "paper")
+        try:
+            minutes = int(row_get(r, "duration_minutes"))
+        except (TypeError, ValueError):
+            continue
+        if not paper or minutes <= 0:
+            continue
+        rank = _RULE_SOURCE_RANK.get(row_get(r, "rule_source"), 3)
+        if paper not in best or rank < best[paper][0]:
+            best[paper] = (rank, minutes)
+    return {paper: minutes for paper, (_, minutes) in best.items()}
+
+
+def _is_cbt_eligible(value: Any) -> bool:
+    """NULL (None) means eligible; 0 / False means authored out of CBT."""
+    if value is None:
+        return True
+    try:
+        return int(value) != 0
+    except (TypeError, ValueError):
+        return bool(value)
+
+
 def get_cbt_papers(
     subject: str,
     exam: str,
@@ -303,7 +362,13 @@ def get_cbt_papers(
 
     Each paper entry includes a duration_minutes (paper-driven, not qtype-driven
     — Objective and Oral English share qtype="objective" but have different
-    real-exam timings).
+    real-exam timings). It comes from the paper's paper_rules row where one
+    exists (year NULL, country NULL, best rule_source), and from
+    CBT_PAPER_DURATION_MINUTES otherwise. Before this, the map was the only
+    source, so a paper_rules duration reached the app's timer only through its
+    once-a-day paper_rules_cache sync, and the test-type picker always showed
+    the map's figure (e.g. 120 min for a 150-minute NECO Financial Accounting
+    Paper II).
 
     access.available_years / access.locked_years / access.all_years are
     explicit year lists (not just counts) so the client can build dynamic
@@ -354,7 +419,7 @@ def get_cbt_papers(
         if year_filter is not None:
             cur.execute(
                 """
-                SELECT paper, qtype, question_text
+                SELECT paper, qtype, question_text, cbt_eligible
                 FROM questions
                 WHERE exam = ? AND subject = ? AND year = ?
                 """,
@@ -363,13 +428,14 @@ def get_cbt_papers(
         else:
             cur.execute(
                 """
-                SELECT paper, qtype, question_text
+                SELECT paper, qtype, question_text, cbt_eligible
                 FROM questions
                 WHERE exam = ? AND subject = ?
                 """,
                 (exam, subject),
             )
         rows = cur.fetchall()
+        rule_durations = _paper_rules_durations(cur, exam, subject)
     finally:
         db.close()
 
@@ -380,15 +446,26 @@ def get_cbt_papers(
     # stress-pattern-style items legitimately share an identical generic
     # stem across multiple rows with different options/answers — text
     # dedup was incorrectly collapsing 60 genuinely distinct rows into 56.
+    #
+    # Theory is counted differently: one per CBT-eligible record, no text
+    # dedup. A theory question is a whole multi-part record, and many share a
+    # generic stem ("Answer all parts of this question.") — text dedup was
+    # collapsing NECO 2021 Financial Accounting's 9 questions to 6 and NECO
+    # Biology's 5 to 1. The theory session itself never dedups by text
+    # (fetch_cbt_theory_paper() pools by id), and it serves only CBT-eligible
+    # records, so the count follows the same rule. cbt_eligible NULL means
+    # eligible, as in every CBT query in this module.
     grouped: Dict[Tuple[Optional[str], str], Dict[str, Any]] = {}
     for r in rows:
         paper = row_get(r, "paper")
         qtype = row_get(r, "qtype")
         text = (row_get(r, "question_text") or "").strip()
         key = (paper, qtype)
+        if qtype == "theory" and not _is_cbt_eligible(row_get(r, "cbt_eligible")):
+            continue
         group = grouped.setdefault(key, {"raw_count": 0, "seen_texts": set(), "unique_count": 0})
         group["raw_count"] += 1
-        if paper == "Oral English":
+        if paper == "Oral English" or qtype == "theory":
             group["unique_count"] += 1
             continue
         if text and text in group["seen_texts"]:
@@ -419,7 +496,9 @@ def get_cbt_papers(
             "label": label,
             "count": session_count,
             "total_available": total_available,
-            "duration_minutes": get_paper_duration_minutes(paper, qtype),
+            # paper_rules first, the hardcoded map as fallback — see the
+            # docstring above and _paper_rules_durations().
+            "duration_minutes": rule_durations.get(paper) or get_paper_duration_minutes(paper, qtype),
             # Theory requires AI grading (Claude + quota checks) and is never
             # available offline. Objective-side papers (Objective, Oral
             # English) can be prepared offline via Room sync, regardless of

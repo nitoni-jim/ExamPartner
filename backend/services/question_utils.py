@@ -143,7 +143,39 @@ def build_passage_lookup(db, rows) -> Dict[str, Any]:
 # Row → question dict
 # ---------------------------------------------------------------------------
 
-def row_to_question(row: Any, passage_lookup: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+# Grading-only keys. They sit inside sub_questions_json (spec v16.4 Rule 16a:
+# a multi-part record carries its rubric on the parts), so they would travel
+# to every client with the rest of the sub-question unless removed here.
+# Grading never reads them from this serializer: theory_service and
+# cbt_service._is_gradeable_theory_row() read the columns directly.
+# No Android code reads either key; the app's sub-question parser takes only
+# label, marks, question_text, answer, explanation and expects_diagram.
+_RUBRIC_KEYS = frozenset({"examiner_points", "rubric_groups"})
+
+
+def strip_rubric(value: Any) -> Any:
+    """
+    Returns value with every examiner_points / rubric_groups key removed, at
+    any depth, so a nested part (a sub-question inside a sub-question) is
+    covered too. Lists and dicts are copied; anything else is returned as-is.
+    """
+    if isinstance(value, dict):
+        return {k: strip_rubric(v) for k, v in value.items() if k not in _RUBRIC_KEYS}
+    if isinstance(value, list):
+        return [strip_rubric(v) for v in value]
+    return value
+
+
+def row_to_question(
+    row: Any,
+    passage_lookup: Optional[Dict[str, Any]] = None,
+    include_rubric: bool = False,
+) -> Dict[str, Any]:
+    """
+    include_rubric: False for every client-facing route (the default), so the
+    marking rubric is never served to candidates. Pass True only from an
+    admin-only route that needs to show it.
+    """
     qtype = row["qtype"]
     passage_id = row_get(row, "passage_id")
 
@@ -151,6 +183,10 @@ def row_to_question(row: Any, passage_lookup: Optional[Dict[str, Any]] = None) -
         passage_snapshot = passage_lookup[passage_id]
     else:
         passage_snapshot = normalize_passage_snapshot(row_get(row, "passage_snapshot"))
+
+    sub_questions = jloads(row_get(row, "sub_questions_json"))
+    if not include_rubric:
+        sub_questions = strip_rubric(sub_questions)
 
     return {
         "id": row["id"],
@@ -167,7 +203,7 @@ def row_to_question(row: Any, passage_lookup: Optional[Dict[str, Any]] = None) -
         "options": jloads(row_get(row, "options_json")),
         "answer": jloads(row_get(row, "answer")) if isinstance(row_get(row, "answer"), str) and row_get(row, "answer").startswith("[") else row_get(row, "answer"),
         "explanation": normalize_explanation(qtype, row_get(row, "explanation"), row_get(row, "subject")),
-        "sub_questions": jloads(row_get(row, "sub_questions_json")),
+        "sub_questions": sub_questions,
         "solution_steps": jloads(row_get(row, "solution_steps_json")),
         "diagrams": jloads(row_get(row, "diagrams_json")) or [],
         "answer_diagrams": jloads(row_get(row, "answer_diagrams_json")) or [],
