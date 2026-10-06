@@ -170,5 +170,6 @@ Two ordering rules that matter:
 
 - Whether `assert_licensing_constraints()` should stop the whole backend booting, or only disable the licensing routes. As specified it is the former, which would take the live Android API down over a licensing index.
 - Whether Render auto-deploys from `main`.
+- Confirm Render sets `JWT_SECRET` and `ADMIN_IDENTIFIERS`. Both fall back to public defaults in `config.py` (`dev_secret_change_me`, `admin@exampartner.com`), and the service starts without either. An unset `JWT_SECRET` lets anyone mint a valid token; an unset `ADMIN_IDENTIFIERS` makes whoever registers `admin@exampartner.com` an admin, since registration does not verify email. Licensing raises the stakes: admin creates accounts and resolves ambiguities.
 - Whether the architecture handoff needs the fingerprint correction written into it, or already has it. The spec cites the 26 September file; the correction may live only in the spec.
 - The MVP scope for 10 November, and whether the WinUI client or the existing PWA is the vehicle for that first school trial.
