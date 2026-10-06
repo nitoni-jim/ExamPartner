@@ -191,12 +191,19 @@ def get_theory_questions(
     topic: Optional[str] = None,
     subtopic: Optional[str] = None,
     paper: Optional[str] = None,
+    cbt_only: bool = False,
 ) -> Dict[str, Any]:
     """
     Returns a page of theory questions, applying the free-year gate for unpaid users.
 
     paper: optional discriminator within a subject. When omitted, behaves
     exactly as before.
+
+    cbt_only (Sprint B, decision B3): keep only records whose cbt_eligible is
+    NULL or 1, the same filter every query in cbt_service.py applies. The app
+    passes it (GET /questions/theory?cbt=true) when it falls back to this
+    endpoint for a CBT Theory paper that has no paper_rules row. Study mode
+    never passes it, so it keeps showing every record, as it always has.
     """
     db = db_conn()
     if not is_paid:
@@ -211,6 +218,8 @@ def get_theory_questions(
             year = free_year
 
     where_sql, params = build_filters("theory", exam, year, subject, topic, subtopic, paper)
+    if cbt_only:
+        where_sql += " AND (cbt_eligible IS NULL OR cbt_eligible = 1)"
     cur = db.cursor()
     cur.execute(
         f"""

@@ -109,14 +109,20 @@ def list_theory(
     topic: Optional[str] = Query(default=None),
     subtopic: Optional[str] = Query(default=None),
     paper: Optional[str] = Query(default=None),
+    cbt: bool = Query(default=False),
     user: Optional[Dict[str, Any]] = Depends(get_current_user),
 ):
+    """
+    cbt=true keeps only CBT-eligible records (cbt_eligible NULL or 1). The app
+    sends it only for the flat CBT fallback, when a Theory paper has no
+    paper_rules row; Study mode omits it and sees every record.
+    """
     paid = is_paid_user(user) or is_admin_user(user)
     return get_theory_questions(
         limit=limit, offset=offset,
         exam=exam, year=year, subject=subject,
         is_paid=paid, topic=topic, subtopic=subtopic,
-        paper=paper,
+        paper=paper, cbt_only=cbt,
     )
 
 

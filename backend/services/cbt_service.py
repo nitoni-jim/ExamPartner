@@ -662,6 +662,30 @@ def _get_theory_section_rules(exam: str, subject: str, paper: str) -> List[Dict[
     return parsed if isinstance(parsed, list) else []
 
 
+def _section_header(rule: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    The rules_json fields served with each section, without its questions.
+
+    in_pool, pattern_type and total_required_questions (Sprint B) drive the
+    app's pooled scoring for Pattern B papers. They are always present in the
+    response, with the defaults a row that omits them means: in_pool false,
+    pattern_type "fixed", total_required_questions null. A row without them
+    (the 14 NECO rows, WAEC Biology) is therefore served exactly as before
+    plus three fields that tell the app "no pooling".
+    """
+    return {
+        "section": rule.get("section"),
+        "instruction": rule.get("instruction", ""),
+        "required_count": rule.get("required_count", 0),
+        "compulsory": bool(rule.get("compulsory", False)),
+        "marks_per_question": rule.get("marks_per_question", 0),
+        "total_marks": rule.get("total_marks", 0),
+        "in_pool": bool(rule.get("in_pool", False)),
+        "pattern_type": rule.get("pattern_type") or "fixed",
+        "total_required_questions": rule.get("total_required_questions"),
+    }
+
+
 def fetch_cbt_theory_paper(
     exam: str,
     subject: str,
@@ -781,15 +805,7 @@ def fetch_cbt_theory_paper(
             "subject": subject,
             "paper": paper,
             "sections": [
-                {
-                    "section": rule.get("section"),
-                    "instruction": rule.get("instruction", ""),
-                    "required_count": rule.get("required_count", 0),
-                    "compulsory": bool(rule.get("compulsory", False)),
-                    "marks_per_question": rule.get("marks_per_question", 0),
-                    "total_marks": rule.get("total_marks", 0),
-                    "questions": [],
-                }
+                {**_section_header(rule), "questions": []}
                 for rule in section_rules
             ],
         }
@@ -820,12 +836,7 @@ def fetch_cbt_theory_paper(
         random.shuffle(section_ids)
         section_question_rows = [questions_by_id[qid] for qid in section_ids if qid in questions_by_id]
         sections_out.append({
-            "section": section_label,
-            "instruction": rule.get("instruction", ""),
-            "required_count": rule.get("required_count", 0),
-            "compulsory": bool(rule.get("compulsory", False)),
-            "marks_per_question": rule.get("marks_per_question", 0),
-            "total_marks": rule.get("total_marks", 0),
+            **_section_header(rule),
             "questions": [row_to_question(r, passage_lookup) for r in section_question_rows],
         })
 

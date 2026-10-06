@@ -388,16 +388,40 @@ def validate_rules_json(
     # error — the read-time orphan warning covers the case where questions
     # arrive later under a label the rule doesn't list.
 
+    # --- Rule 3a: pooling field types (Sprint B) ---------------------------
+    # Checked before Rule 3 because Rule 3 reads in_pool by truthiness: a
+    # string "false" is truthy and would pass as a pooled section.
+    for entry in parsed:
+        in_pool = entry.get("in_pool")
+        if in_pool is not None and not isinstance(in_pool, bool):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"rules_json section '{entry['section']}' has in_pool {in_pool!r}; "
+                    "it must be true or false."
+                ),
+            )
+        pattern = entry.get("pattern_type")
+        if pattern is not None and pattern not in _PATTERN_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"rules_json section '{entry['section']}' has pattern_type {pattern!r}; "
+                    f"it must be one of {list(_PATTERN_TYPES)}, or omitted (means \"fixed\")."
+                ),
+            )
+
     # --- Rule 3: the dead-section combination ----------------------------
     # in_pool false-or-absent with required_count 0 caps the section at zero
     # AND excludes it from the shared pool, so it can never contribute to a
     # score under any pattern — while still rendering, still being tappable,
     # and still spending AI-grading credits.
     #
-    # SCOPING — do not simplify this condition. A genuine Pattern C section
-    # is in_pool TRUE with required_count 0, which is exactly what Chemistry,
-    # both Mathematics papers, NECO Biology and both Commerce papers need.
-    # Rejecting on required_count == 0 alone would break every one of them.
+    # SCOPING — do not simplify this condition. A pooled section may
+    # legitimately be in_pool TRUE with required_count 0 (no floor; every
+    # answer competes for the shared slots). Rejecting on required_count == 0
+    # alone would refuse that. Since Sprint B, in_pool true is only valid on a
+    # pooled row that carries total_required_questions — see Rule 3b.
     for i, entry in enumerate(parsed):
         if not entry.get("in_pool", False) and int(entry.get("required_count", 0) or 0) == 0:
             raise HTTPException(
@@ -405,10 +429,22 @@ def validate_rules_json(
                 detail=(
                     f"rules_json[{i}] ('{entry['section']}') has required_count 0 "
                     "with in_pool false or absent, so it can never contribute to a "
-                    "score. Set in_pool true for a Pattern C pooled section, or give "
-                    "it a non-zero required_count."
+                    "score. Give it a non-zero required_count, or make it a pooled "
+                    "section (in_pool true, on a row with total_required_questions)."
                 ),
             )
+
+    # --- Rule 3b: pooled rows (Sprint B, design §3.6) ----------------------
+    # A pooled row (Pattern B) carries three things that only make sense
+    # together: pattern_type "pooled" on every entry, the same
+    # total_required_questions (T) on every entry, and at least one in_pool
+    # section to fill the T - sum(required_count) extra slots. Any one without
+    # the others is a row the app would score wrongly, with no error anywhere:
+    # T with no pool promises slots nothing can fill; in_pool with no T has no
+    # slots to fill. pattern_type and T describe the paper, not the section,
+    # so a non-pooled section on a pooled row (WAEC CRS Section C, in_pool
+    # false) still carries "pooled" and T.
+    pooled_total = _check_pooling(parsed)
 
     # --- Rule 4: section marks must reconcile with the row ----------------
     # This is the failure that opened this whole workstream: a hand-authored
@@ -447,6 +483,13 @@ def validate_rules_json(
                     ),
                 )
 
+    if pooled_total is not None:
+        # Pooled rows reconcile differently (Rule 5): their sections' marks
+        # cover the floors only, and the row total also counts the extra
+        # slots, so the plain sum below would refuse every correct pooled row.
+        _check_pooled_marks(parsed, pooled_total, total_marks)
+        return
+
     if total_marks is not None and marked:
         section_sum = sum(float(e.get("total_marks") or 0) for e in parsed)
         if abs(section_sum - float(total_marks)) > 1e-9:
@@ -457,6 +500,207 @@ def validate_rules_json(
                     f"total_marks is {float(total_marks):g}. One of the two is wrong."
                 ),
             )
+
+
+# ---------------------------------------------------------------------------
+# Pooled-row checks (Sprint B) — called from validate_rules_json()
+# ---------------------------------------------------------------------------
+
+_PATTERN_TYPES = ("fixed", "pooled")
+
+
+def _is_whole_number(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _check_pooling(parsed: List[Dict[str, Any]]) -> Optional[int]:
+    """
+    Rule 3b. Returns the row's total_required_questions (T) for a valid
+    pooled row, or None for a row with no pooling. Raises HTTPException(400)
+    for any inconsistent combination.
+    """
+    has_t = ["total_required_questions" in e for e in parsed]
+    any_in_pool = any(e.get("in_pool") is True for e in parsed)
+    pooled_labels = [e["section"] for e in parsed if e.get("pattern_type") == "pooled"]
+
+    if not any(has_t):
+        if any_in_pool:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "A section has in_pool true but the row has no "
+                    "total_required_questions, so there are no shared slots for it "
+                    "to fill. Add total_required_questions (and pattern_type "
+                    '"pooled") to every section, or set in_pool false.'
+                ),
+            )
+        if pooled_labels:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f'Section(s) {pooled_labels} have pattern_type "pooled" but the '
+                    "row has no total_required_questions. A pooled row needs it on "
+                    "every section."
+                ),
+            )
+        return None
+
+    if not all(has_t):
+        missing = [e["section"] for e in parsed if "total_required_questions" not in e]
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"total_required_questions is missing on {missing}. It describes "
+                "the whole paper, so it must appear on every section with the same value."
+            ),
+        )
+
+    values = [e["total_required_questions"] for e in parsed]
+    bad = [v for v in values if not _is_whole_number(v) or v < 1]
+    if bad:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"total_required_questions {bad[0]!r} is not a whole number of at "
+                "least 1."
+            ),
+        )
+    if len(set(values)) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"total_required_questions differs between sections ({sorted(set(values))}). "
+                "It describes the whole paper, so every section must carry the same value."
+            ),
+        )
+    total_required = values[0]
+
+    not_pooled = [e["section"] for e in parsed if e.get("pattern_type") != "pooled"]
+    if not_pooled:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f'The row has total_required_questions, so every section needs '
+                f'pattern_type "pooled"; {not_pooled} do not. pattern_type and '
+                "total_required_questions describe the paper, not the section — a "
+                'section capped at exactly its count (in_pool false) still says "pooled".'
+            ),
+        )
+
+    if not any_in_pool:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "The row has total_required_questions but no section has in_pool "
+                "true, so its extra slots could never be filled. Mark the sections "
+                "whose surplus answers can count as in_pool true, or remove "
+                'total_required_questions and write the row as "fixed".'
+            ),
+        )
+
+    counts = [e.get("required_count", 0) for e in parsed]
+    bad_counts = [
+        e["section"] for e, c in zip(parsed, counts)
+        if not _is_whole_number(c) or c < 0
+    ]
+    if bad_counts:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"required_count on {bad_counts} is not a whole number of at least 0."
+            ),
+        )
+    floors = sum(counts)
+    if total_required <= floors:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"total_required_questions is {total_required} but the sections' "
+                f"required_count already add up to {floors}, so there is no extra "
+                'slot to pool. Write the row as "fixed" without '
+                "total_required_questions."
+            ),
+        )
+
+    return total_required
+
+
+def _check_pooled_marks(
+    parsed: List[Dict[str, Any]],
+    total_required: int,
+    total_marks: Optional[float],
+) -> None:
+    """
+    Rule 5, the pooled replacement for Rule 4's sum check (decision B6):
+      - every section declares marks_per_question and total_marks;
+      - the in_pool sections share one marks_per_question;
+      - each section's total_marks = required_count x marks_per_question
+        (its floor only);
+      - the row's total_marks = the design §3.2 maximum:
+        sum(required_count x marks_per_question)
+        + (T - sum(required_count)) x the pooled marks_per_question.
+    """
+    missing = [
+        e["section"] for e in parsed
+        if e.get("marks_per_question") is None or e.get("total_marks") is None
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Pooled row: {missing} must declare both marks_per_question and "
+                "total_marks, or the paper maximum cannot be checked."
+            ),
+        )
+
+    pooled_marks = sorted({float(e["marks_per_question"]) for e in parsed if e.get("in_pool") is True})
+    if len(pooled_marks) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"The in_pool sections carry different marks_per_question "
+                f"({[f'{m:g}' for m in pooled_marks]}). An extra slot can be filled "
+                "from any of them, so they must share one value (decision B6)."
+            ),
+        )
+    pool_mark = pooled_marks[0]
+
+    for e in parsed:
+        expected = e["required_count"] * float(e["marks_per_question"])
+        if abs(float(e["total_marks"]) - expected) > 1e-9:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Pooled row: section '{e['section']}' has total_marks "
+                    f"{float(e['total_marks']):g}, but required_count "
+                    f"{e['required_count']} x marks_per_question "
+                    f"{float(e['marks_per_question']):g} = {expected:g}. On a pooled "
+                    "row a section's total_marks covers its floor only; the extra "
+                    "slots count in the row total."
+                ),
+            )
+
+    floors = sum(e["required_count"] for e in parsed)
+    extra = total_required - floors
+    maximum = sum(e["required_count"] * float(e["marks_per_question"]) for e in parsed) + extra * pool_mark
+
+    if total_marks is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Pooled row has no total_marks. It must be the paper maximum, "
+                f"{maximum:g} (floors plus {extra} extra slot(s) at {pool_mark:g})."
+            ),
+        )
+    if abs(float(total_marks) - maximum) > 1e-9:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Pooled row total_marks is {float(total_marks):g}, but the paper "
+                f"maximum is {maximum:g}: the sections' floors plus {extra} extra "
+                f"slot(s) at {pool_mark:g}. One of the two is wrong."
+            ),
+        )
 
 
 def upsert_paper_rule(
