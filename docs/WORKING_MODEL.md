@@ -28,6 +28,23 @@ Shared documents, all in the repo:
 | `docs/LICENCE_API_CONTRACT.md` | Request/response shapes both sides build against | Planning — **does not exist yet, see §4** |
 | `backend/CLAUDE.md` | Backend conventions | Planning; implementers may propose changes |
 
+
+---
+
+## 0.5 Which surface am I?
+
+Work it out from what you can observe, not from guessing. If Nitoni has told you which one you are, that settles it and you can skip this.
+
+| You are | How you can tell |
+|---|---|
+| **Local agent** | You are on Nitoni's own Windows machine. You can run `dotnet`, see a real checkout you did not clone, and reach his files directly. |
+| **Cloud Session** | You were started from claude.ai/code as a coding task, the repository was already cloned into your workspace before your first turn, and your opening instruction was to implement something. |
+| **Planning surface** | You are a chat window in a claude.ai project. Project documents are attached to the conversation, your workspace started empty, and no repository was cloned for you. |
+
+**If it is still ambiguous, you are the planning surface.** That default is deliberate: planning is read-only and commits nothing, so guessing it wrong costs a wasted question. Guessing *implementer* wrong costs an unreviewed commit on a live repository.
+
+Asking Nitoni once, in one line, is always better than assuming. What you must not do is quietly adopt the implementer role because the work looks like implementation — the brief in `docs/CLOUD_SESSION_BRIEF.md` describes a job that belongs to one specific surface, and reading it does not make you that surface.
+
 ---
 
 ## 1. Planning surface — a chat window
@@ -70,6 +87,11 @@ When an implementer reports a problem, decide whether it is real before passing 
 Scope, setup answers, current work unit and standing rules are in `docs/CLOUD_SESSION_BRIEF.md`. In summary: FastAPI licensing backend, branch `licensing/pilot-v1`, PR only, never `main`, local throwaway Postgres only, never Neon.
 
 Reports findings up to the planning surface. Does not change the spec itself.
+
+**`main` moves while your branch is open.** Sprint B work on `paper_rules`, CBT and theory grading is active there. Two consequences:
+
+- **Rebase onto `main`, do not merge `main` in.** A branch with merge commits from `main` is much harder for Nitoni to review in the GitHub web UI, which is where he reviews.
+- **Expect `db.py` to have moved.** It is the file licensing changes most and the file any other schema work also touches. Rebase early and often; one rebase at the end of a long branch is the expensive way to find a conflict.
 
 ---
 
