@@ -2,7 +2,7 @@
 
 **For:** the implementation session working on `nitoni-jim/ExamPartner`
 **Owner:** Nitoni (solo developer; works on this in evenings and weekends)
-**Date:** 5 October 2026
+**Date:** 5 October 2026 · **Revised:** 6 October 2026 (§3 environment, §6 pyflakes)
 
 Read this first, then `backend/CLAUDE.md`, then the Pilot V1 implementation spec. This brief answers the setup questions and settles the open spec gaps. Where it disagrees with the spec, this brief wins and the spec gets updated to match.
 
@@ -37,7 +37,17 @@ Yes — check §2 of the spec against the live code and report any drift. The co
 
 While your branch is open, Nitoni does not hand-upload files under `backend/` through the GitHub website. If you see an unexpected commit touching your files, stop and say so rather than merging around it.
 
-**Postgres.** Run a throwaway Postgres 16 in this workspace. It installs cleanly — `apt-get install -y postgresql` then `initdb` and `pg_ctl` on a non-default port — and this has been verified in a container identical to yours. **Do not touch Neon**, not even a dev branch, and do not read `DATABASE_URL` if one is set in the environment. Your tests create and drop tables; production holds live paying users' data.
+**Postgres.** The environment's setup script provisions a throwaway Postgres 16 at `127.0.0.1:5433/ep_test` and a Python 3.11 venv at `/opt/ep-venv`. Do not install or initialise Postgres yourself. Run `ep-pg-start` at the start of every session — it is idempotent, and it is needed because a running server does not survive the cached environment snapshot. **Do not touch Neon**, not even a dev branch. Your tests create and drop tables; production holds live paying users' data.
+
+`DATABASE_URL` is **never set** in this environment. If you find it set, stop and report it rather than working around it. `db.py` has exactly one switch to Postgres — `_using_postgres()` and `_get_pg()` read `DATABASE_URL` at call time — and no separate test-database setting, so a Postgres test can only reach Postgres by setting `DATABASE_URL` itself. Postgres tests therefore set it in-process with `monkeypatch.setenv("DATABASE_URL", ...)` from `TEST_DATABASE_URL`, **after asserting the host is `127.0.0.1` or `localhost`**. If `TEST_DATABASE_URL` is missing, those tests **fail, not skip** — a skipped test 4 reads as a passing one, which is the failure `test_app_imports.py` was written to prevent. The existing suite needs no database URL: the `client` fixture in `test_attachments.py` deletes `DATABASE_URL` and runs on a temporary SQLite file.
+
+**Python.** Run everything with `/opt/ep-venv/bin/python`, which is 3.11 to match Render's 3.11.9:
+
+```
+cd backend && /opt/ep-venv/bin/python -m pytest -q
+```
+
+The system `python3` is 3.13, and the pinned `psycopg2-binary==2.9.9` has no wheel for it, so `pip install` there tries to build from source and fails. **Never change a pin in `requirements.txt` to make something install** — that file ships to production. Baseline at `0d1d121`, verified by running: **103 passed** with `pyflakes` installed; 102 passed and 1 skipped without it (see §6).
 
 ## 4. Rulings on the three gaps
 
@@ -90,7 +100,7 @@ Spec §13 steps 2–5, and nothing beyond:
 - Do not refactor adjacent code, reorder imports, or reformat files. Change what the task needs.
 - Do not condense or delete existing comments. They record production failures and are the only record of several hard-won decisions.
 - Add `cryptography` to `requirements.txt` **only** when you reach lease signing, which is not this unit.
-- Run the test suite before opening the PR. `test_app_imports.py` and `test_no_undefined_names.py` must stay green.
+- Run the test suite before opening the PR. `test_app_imports.py` and `test_no_undefined_names.py` must stay green. **A skip does not count as green.** `test_no_undefined_names.py` currently skips on a plain `pip install -r requirements-dev.txt`, because `pyflakes` is not listed there, though the test's skip message says it is. Add `pyflakes==3.2.0` to `backend/requirements-dev.txt` as part of this unit (dev-only, so nothing reaches Render). The setup script installs it in the meantime.
 - In the PR description, state what you verified by running versus what you believe by reading. Keep those separate.
 
 ## 7. If you find another gap
