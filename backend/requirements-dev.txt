@@ -21,3 +21,8 @@ pytest==8.3.4
 # dependency, so local and production agree rather than silently running
 # different httpx versions.
 httpx==0.28.1
+
+# Required by tests/test_no_undefined_names.py. Without it that test SKIPS,
+# and a skip reads as green in a summary line — the exact failure the test
+# exists to prevent.
+pyflakes==3.2.0

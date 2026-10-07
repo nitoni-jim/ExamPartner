@@ -27,6 +27,8 @@ Get a connection with `db_conn()` from `config`, not `get_db` from `db`:
 from config import db_conn
 ```
 
+`paystack_routes.py` predates these conventions — it calls `get_db()` directly and switches placeholders by engine (`ph = "%s" if _using_postgres() else "?"`). It works; do not copy it.
+
 New route module: define `router`, import it in `app.py` as `from routes.x import router as x_router`, then `app.include_router(x_router)` with a short trailing comment saying what it is.
 
 ---
@@ -38,6 +40,8 @@ New route module: define `router`, import it in `app.py` as `from routes.x impor
 `DATABASE_URL` set → Postgres. Absent → SQLite. **Production is Neon Postgres; SQLite is local dev.** Both must work.
 
 `db.py` declares schema as Python column lists and applies it idempotently — `CREATE TABLE IF NOT EXISTS` plus `ADD COLUMN IF NOT EXISTS`. **There is no Alembic and no migration files.**
+
+`ADD COLUMN IF NOT EXISTS` never changes the type of a column that already exists. To change an existing Postgres column's type, add it to `_POSTGRES_COLUMN_TYPE_CHANGES` in `db.py`, which alters it on the next `init_db()` and is a no-op once applied. `questions.marks` going from `INTEGER` to `DOUBLE PRECISION` is the worked example.
 
 Schema changes go in **two places**: `_init_db_sqlite()` and `_init_db_postgres()`. Add the column list once, then wire it into both branches. Forgetting one branch means the table is correct in dev and wrong in production, or the reverse, with no error.
 
@@ -85,7 +89,7 @@ Also: `CREATE UNIQUE INDEX IF NOT EXISTS` is a **no-op when the name already exi
 
 Written from Python as `datetime.now(timezone.utc).isoformat()`. They come back as **`str` on SQLite and `datetime` on Postgres**.
 
-So `row["expires_at"] > datetime.now(timezone.utc)` works on Postgres and raises `TypeError` on SQLite. `access_control.is_paid_user()` currently has exactly this shape. Normalise before comparing, and **compare in Python, not in SQL** — lexicographic ISO comparison happens to work until a format varies, then fails quietly.
+So `row["expires_at"] > datetime.now(timezone.utc)` works on Postgres and raises `TypeError` on SQLite. `access_control.is_paid_user()` had exactly this shape until it was routed through `to_datetime()` in `services/licensing_time.py`, which is the helper to use. Normalise before comparing, and **compare in Python, not in SQL** — lexicographic ISO comparison happens to work until a format varies, then fails quietly.
 
 ---
 
@@ -104,7 +108,7 @@ So `row["expires_at"] > datetime.now(timezone.utc)` works on Postgres and raises
 ## Dependencies
 
 - `requirements.txt` is **production**. Render runs `pip install -r requirements.txt`. Anything added here ships to the live service.
-- `requirements-dev.txt` pulls in production via `-r requirements.txt` and adds `pytest` and `httpx`. `httpx` is pinned deliberately to the version `anthropic` already resolves, so local and production agree.
+- `requirements-dev.txt` pulls in production via `-r requirements.txt` and adds `pytest`, `httpx` and `pyflakes`. `httpx` is pinned deliberately to the version `anthropic` already resolves, so local and production agree.
 - Pin exact versions, matching the existing style.
 - `cryptography` is **not currently a dependency**. Signing work needs it added to `requirements.txt`.
 
@@ -117,6 +121,9 @@ So `row["expires_at"] > datetime.now(timezone.utc)` works on Postgres and raises
 - `auth_headers` — a signed-in user, token minted with the app's real `make_token()`
 - `other_auth_headers` — a **different** signed-in user
 - `auth_identifier` — the identifier `auth_headers` authenticates as
+- `pg_database` — points `DATABASE_URL` at the local throwaway Postgres from `TEST_DATABASE_URL` (local hosts only; **fails, never skips**, when unset) and runs `init_db()`
+- `sqlite_database` — a fresh initialised SQLite file, with both `DB_PATH` bindings set
+- `make_pool` — factory for a licensing account plus seat pool on whichever engine is active
 
 Use `other_auth_headers` for any ownership or isolation test. Proving user A cannot read user B's data needs two real identities; one identity plus a missing header only proves that unauthenticated access is refused.
 
