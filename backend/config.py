@@ -105,6 +105,15 @@ ATTACHMENT_MAX_EDGE_PX: int = int(os.getenv("ATTACHMENT_MAX_EDGE_PX", "2000"))
 # secondary-school candidates.
 ATTACHMENT_RETENTION_DAYS: int = int(os.getenv("ATTACHMENT_RETENTION_DAYS", "90"))
 
+# ---------------------------------------------------------------------------
+# Licensing — injectable test clock (Windows seat-pool, Pilot V1)
+# ---------------------------------------------------------------------------
+# Default false, and it must stay false in production. When false,
+# services/licensing_time.py ignores any clock offset, so `now()` is the real
+# time. It exists only so lease and subscription expiry can be tested without
+# waiting 30 days or a year — see spec §6.3.
+ALLOW_TEST_CLOCK: bool = os.getenv("ALLOW_TEST_CLOCK", "").strip().lower() in {"1", "true", "yes"}
+
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s | %(levelname)s | %(message)s",

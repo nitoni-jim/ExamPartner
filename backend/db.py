@@ -671,6 +671,178 @@ PAPER_RULES_POSTGRES_COLUMNS = [
 
 
 # ----------------------------
+# Windows seat-pool licensing (Pilot V1)
+# ----------------------------
+# See docs/ExamPartner_Windows_SeatPool_PilotV1_Implementation_Spec.md §3–§4.
+#
+# Every `*_at` column is a timestamp: ISO TEXT on SQLite, TIMESTAMPTZ on
+# Postgres, like every other table here. The lists below are written once with
+# TEXT and _licensing_postgres_columns() swaps the type for Postgres, rather
+# than restating each list — institution_seats has timestamps scattered
+# through it, and the [:-2] slicing the older tables use would silently drop
+# or duplicate one. No column DEFAULTs: licensing writes every timestamp
+# from services/licensing_time.py, so the test clock governs all of them.
+#
+# Timestamps come back as str on SQLite and datetime on Postgres. Compare them
+# only through licensing_time.to_datetime(), never in SQL.
+
+def _licensing_postgres_columns(columns: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    return [
+        (name, ddl.replace("TEXT", "TIMESTAMPTZ", 1) if name.endswith("_at") else ddl)
+        for name, ddl in columns
+    ]
+
+
+# accounts — an institution (V1) or reseller (not built). owner_identifier is
+# the primary administrator and matches users.identifier; no FK, as with the
+# other newer tables. subscription_expires_at NULL = no entitlement yet.
+ACCOUNTS_COLUMNS = [
+    ("id",                      "TEXT PRIMARY KEY"),
+    ("name",                    "TEXT NOT NULL"),
+    ("account_type",            "TEXT NOT NULL"),       # institution | reseller
+    ("contact_email",           "TEXT"),
+    ("owner_identifier",        "TEXT"),
+    ("subscription_status",     "TEXT"),                # active | expired | suspended
+    ("subscription_expires_at", "TEXT"),
+    ("created_at",              "TEXT"),
+    ("updated_at",              "TEXT"),
+]
+
+# seat_pools — purchased concurrent capacity. pool_size is mutable; that is
+# the whole resizing story. There is no CHECK on capacity and there cannot be
+# one: CHECK (active <= pool_size) rejects the shrink itself, and
+# over-capacity after a shrink is a supported state (spec §3.3, §5.4).
+#
+# last_claim_at is load-bearing. claim_capacity() writes it as its first
+# statement, and that write is the row lock that serialises concurrent
+# claims. See services/licensing_service.py before touching it.
+SEAT_POOLS_COLUMNS = [
+    ("id",            "TEXT PRIMARY KEY"),
+    ("account_id",    "TEXT NOT NULL"),
+    ("pool_size",     "INTEGER NOT NULL"),
+    ("label",         "TEXT"),
+    ("status",        "TEXT"),                          # active | suspended
+    ("last_claim_at", "TEXT"),
+    ("created_at",    "TEXT"),
+    ("updated_at",    "TEXT"),
+]
+
+# institution_seats — the name is kept for continuity, but a row is NOT a
+# seat. It is an activation binding: one machine's claim on capacity. A pool
+# of 20 creates no rows. Active = revoked_at IS NULL, the user_devices idiom.
+# Available capacity = pool_size - COUNT(active), computed, never stored.
+# Revoked rows are kept forever — the row id IS the activation identity, and
+# a revoked one must never be silently restored by hardware recognition.
+INSTITUTION_SEATS_COLUMNS = [
+    ("id",                       "TEXT PRIMARY KEY"),
+    ("seat_pool_id",             "TEXT NOT NULL"),
+    ("account_id",               "TEXT NOT NULL"),      # denormalised: scope checks need no join
+    ("machine_fingerprint_hash", "TEXT NOT NULL"),
+    ("fingerprint_signals_json", "TEXT"),
+    ("fingerprint_confidence",   "TEXT"),               # strong | weak | degenerate, at claim time
+    ("installation_id",          "TEXT"),               # server-issued; the CURRENT installation
+    ("machine_label",            "TEXT"),
+    ("activated_at",             "TEXT"),
+    ("last_seen_at",             "TEXT"),
+    ("lease_issued_at",          "TEXT"),
+    ("lease_expires_at",         "TEXT"),
+    ("lease_serial",             "INTEGER NOT NULL DEFAULT 0"),
+    ("revoked_at",               "TEXT"),               # NULL = active
+    ("revoke_reason",            "TEXT"),
+    ("revoked_by",               "TEXT"),
+    ("created_at",               "TEXT"),
+    ("updated_at",               "TEXT"),
+]
+
+# seat_activation_log — immutable: never updated, never deleted. Carries its
+# OWN copies of fingerprint hash, signals and label, so history still
+# reconstructs after the capacity is reused by a different machine.
+SEAT_ACTIVATION_LOG_COLUMNS = [
+    ("id",                       "TEXT PRIMARY KEY"),
+    ("account_id",               "TEXT NOT NULL"),
+    ("seat_pool_id",             "TEXT"),
+    ("binding_id",               "TEXT"),               # NULL for pool-level events
+    ("action",                   "TEXT NOT NULL"),
+    ("installation_id",          "TEXT"),
+    ("machine_fingerprint_hash", "TEXT"),
+    ("machine_label",            "TEXT"),
+    ("fingerprint_signals_json", "TEXT"),
+    ("performed_by",             "TEXT"),
+    ("actor_role",               "TEXT"),               # institution_owner | exampartner_admin | client
+    ("reason",                   "TEXT"),
+    ("detail_json",              "TEXT"),
+    ("created_at",               "TEXT"),
+]
+
+# licence_ambiguities — separate from the log because the log is immutable
+# and an ambiguity has mutable state: open -> resolved -> consumed, or
+# expired (brief §4.C).
+LICENCE_AMBIGUITIES_COLUMNS = [
+    ("id",                         "TEXT PRIMARY KEY"),
+    ("account_id",                 "TEXT"),
+    ("seat_pool_id",               "TEXT"),
+    ("presented_signals_json",     "TEXT"),
+    ("presented_fingerprint_hash", "TEXT"),
+    ("presented_installation_id",  "TEXT"),
+    ("machine_label",              "TEXT"),
+    ("candidate_binding_ids_json", "TEXT"),
+    ("status",                     "TEXT"),
+    ("resolution",                 "TEXT"),             # recognize_existing | treat_as_new
+    ("resolved_binding_id",        "TEXT"),
+    ("resolved_by",                "TEXT"),
+    ("resolved_at",                "TEXT"),
+    ("created_at",                 "TEXT"),
+]
+
+# (table name, column list) — the SQLite branch uses these lists as written,
+# the Postgres branch through _licensing_postgres_columns().
+LICENSING_TABLES = [
+    ("accounts",            ACCOUNTS_COLUMNS),
+    ("seat_pools",          SEAT_POOLS_COLUMNS),
+    ("institution_seats",   INSTITUTION_SEATS_COLUMNS),
+    ("seat_activation_log", SEAT_ACTIVATION_LOG_COLUMNS),
+    ("licence_ambiguities", LICENCE_AMBIGUITIES_COLUMNS),
+]
+
+# Ordinary licensing indexes — best-effort, appended to the swallowed index
+# loops in both branches like every other performance index.
+LICENSING_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner_identifier);",
+    "CREATE INDEX IF NOT EXISTS idx_seat_pools_account ON seat_pools(account_id);",
+    "CREATE INDEX IF NOT EXISTS idx_seat_bindings_pool_active ON institution_seats(seat_pool_id, revoked_at);",
+    "CREATE INDEX IF NOT EXISTS idx_seat_bindings_account ON institution_seats(account_id);",
+    "CREATE INDEX IF NOT EXISTS idx_seat_bindings_fp ON institution_seats(machine_fingerprint_hash);",
+    "CREATE INDEX IF NOT EXISTS idx_seat_log_account_created ON seat_activation_log(account_id, created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_seat_log_binding ON seat_activation_log(binding_id);",
+    "CREATE INDEX IF NOT EXISTS idx_ambiguities_open ON licence_ambiguities(status, created_at);",
+]
+
+# The licensing-critical constraint: one active binding per installation. It
+# is also the clone detector.
+#
+# This one is deliberately NOT in the best-effort loops. Those swallow a
+# failure as a logger.warning, which for this index would mean clone
+# detection silently disappears with the only trace in a Render boot log. It
+# is created where an exception propagates, and assert_licensing_constraints()
+# verifies it exists at the end of every init_db().
+#
+# To change its definition, do not edit this statement in place:
+# CREATE UNIQUE INDEX IF NOT EXISTS is a no-op when the name already exists,
+# so existing databases would keep the old definition forever. DROP the old
+# name and create a versioned one (_v2), as ux_paper_rules_unique_row_v2 does,
+# and update LICENSING_REQUIRED_INDEX to match.
+#
+# NULLs are distinct in unique indexes, so this guards nothing for a binding
+# with installation_id NULL. claim_capacity() always generates one, which is
+# what makes the index meaningful.
+LICENSING_REQUIRED_INDEX = "ux_seat_bindings_active_installation"
+LICENSING_REQUIRED_INDEX_SQL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_seat_bindings_active_installation "
+    "ON institution_seats(installation_id) WHERE revoked_at IS NULL;"
+)
+
+
+# ----------------------------
 # Detect Postgres
 # ----------------------------
 def _using_postgres() -> bool:
@@ -692,13 +864,15 @@ def init_db(db_path: Optional[str] = None) -> None:
 
     if not _using_postgres():
         _init_db_sqlite(db_path=db_path)
+        assert_licensing_constraints(db_path=db_path)
         return
 
     last_exc: Optional[Exception] = None
     for attempt in range(1, 4):
         try:
             _init_db_postgres()
-            return
+            last_exc = None
+            break
         except Exception as exc:
             last_exc = exc
             logger.warning(
@@ -708,8 +882,60 @@ def init_db(db_path: Optional[str] = None) -> None:
             if attempt < 3:
                 time.sleep(attempt * 2)  # 2s then 4s
 
-    logger.error("init_db failed after 3 attempts — raising last exception")
-    raise last_exc  # type: ignore[misc]
+    if last_exc is not None:
+        logger.error("init_db failed after 3 attempts — raising last exception")
+        raise last_exc
+
+    # Checked once, after the retry loop: a missing licensing index is not a
+    # transient connection failure, and retrying it would only delay the same
+    # error by six seconds.
+    assert_licensing_constraints()
+
+
+class LicensingConstraintError(RuntimeError):
+    """A correctness-critical licensing constraint is missing from the schema."""
+
+
+def assert_licensing_constraints(db_path: Optional[str] = None) -> None:
+    """
+    Raise LicensingConstraintError unless ux_seat_bindings_active_installation
+    exists. Called at the end of every init_db(), so a database without it
+    fails at boot instead of running with clone detection silently absent.
+
+    AS SPECIFIED THIS STOPS THE WHOLE BACKEND BOOTING, including the routes
+    live Android users depend on. Whether it should instead disable only the
+    licensing routes is open (brief §8). That decision changes the CALLER in
+    init_db(), not this function — keep the check itself here, in one place.
+
+    db_path must be the same one init_db() was given. config.DB_PATH and the
+    DB_PATH env var can differ under SQLite (see the client fixture in
+    tests/test_attachments.py); checking a different file than the one just
+    initialised would pass or fail for the wrong reason.
+    """
+    db = get_db(db_path)
+    try:
+        cur = db.cursor()
+        if _using_postgres():
+            cur.execute(
+                "SELECT indexname FROM pg_indexes "
+                "WHERE schemaname = current_schema() AND indexname = ?",
+                (LICENSING_REQUIRED_INDEX,),
+            )
+        else:
+            cur.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?",
+                (LICENSING_REQUIRED_INDEX,),
+            )
+        row = cur.fetchone()
+    finally:
+        db.close()
+
+    if not row:
+        raise LicensingConstraintError(
+            f"Required licensing index {LICENSING_REQUIRED_INDEX} is missing. "
+            "Without it one installation can hold two active seat bindings and "
+            "clone detection is disabled. Refusing to start."
+        )
 
 
 def get_db(db_path: Optional[str] = None):
@@ -1003,6 +1229,11 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         _sqlite_add_missing_columns(cur, "ai_grading_credit_purchases", AI_GRADING_CREDIT_PURCHASES_COLUMNS)
         _sqlite_add_missing_columns(cur, "paper_rules", PAPER_RULES_COLUMNS)
 
+        # ---- licensing (Windows seat pools) ----
+        for table_name, columns in LICENSING_TABLES:
+            cur.execute(_table_sql(table_name, columns))
+            _sqlite_add_missing_columns(cur, table_name, columns)
+
         # *** COMMIT PHASE 1 — tables are now durable regardless of index errors ***
         conn.commit()
 
@@ -1091,6 +1322,8 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
             # this index catches a different, louder failure.
             "DROP INDEX IF EXISTS ux_paper_rules_unique_row;",
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_rules_unique_row_v2 ON paper_rules(exam, subject, paper, year, country);",
+            # licensing — performance only; see LICENSING_INDEXES
+            *LICENSING_INDEXES,
         ]
 
         for sql in _sqlite_indexes:
@@ -1100,6 +1333,11 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
             except Exception as exc:
                 conn.rollback()
                 logger.warning("SQLite index DDL skipped (%s): %s", type(exc).__name__, exc)
+
+        # Licensing-critical index — NOT in the loop above. A failure here
+        # must propagate and stop init; see LICENSING_REQUIRED_INDEX_SQL.
+        cur.execute(LICENSING_REQUIRED_INDEX_SQL)
+        conn.commit()
 
     finally:
         conn.close()
@@ -1261,6 +1499,12 @@ def _init_db_postgres() -> None:
         _postgres_add_missing_columns(cur, "paper_rules", PAPER_RULES_POSTGRES_COLUMNS)
         _postgres_apply_column_type_changes(cur)
 
+        # ---- licensing (Windows seat pools) ----
+        for table_name, columns in LICENSING_TABLES:
+            pg_columns = _licensing_postgres_columns(columns)
+            cur.execute(_table_sql(table_name, pg_columns))
+            _postgres_add_missing_columns(cur, table_name, pg_columns)
+
         # *** COMMIT PHASE 1 — tables are now durable regardless of index errors ***
         db.commit()
 
@@ -1353,12 +1597,23 @@ def _init_db_postgres() -> None:
             # this index catches a different, louder failure.
             "DROP INDEX IF EXISTS ux_paper_rules_unique_row;",
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_rules_unique_row_v2 ON paper_rules(exam, subject, paper, year, country);",
+            # licensing — performance only; see LICENSING_INDEXES
+            *LICENSING_INDEXES,
         ]
 
         for sql in _indexes:
             _pg_exec_index(db, cur, sql)
 
         # *** COMMIT PHASE 2 — all indexes that succeeded are now durable ***
+        db.commit()
+
+        # ------------------------------------------------------------------ #
+        # PHASE 3 — Licensing-critical index                                  #
+        # Deliberately NOT through _pg_exec_index: a failure here must raise  #
+        # and stop init, not be logged and skipped. See                       #
+        # LICENSING_REQUIRED_INDEX_SQL.                                       #
+        # ------------------------------------------------------------------ #
+        cur.execute(LICENSING_REQUIRED_INDEX_SQL)
         db.commit()
 
     finally:
