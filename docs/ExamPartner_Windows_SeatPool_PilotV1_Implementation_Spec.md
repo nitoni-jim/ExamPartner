@@ -1,7 +1,7 @@
 # ExamPartner Windows — Seat-Pool Licensing
 ## Pilot V1 Implementation Spec
 
-**Date:** 27 September 2026 · **Revision 3** · amended 7 October 2026 (§0 citations, §3.1 timestamp types, §5.2 capacity-grant rulings; see `docs/CLOUD_SESSION_BRIEF.md` §4)
+**Date:** 27 September 2026 · **Revision 3** · amended 7 October 2026 (§0 citations, §3.1 timestamp types, §5.2 capacity-grant rulings) and 8 October 2026 (§4.2 licensing never stops the backend starting, §12 test 31); see `docs/CLOUD_SESSION_BRIEF.md` §4
 **Status:** Ready for implementation
 **Audience:** the implementation session working on the ExamPartner FastAPI backend
 
@@ -248,12 +248,16 @@ CREATE UNIQUE INDEX ux_seat_bindings_active_installation
 
 `db.py` wraps **every** index in `try/except` and, on failure, logs a warning and continues. Sensible for content indexes; unacceptable here. If this index silently fails, clone detection disappears and the only trace is a `logger.warning` in a Render boot log.
 
-**Required, both parts:**
+**Required:**
 
-1. Create it through a **non-swallowed path** — outside the `_indexes` / `_sqlite_indexes` loops, where an exception propagates.
-2. Add `assert_licensing_constraints()`, called at the end of `init_db()`, which verifies it exists and **raises** if not:
+1. Create it through a **non-swallowed path** — outside the `_indexes` / `_sqlite_indexes` loops, where an exception is raised rather than logged and skipped.
+2. Add `assert_licensing_constraints()`, which verifies it exists and **raises** if not:
    - SQLite: `SELECT name FROM sqlite_master WHERE type='index' AND name = ?`
    - Postgres: `SELECT indexname FROM pg_indexes WHERE indexname = ?`
+3. **A licensing failure closes licensing, never the backend** (decided 8 October 2026). This backend also serves the live Android app, so revision 3's "raise and refuse to start" is replaced. All licensing DDL — tables, ordinary indexes and this index — runs in its own step after the core schema has committed. `init_db()` catches any failure there, including `assert_licensing_constraints()`, logs it at **ERROR**, and records licensing as unavailable; core schema failures still stop startup as before. `/health` reports `"licensing": "ready" | "unavailable"` from that startup result, without querying the database, and stays 200.
+4. **The guarantee is enforced where bindings are written, live.** `claim_capacity()` checks the index exists inside its own transaction and refuses with 503 if not; every later path that creates a binding or changes a binding's `installation_id` does the same. A startup flag alone would let licensing code run on the assumption the index holds — the failure this section exists to prevent.
+
+The realistic way this index goes missing is not a manual drop — `init_db()` recreates a dropped index on the next start — but **failing to create because existing data violates it**: two active bindings sharing an `installation_id`. That is the case §12 test 31 reproduces.
 
 Note `CREATE UNIQUE INDEX IF NOT EXISTS` is a **no-op when the name already exists**, even with a different definition. To widen it, `DROP INDEX IF EXISTS` the old name and create a versioned one, as `ux_paper_rules_unique_row_v2` does.
 
@@ -693,7 +697,7 @@ All runnable without waiting real time (§6.3).
 30. 20 seats / 18 active → 15 → over-capacity, no machine killed, new claims blocked, admin retires 3, state clears.
 
 **Hardening**
-31. Drop `ux_seat_bindings_active_installation`, restart → backend **fails to start** with a clear error.
+31. Drop `ux_seat_bindings_active_installation`, insert two active bindings sharing one `installation_id`, run `init_db()` → it does **not** raise; core tables still usable; licensing recorded unavailable and `/health` reports it with 200; `claim_capacity()` refuses with 503 and writes nothing. Revoke one duplicate and run `init_db()` again → index recreated, licensing ready, claims succeed. *(Replaces revision 3's "backend fails to start", 8 October 2026.)*
 
 ---
 

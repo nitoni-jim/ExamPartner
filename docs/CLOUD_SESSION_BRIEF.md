@@ -2,7 +2,7 @@
 
 **For:** the implementation session working on `nitoni-jim/ExamPartner`
 **Owner:** Nitoni (solo developer; works on this in evenings and weekends)
-**Date:** 5 October 2026 · **Revised:** 6 October 2026 (§3 environment, §6 pyflakes) · 7 October 2026 (§4.D rulings on the pre-code report, §8)
+**Date:** 5 October 2026 · **Revised:** 6 October 2026 (§3 environment, §6 pyflakes) · 7 October 2026 (§4.D rulings on the pre-code report, §8) · 8 October 2026 (§4.E licensing never stops the backend starting, §8)
 
 Read this first, then `backend/CLAUDE.md`, then the Pilot V1 implementation spec. This brief answers the setup questions and settles the open spec gaps. Where it disagrees with the spec, this brief wins and the spec gets updated to match.
 
@@ -103,6 +103,28 @@ The plan in your pre-code report is approved, with the changes and conditions be
 - `paystack_routes.py` predates these conventions — it calls `get_db()` directly and switches placeholders by engine. It works; do not copy it.
 - `_POSTGRES_COLUMN_TYPE_CHANGES` in `db.py` is the mechanism for changing an existing Postgres column's type. `ADD COLUMN IF NOT EXISTS` never changes a type.
 
+### E. Licensing must never stop the backend starting (8 October 2026)
+
+**Decision (Nitoni).** This backend also serves the live Android app. A licensing schema problem **closes licensing, not the platform**: `/auth`, CBT, Study, theory grading and every other existing route keep working. This replaces the "raises at boot" requirement in spec §4.2 and the old test 31. Apply it to PR #37 before merge.
+
+**1. Isolate licensing DDL.** The five licensing tables, their ordinary indexes and `ux_seat_bindings_active_installation` move into their own step, run **after the core schema has committed**, in both `_init_db_sqlite()` and `_init_db_postgres()` paths — not inside the existing phase 1 / phase 2 transactions, where a licensing failure would roll back or abort core schema work. `init_db()` catches any failure in that step, logs it at **ERROR** with the exception (not `warning` — this is not a performance index), and records licensing as unavailable with the reason. Core schema failures still fail startup exactly as they do today. The Postgres retry loop keeps covering the core schema only; the licensing step runs once.
+
+**2. Enforce at the chokepoint, live.** `claim_capacity()` checks, inside its own transaction and before granting, that `ux_seat_bindings_active_installation` exists — the same catalog query `assert_licensing_constraints()` uses — and refuses with **503** ("Licensing is unavailable") if it does not, writing nothing. This is checked on every claim, not read from a startup flag, so it cannot go stale and does not depend on `init_db()` having run in this process. Claims are rare; one catalog query each is negligible. **Standing rule for later units:** every licensing path that creates a binding or changes a binding's `installation_id` (restore, in the activation unit) performs the same check.
+
+**3. Report it on `/health`, without touching the database.** Add `"licensing": "ready" | "unavailable"` to the `/health` response, from the result `init_db()` recorded at startup. **Do not query the database from `/health`**: if Render or anything else polls it, a per-request query would keep Neon's compute awake around the clock. `/health` keeps returning 200 either way — licensing must not make the service look unhealthy.
+
+**4. Keep `assert_licensing_constraints()` as it is.** It still raises `LicensingConstraintError`; the change is that `init_db()` catches it inside the licensing step instead of letting it stop startup. Its existing direct tests stay.
+
+**5. Entitlement before capacity.** Move the pool-status and subscription checks in `claim_capacity()` ahead of the capacity count — still after the lock, still in the same transaction, so correctness is unchanged. A suspended or lapsed school is then told its entitlement is the problem (402 / 409 pool not active), not to free a seat.
+
+**6. Replace test 31.** "Drop the index and restart" cannot reproduce a startup failure: `init_db()` runs `CREATE UNIQUE INDEX IF NOT EXISTS` again and simply recreates a dropped index. The realistic failure is the index **failing to create** because existing data violates it. New test 31, on Postgres (and SQLite if practical):
+- drop the index, insert two **active** bindings sharing one `installation_id`, run `init_db()`;
+- `init_db()` does **not** raise; a core table (`users`) is still queryable; the recorded licensing status is unavailable and `/health` reports `"licensing": "unavailable"` with 200;
+- `claim_capacity()` refuses with 503 and writes no binding and no log row;
+- revoke one duplicate, run `init_db()` again → index recreated, status ready, `claim_capacity()` succeeds.
+
+**Render deploys manually** (confirmed by Nitoni). Merging PR #37 does not touch production; the next manual deploy of `main` — whoever's work it carries — is what creates the licensing tables in Neon.
+
 ## 5. The current unit of work
 
 Spec §13 steps 2–5, and nothing beyond:
@@ -131,9 +153,4 @@ Two qualifications. Be specific about why it blocks code rather than listing eve
 
 ## 8. Not yours to decide — raised with Nitoni separately
 
-Do not act on these; they may change the spec under you.
-
-- **Whether `assert_licensing_constraints()` should stop the whole backend from booting.** As specified it does. That backend also serves live paying Android users who have nothing to do with seat licensing, so a missing licensing index would take the whole platform down. Implement it as specified for now, but keep the assertion in one function that is easy to change into a licensing-routes-only gate.
-- **Whether Render auto-deploys from `main`.** Affects merge timing, not your branch.
-
-The architecture handoff question is closed: `docs/ExamPartner_Windows_SeatPool_Architecture_Handoff.md` (updated 27 September) already carries the fingerprint correction, and spec §0 now cites that file.
+Items listed here are not yours to act on; they may change the spec under you. **None is open at the moment.** Closed since the last revision: the boot behaviour (decided — §4.E), Render deployment (manual), and the architecture handoff: `docs/ExamPartner_Windows_SeatPool_Architecture_Handoff.md` (updated 27 September) already carries the fingerprint correction, and spec §0 now cites that file.
