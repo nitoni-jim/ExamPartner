@@ -199,23 +199,54 @@ def test_assert_licensing_constraints_raises_when_index_missing_sqlite(sqlite_da
         assert_licensing_constraints(sqlite_database)
 
 
-def test_init_db_does_not_swallow_required_index_failure(tmp_path, monkeypatch):
+def test_required_index_failure_closes_licensing_not_startup(tmp_path, monkeypatch, caplog):
+    """The required index is not swallowed as a warning — but its failure is
+    caught by init_db(), logged at ERROR and recorded, never raised (§4.E)."""
+    import logging
+
     import db
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setattr(db, "LICENSING_REQUIRED_INDEX_SQL", "CREATE UNIQUE INDEX broken ON no_such_table(x);")
-    with pytest.raises(sqlite3.OperationalError):
-        db.init_db(str(tmp_path / "a.db"))
+    with caplog.at_level(logging.WARNING):
+        db.init_db(str(tmp_path / "a.db"))  # does not raise
+
+    status = db.licensing_status()
+    assert status["ready"] is False
+    assert "no_such_table" in status["reason"]
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR and "LICENSING UNAVAILABLE" in r.getMessage()]
+    assert errors and errors[0].exc_info is not None
 
 
-def test_init_db_runs_the_assertion(tmp_path, monkeypatch):
+def test_init_db_runs_the_assertion_and_records_it(tmp_path, monkeypatch):
     import db
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
     # Index creation "succeeds" but creates nothing: only the assertion can catch it.
     monkeypatch.setattr(db, "LICENSING_REQUIRED_INDEX_SQL", "SELECT 1;")
-    with pytest.raises(db.LicensingConstraintError):
-        db.init_db(str(tmp_path / "b.db"))
+    db.init_db(str(tmp_path / "b.db"))
+    status = db.licensing_status()
+    assert status["ready"] is False
+    assert status["reason"].startswith("LicensingConstraintError")
+
+
+def test_healthy_init_records_licensing_ready(sqlite_database):
+    import db
+
+    assert db.licensing_status() == {"ready": True, "reason": None}
+
+
+def test_core_schema_failure_still_stops_startup(tmp_path, monkeypatch):
+    import db
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    def broken_core(db_path=None):
+        raise sqlite3.OperationalError("core schema broke")
+
+    monkeypatch.setattr(db, "_init_db_sqlite", broken_core)
+    with pytest.raises(sqlite3.OperationalError, match="core schema broke"):
+        db.init_db(str(tmp_path / "c.db"))
 
 
 def test_postgres_timestamp_columns_are_timestamptz(pg_database):
@@ -441,6 +472,43 @@ def test_invalid_claim_inputs_are_refused_before_touching_the_pool(sqlite_databa
     with pytest.raises(HTTPException) as exc:
         _claim(pool["pool_id"], **overrides)
     assert exc.value.status_code == 400
+    [p] = _query("SELECT last_claim_at FROM seat_pools WHERE id = ?", (pool["pool_id"],))
+    assert p["last_claim_at"] is None
+
+
+@pytest.mark.parametrize("pool_kwargs, status, detail", [
+    ({"subscription_status": "suspended"}, 402, "Subscription is not active"),
+    ({"subscription_expires_at": "2020-01-01T00:00:00+00:00"}, 402, "Subscription is not active"),
+    ({"pool_status": "suspended"}, 409, "Seat pool is not active"),
+])
+def test_entitlement_is_reported_before_capacity(sqlite_database, make_pool, pool_kwargs, status, detail):
+    """Brief §4.E point 5: a FULL pool whose entitlement has lapsed is told
+    about the entitlement, not told to free a seat."""
+    pool = make_pool(1, **pool_kwargs)
+    _execute(
+        "INSERT INTO institution_seats (id, seat_pool_id, account_id, machine_fingerprint_hash, installation_id) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("existing", pool["pool_id"], pool["account_id"], "fp", "inst-existing"),
+    )
+    with pytest.raises(HTTPException) as exc:
+        _claim(pool["pool_id"])
+    assert (exc.value.status_code, exc.value.detail) == (status, detail)
+
+
+def test_claim_checks_the_index_live_not_the_startup_flag(sqlite_database, make_pool):
+    """Brief §4.E point 2: init_db() recorded licensing ready, then the index
+    disappeared. The claim must notice on its own and write nothing."""
+    import db
+
+    pool = make_pool(5)
+    assert db.licensing_status()["ready"] is True
+    _execute("DROP INDEX ux_seat_bindings_active_installation")
+
+    with pytest.raises(HTTPException) as exc:
+        _claim(pool["pool_id"])
+    assert (exc.value.status_code, exc.value.detail) == (503, "Licensing is unavailable")
+    assert _query("SELECT id FROM institution_seats WHERE seat_pool_id = ?", (pool["pool_id"],)) == []
+    assert _query("SELECT id FROM seat_activation_log WHERE seat_pool_id = ?", (pool["pool_id"],)) == []
     [p] = _query("SELECT last_claim_at FROM seat_pools WHERE id = ?", (pool["pool_id"],))
     assert p["last_claim_at"] is None
 

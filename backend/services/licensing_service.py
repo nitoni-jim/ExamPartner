@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional
 from fastapi import HTTPException
 
 from config import db_conn
+from db import licensing_index_present
 from services import licensing_time
 
 # Who may cause capacity to be granted. A Windows client holding a lease may
@@ -60,12 +61,14 @@ def claim_capacity(
     and write its `activate` row to seat_activation_log in the same
     transaction — a binding never exists without its audit row.
 
-    Refuses with:
+    Refuses with, in this order:
+      503  licensing unavailable: ux_seat_bindings_active_installation missing
       404  pool not found
-      409  no capacity available (pool at or over pool_size) — never evicts
       409  pool status is not 'active'
       402  account subscription not 'active', or expired
+      409  no capacity available (pool at or over pool_size) — never evicts
       500  capacity invariant violated after insert (nothing is committed)
+    Every refusal writes nothing.
 
     The new binding's installation_id is ALWAYS generated here; there is
     deliberately no parameter for it (brief §4.D). A client-presented
@@ -120,7 +123,17 @@ def claim_capacity(
             (stamp, pool_id),
         )
 
-        # (2) Under the lock, the count cannot change underneath us.
+        # (2) The licensing-critical index, checked LIVE, in this
+        # transaction, on every claim (brief §4.E). init_db() no longer stops
+        # the backend when that index is missing — it records licensing as
+        # unavailable and carries on — so this is where the one-active-
+        # binding-per-installation guarantee is actually enforced. It is
+        # deliberately not read from db.licensing_status(): a startup flag
+        # can go stale, and does not exist at all if init_db() never ran in
+        # this process. One catalog query per claim; claims are rare.
+        if not licensing_index_present(cur):
+            raise HTTPException(status_code=503, detail="Licensing is unavailable")
+
         cur.execute(
             "SELECT account_id, pool_size, status FROM seat_pools WHERE id = ?",
             (pool_id,),
@@ -132,15 +145,11 @@ def claim_capacity(
         pool_size = int(pool["pool_size"])
         account_id = pool["account_id"]
 
-        active = _count_active(cur, pool_id)
-        # Slot-agnostic: which machines are active is irrelevant, only how
-        # many. Over-capacity after a shrink (active > pool_size) is refused
-        # by the same comparison; no machine is ever evicted here.
-        if active >= pool_size:
-            raise HTTPException(status_code=409, detail="No capacity available in this pool")
-
-        # (3) Entitlement, re-checked in this transaction immediately before
-        # the insert (brief §4.D). Activation may check both earlier for a
+        # (3) Entitlement, re-checked in this transaction (brief §4.D) and
+        # BEFORE capacity (brief §4.E), so a suspended or lapsed school is
+        # told its entitlement is the problem rather than to free a seat.
+        # Still after the lock and in the same transaction, so the capacity
+        # guarantee is unchanged. Activation may check both earlier for a
         # fast rejection; this is what makes EVERY capacity-grant path
         # enforce the same boundary. It is NOT race-free against a
         # concurrent subscription change: the subscription lives on the
@@ -158,7 +167,15 @@ def claim_capacity(
         ):
             raise HTTPException(status_code=402, detail="Subscription is not active")
 
-        # (4) Insert the binding and its audit row.
+        # (4) Under the lock, the count cannot change underneath us.
+        active = _count_active(cur, pool_id)
+        # Slot-agnostic: which machines are active is irrelevant, only how
+        # many. Over-capacity after a shrink (active > pool_size) is refused
+        # by the same comparison; no machine is ever evicted here.
+        if active >= pool_size:
+            raise HTTPException(status_code=409, detail="No capacity available in this pool")
+
+        # (5) Insert the binding and its audit row.
         binding_id = secrets.token_hex(16)
         installation_id = secrets.token_hex(16)
         label = machine_label.strip() if isinstance(machine_label, str) and machine_label.strip() else None
@@ -184,7 +201,7 @@ def claim_capacity(
              json.dumps({"fingerprint_confidence": fingerprint_confidence}), stamp),
         )
 
-        # (5) Invariant re-check, same transaction. Cheap insurance against a
+        # (6) Invariant re-check, same transaction. Cheap insurance against a
         # logic error above: abort rather than oversubscribe. Raising leaves
         # the transaction uncommitted, and the finally discards it.
         #

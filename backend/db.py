@@ -804,8 +804,9 @@ LICENSING_TABLES = [
     ("licence_ambiguities", LICENCE_AMBIGUITIES_COLUMNS),
 ]
 
-# Ordinary licensing indexes — best-effort, appended to the swallowed index
-# loops in both branches like every other performance index.
+# Ordinary licensing indexes — best-effort: a failure is logged and skipped,
+# like every other performance index. They run inside the licensing step
+# (_init_licensing_schema), not in the core index loops.
 LICENSING_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner_identifier);",
     "CREATE INDEX IF NOT EXISTS idx_seat_pools_account ON seat_pools(account_id);",
@@ -820,11 +821,26 @@ LICENSING_INDEXES = [
 # The licensing-critical constraint: one active binding per installation. It
 # is also the clone detector.
 #
-# This one is deliberately NOT in the best-effort loops. Those swallow a
-# failure as a logger.warning, which for this index would mean clone
-# detection silently disappears with the only trace in a Render boot log. It
-# is created where an exception propagates, and assert_licensing_constraints()
-# verifies it exists at the end of every init_db().
+# This one is deliberately NOT best-effort. The index loops swallow a failure
+# as a logger.warning, which for this index would mean clone detection
+# silently disappears with the only trace in a Render boot log. It is created
+# where an exception is raised, and assert_licensing_constraints() then
+# verifies it exists.
+#
+# Raised, but not fatal to the backend (brief §4.E, 8 October 2026). This
+# backend also serves the live Android app, so a licensing schema problem
+# closes LICENSING, never the platform: init_db() catches the failure in the
+# licensing step, logs it at ERROR and records licensing as unavailable, and
+# every other route keeps working. The guarantee is then enforced where
+# bindings are written — claim_capacity() checks for this index in its own
+# transaction on every claim and refuses with 503 if it is missing. Any later
+# path that creates a binding or changes a binding's installation_id must do
+# the same; a startup flag alone would let licensing code run on the
+# assumption the index holds.
+#
+# The realistic way it goes missing is not a manual DROP — the next init_db()
+# simply recreates a dropped index — but failing to CREATE because existing
+# data violates it: two active bindings sharing an installation_id.
 #
 # To change its definition, do not edit this statement in place:
 # CREATE UNIQUE INDEX IF NOT EXISTS is a no-op when the name already exists,
@@ -859,14 +875,19 @@ def init_db(db_path: Optional[str] = None) -> None:
     - If DATABASE_URL is set => Postgres (3 attempts, 2s/4s backoff)
     - Else => SQLite using DB_PATH (no retry needed)
     Safe to call multiple times (all CREATE TABLE IF NOT EXISTS).
+
+    Core schema failures raise and stop startup, exactly as before. The
+    licensing schema runs afterwards as its own step and NEVER raises out of
+    here — see _init_licensing_schema().
     """
     import time
 
     if not _using_postgres():
         _init_db_sqlite(db_path=db_path)
-        assert_licensing_constraints(db_path=db_path)
+        _init_licensing_schema(db_path=db_path)
         return
 
+    # The retry loop covers the core schema only.
     last_exc: Optional[Exception] = None
     for attempt in range(1, 4):
         try:
@@ -886,26 +907,142 @@ def init_db(db_path: Optional[str] = None) -> None:
         logger.error("init_db failed after 3 attempts — raising last exception")
         raise last_exc
 
-    # Checked once, after the retry loop: a missing licensing index is not a
-    # transient connection failure, and retrying it would only delay the same
-    # error by six seconds.
-    assert_licensing_constraints()
+    # Run once, after the retry loop: a licensing schema problem (duplicate
+    # active installation_ids, a missing index) is not a transient connection
+    # failure, and retrying it would only delay the same result by six seconds.
+    _init_licensing_schema()
+
+
+# ----------------------------
+# Licensing schema step and status
+# ----------------------------
+# The outcome of the last licensing step in THIS process, read by /health.
+# Deliberately not re-read from the database on each /health request: if
+# Render or anything else polls /health, a per-request query would keep
+# Neon's compute awake around the clock.
+#
+# It is a report, not a gate. claim_capacity() never trusts it — it checks
+# the index itself, live, so a stale value here can never grant capacity.
+_licensing_status: dict = {"ready": False, "reason": "init_db() has not run in this process"}
+
+
+def licensing_status() -> dict:
+    """{"ready": bool, "reason": str | None} from the last init_db() here."""
+    return dict(_licensing_status)
+
+
+def _init_licensing_schema(db_path: Optional[str] = None) -> None:
+    """
+    Create the licensing tables and indexes, then assert the licensing-
+    critical index exists. Runs AFTER the core schema has committed, on its
+    own connection, so nothing here can roll back or abort core schema work.
+
+    Any failure — table DDL, the required index refusing to build over
+    duplicate data, assert_licensing_constraints() — is caught, logged at
+    ERROR with the exception, and recorded as licensing unavailable. It is
+    never re-raised: licensing closes, the rest of the backend starts
+    (brief §4.E).
+    """
+    try:
+        if _using_postgres():
+            _init_licensing_postgres()
+        else:
+            _init_licensing_sqlite(db_path=db_path)
+        assert_licensing_constraints(db_path=db_path)
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        logger.error(
+            "LICENSING UNAVAILABLE — licensing schema step failed; seat-pool "
+            "licensing is closed, every other route is unaffected. %s",
+            reason,
+            exc_info=exc,
+        )
+        _licensing_status.update(ready=False, reason=reason)
+        return
+    _licensing_status.update(ready=True, reason=None)
+
+
+def _init_licensing_sqlite(db_path: Optional[str] = None) -> None:
+    db_path = db_path or os.getenv("DB_PATH", "exam_partner.db")
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        for table_name, columns in LICENSING_TABLES:
+            cur.execute(_table_sql(table_name, columns))
+            _sqlite_add_missing_columns(cur, table_name, columns)
+        conn.commit()
+
+        for sql in LICENSING_INDEXES:
+            try:
+                cur.execute(sql)
+                conn.commit()
+            except Exception as exc:
+                conn.rollback()
+                logger.warning("SQLite licensing index DDL skipped (%s): %s", type(exc).__name__, exc)
+
+        # NOT in the loop above: a failure here is raised to
+        # _init_licensing_schema(). See LICENSING_REQUIRED_INDEX_SQL.
+        cur.execute(LICENSING_REQUIRED_INDEX_SQL)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _init_licensing_postgres() -> None:
+    db = _get_pg()
+    try:
+        cur = db.cursor()
+        for table_name, columns in LICENSING_TABLES:
+            pg_columns = _licensing_postgres_columns(columns)
+            cur.execute(_table_sql(table_name, pg_columns))
+            _postgres_add_missing_columns(cur, table_name, pg_columns)
+        db.commit()
+
+        for sql in LICENSING_INDEXES:
+            _pg_exec_index(db, cur, sql)
+        db.commit()
+
+        # Deliberately NOT through _pg_exec_index: a failure here is raised to
+        # _init_licensing_schema(). See LICENSING_REQUIRED_INDEX_SQL.
+        cur.execute(LICENSING_REQUIRED_INDEX_SQL)
+        db.commit()
+    finally:
+        db.close()
 
 
 class LicensingConstraintError(RuntimeError):
     """A correctness-critical licensing constraint is missing from the schema."""
 
 
+def licensing_index_present(cur) -> bool:
+    """
+    True if ux_seat_bindings_active_installation exists. Takes the CALLER's
+    cursor so claim_capacity() can run it inside its own transaction; the
+    one catalog query shared by every check, so they cannot disagree.
+    """
+    if _using_postgres():
+        cur.execute(
+            "SELECT indexname FROM pg_indexes "
+            "WHERE schemaname = current_schema() AND indexname = ?",
+            (LICENSING_REQUIRED_INDEX,),
+        )
+    else:
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?",
+            (LICENSING_REQUIRED_INDEX,),
+        )
+    return cur.fetchone() is not None
+
+
 def assert_licensing_constraints(db_path: Optional[str] = None) -> None:
     """
     Raise LicensingConstraintError unless ux_seat_bindings_active_installation
-    exists. Called at the end of every init_db(), so a database without it
-    fails at boot instead of running with clone detection silently absent.
+    exists.
 
-    AS SPECIFIED THIS STOPS THE WHOLE BACKEND BOOTING, including the routes
-    live Android users depend on. Whether it should instead disable only the
-    licensing routes is open (brief §8). That decision changes the CALLER in
-    init_db(), not this function — keep the check itself here, in one place.
+    init_db() calls this at the end of the licensing step and CATCHES the
+    error: licensing is recorded unavailable and the backend still starts
+    (brief §4.E). The function itself still raises, so any other caller gets
+    a hard failure.
 
     db_path must be the same one init_db() was given. config.DB_PATH and the
     DB_PATH env var can differ under SQLite (see the client fixture in
@@ -914,27 +1051,15 @@ def assert_licensing_constraints(db_path: Optional[str] = None) -> None:
     """
     db = get_db(db_path)
     try:
-        cur = db.cursor()
-        if _using_postgres():
-            cur.execute(
-                "SELECT indexname FROM pg_indexes "
-                "WHERE schemaname = current_schema() AND indexname = ?",
-                (LICENSING_REQUIRED_INDEX,),
-            )
-        else:
-            cur.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?",
-                (LICENSING_REQUIRED_INDEX,),
-            )
-        row = cur.fetchone()
+        present = licensing_index_present(db.cursor())
     finally:
         db.close()
 
-    if not row:
+    if not present:
         raise LicensingConstraintError(
             f"Required licensing index {LICENSING_REQUIRED_INDEX} is missing. "
             "Without it one installation can hold two active seat bindings and "
-            "clone detection is disabled. Refusing to start."
+            "clone detection is disabled."
         )
 
 
@@ -1229,11 +1354,6 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
         _sqlite_add_missing_columns(cur, "ai_grading_credit_purchases", AI_GRADING_CREDIT_PURCHASES_COLUMNS)
         _sqlite_add_missing_columns(cur, "paper_rules", PAPER_RULES_COLUMNS)
 
-        # ---- licensing (Windows seat pools) ----
-        for table_name, columns in LICENSING_TABLES:
-            cur.execute(_table_sql(table_name, columns))
-            _sqlite_add_missing_columns(cur, table_name, columns)
-
         # *** COMMIT PHASE 1 — tables are now durable regardless of index errors ***
         conn.commit()
 
@@ -1322,8 +1442,6 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
             # this index catches a different, louder failure.
             "DROP INDEX IF EXISTS ux_paper_rules_unique_row;",
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_rules_unique_row_v2 ON paper_rules(exam, subject, paper, year, country);",
-            # licensing — performance only; see LICENSING_INDEXES
-            *LICENSING_INDEXES,
         ]
 
         for sql in _sqlite_indexes:
@@ -1333,11 +1451,6 @@ def _init_db_sqlite(db_path: Optional[str] = None) -> None:
             except Exception as exc:
                 conn.rollback()
                 logger.warning("SQLite index DDL skipped (%s): %s", type(exc).__name__, exc)
-
-        # Licensing-critical index — NOT in the loop above. A failure here
-        # must propagate and stop init; see LICENSING_REQUIRED_INDEX_SQL.
-        cur.execute(LICENSING_REQUIRED_INDEX_SQL)
-        conn.commit()
 
     finally:
         conn.close()
@@ -1499,12 +1612,6 @@ def _init_db_postgres() -> None:
         _postgres_add_missing_columns(cur, "paper_rules", PAPER_RULES_POSTGRES_COLUMNS)
         _postgres_apply_column_type_changes(cur)
 
-        # ---- licensing (Windows seat pools) ----
-        for table_name, columns in LICENSING_TABLES:
-            pg_columns = _licensing_postgres_columns(columns)
-            cur.execute(_table_sql(table_name, pg_columns))
-            _postgres_add_missing_columns(cur, table_name, pg_columns)
-
         # *** COMMIT PHASE 1 — tables are now durable regardless of index errors ***
         db.commit()
 
@@ -1597,23 +1704,12 @@ def _init_db_postgres() -> None:
             # this index catches a different, louder failure.
             "DROP INDEX IF EXISTS ux_paper_rules_unique_row;",
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_paper_rules_unique_row_v2 ON paper_rules(exam, subject, paper, year, country);",
-            # licensing — performance only; see LICENSING_INDEXES
-            *LICENSING_INDEXES,
         ]
 
         for sql in _indexes:
             _pg_exec_index(db, cur, sql)
 
         # *** COMMIT PHASE 2 — all indexes that succeeded are now durable ***
-        db.commit()
-
-        # ------------------------------------------------------------------ #
-        # PHASE 3 — Licensing-critical index                                  #
-        # Deliberately NOT through _pg_exec_index: a failure here must raise  #
-        # and stop init, not be logged and skipped. See                       #
-        # LICENSING_REQUIRED_INDEX_SQL.                                       #
-        # ------------------------------------------------------------------ #
-        cur.execute(LICENSING_REQUIRED_INDEX_SQL)
         db.commit()
 
     finally:

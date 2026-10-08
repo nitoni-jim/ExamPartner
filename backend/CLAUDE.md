@@ -79,6 +79,8 @@ Every index in `db.py` runs inside `try/except` — a savepoint on Postgres, a p
 
 **It is not fine for a unique index that enforces a business rule.** If a correctness-critical constraint belongs in the schema, create it outside the best-effort loop where the exception propagates, and assert its existence at startup. A capacity or uniqueness guarantee that silently failed to install is worse than no guarantee, because the code above it assumes it holds.
 
+Licensing is the exception to "fail at startup": this backend also serves the live Android app, so a licensing schema failure is caught by `init_db()`, logged at ERROR, recorded (`db.licensing_status()`, shown on `/health`), and **licensing closes while everything else starts**. The guarantee is then enforced where bindings are written: any path that creates a binding or changes a binding's `installation_id` calls `db.licensing_index_present(cur)` inside its own transaction and refuses with 503, as `claim_capacity()` does. Never gate on the startup flag alone.
+
 ### NULLs are distinct in unique indexes
 
 Both engines treat `NULL != NULL` for uniqueness, so a unique index over a nullable column does **not** deduplicate rows where that column is NULL. `paper_rules` learned this the hard way — see the comments on `ux_paper_rules_unique_row_v2` and the four-branch predicate in `upsert_paper_rule()`. If row identity involves a nullable column, the real guard is an explicit `IS NULL` branch in the lookup, not the index.
