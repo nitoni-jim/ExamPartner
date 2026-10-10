@@ -84,6 +84,7 @@ def health():
     # the next deploy — a failure whose symptom (a missing file at grading
     # time, days later) points nowhere near its cause.
     from services import storage_service
+    from db import licensing_status
 
     return {
         "ok": True,
@@ -92,4 +93,10 @@ def health():
         "db_path": DB_PATH,
         "db_mode": ("postgres" if os.getenv("DATABASE_URL") else "sqlite"),
         "attachment_storage": ("r2" if storage_service.is_durable() else "local-ephemeral"),
+        # Seat-pool licensing, as init_db() recorded it at startup. A
+        # licensing schema failure closes licensing only (brief §4.E), so
+        # this never turns /health non-200 — and it is read from memory, not
+        # the database, so polling /health never keeps Neon's compute awake.
+        # "unavailable" means read the ERROR line in the boot log.
+        "licensing": ("ready" if licensing_status()["ready"] else "unavailable"),
     }
