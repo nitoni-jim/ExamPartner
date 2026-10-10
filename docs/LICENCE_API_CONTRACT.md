@@ -332,7 +332,7 @@ Key rotation, hardware-backed storage and anti-tamper remain deferred (spec §8.
 
 ### 7.3 Sources
 
-Key names are the survey collector's JSON keys, so survey files can be replayed through the server's matcher unchanged. `disk_serials` and `mac_addresses` keep the collector's names but carry more per entry. Three collector fields are deliberately **not** sent: `windows_install` (product ID and install date), `computer_name` and `domain` — administrator-editable, useless for identity, and no reason to collect them from a school's PCs.
+Key names are the survey collector's JSON keys. `disk_serials` and `mac_addresses` keep the collector's names but carry more per entry. **The current collector does not yet record those extra fields** — `is_system_disk`, `pnp_device_id`, `permanent_address`, `media_type`, `index` — nor `collection_errors`. So today's survey files replay through the server's **identity** matching unchanged, but cannot exercise the **continuity** rules. A revised collector that records them will come before the school survey and the client phase. Three collector fields are deliberately **not** sent: `windows_install` (product ID and install date), `computer_name` and `domain` — administrator-editable, useless for identity, and no reason to collect them from a school's PCs.
 
 
 | Key | Type | Source |
@@ -540,3 +540,4 @@ For the Cloud Session; listed here because breaking any of them breaks the clien
 | Date | Change |
 |---|---|
 | 8 October 2026 | Version 1. |
+| 10 October 2026 | §7.3 clarified: the current survey collector does not record the continuity fields, so survey files exercise identity matching only. No wire change. |
