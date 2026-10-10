@@ -63,6 +63,8 @@ def claim_capacity(
 
     Refuses with, in this order:
       503  licensing unavailable: ux_seat_bindings_active_installation missing
+           (checked twice — before the lock and inside the granting
+           transaction; see (0) and (2) below)
       404  pool not found
       409  pool status is not 'active'
       402  account subscription not 'active', or expired
@@ -104,6 +106,28 @@ def claim_capacity(
         cur = db.cursor()
         stamp = licensing_time.now_iso()
 
+        # (0) Early licensing check, BEFORE the lock. There are two checks of
+        # the same index, (0) and (2), and both are needed:
+        #
+        # - This one makes a broken or missing licensing schema fail as a
+        #   clean 503. If the licensing step in init_db() failed before it
+        #   created the tables, the UPDATE in (1) is the first statement to
+        #   touch them and would surface as a database error — a 500 that
+        #   reads like a server bug rather than "licensing is unavailable".
+        #   The catalog query needs no licensing table, so it answers first.
+        #
+        # - It does not replace (2). On SQLite a SELECT does not open the
+        #   write transaction, so (0) runs outside it; only (2), after the
+        #   lock, verifies the index inside the transaction that grants the
+        #   seat (brief §4.E). Do not delete either as a duplicate.
+        #
+        # On Postgres this SELECT does open the transaction, which is
+        # harmless: under READ COMMITTED each statement takes a fresh
+        # snapshot, so the COUNT after the lock still sees every committed
+        # claim. Test 4 runs with this check in place.
+        if not licensing_index_present(cur):
+            raise HTTPException(status_code=503, detail="Licensing is unavailable")
+
         # (1) LOAD-BEARING — DO NOT REMOVE, REORDER OR "OPTIMISE AWAY".
         #
         # This looks like a bookkeeping write. It is the entire concurrency
@@ -124,13 +148,15 @@ def claim_capacity(
         )
 
         # (2) The licensing-critical index, checked LIVE, in this
-        # transaction, on every claim (brief §4.E). init_db() no longer stops
-        # the backend when that index is missing — it records licensing as
-        # unavailable and carries on — so this is where the one-active-
-        # binding-per-installation guarantee is actually enforced. It is
-        # deliberately not read from db.licensing_status(): a startup flag
-        # can go stale, and does not exist at all if init_db() never ran in
-        # this process. One catalog query per claim; claims are rare.
+        # transaction, on every claim (brief §4.E) — the check that actually
+        # guards the grant; (0) above exists only so a missing schema is a
+        # 503 rather than a 500. init_db() no longer stops the backend when
+        # that index is missing — it records licensing as unavailable and
+        # carries on — so this is where the one-active-binding-per-
+        # installation guarantee is actually enforced. It is deliberately not
+        # read from db.licensing_status(): a startup flag can go stale, and
+        # does not exist at all if init_db() never ran in this process. Two
+        # catalog queries per claim, counting (0); claims are rare.
         if not licensing_index_present(cur):
             raise HTTPException(status_code=503, detail="Licensing is unavailable")
 

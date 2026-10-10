@@ -129,3 +129,47 @@ def test_31_licensing_failure_closes_licensing_not_the_backend(request, engine, 
         )
         db.init_db(None if engine == "pg_database" else request.getfixturevalue("sqlite_database"))
         db.assert_licensing_constraints(None if engine == "pg_database" else request.getfixturevalue("sqlite_database"))
+
+
+_LICENSING_TABLE_NAMES = ["licence_ambiguities", "seat_activation_log", "institution_seats", "seat_pools", "accounts"]
+
+
+@pytest.mark.parametrize("engine", ["pg_database", "sqlite_database"])
+def test_missing_licensing_tables_refuse_with_503_not_500(request, engine):
+    """The licensing step can fail before it creates any table. Then the
+    lock UPDATE in claim_capacity() would be the first statement to touch
+    seat_pools and fail as a database error (a 500). The early index check,
+    which needs no licensing table, must answer first with a clean 503."""
+    import db
+
+    fixture_value = request.getfixturevalue(engine)
+    db_path = None if engine == "pg_database" else fixture_value
+
+    try:
+        for table in _LICENSING_TABLE_NAMES:
+            _execute(f"DROP TABLE IF EXISTS {table}")
+
+        with pytest.raises(HTTPException) as exc:
+            _claim("any-pool-id")
+        assert (exc.value.status_code, exc.value.detail) == (503, "Licensing is unavailable")
+
+        # Wrote nothing: the tables are still absent (no statement recreated
+        # or wrote to them), and core schema is untouched.
+        if engine == "pg_database":
+            rows = _query(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = current_schema() AND table_name IN (?, ?, ?, ?, ?)",
+                tuple(_LICENSING_TABLE_NAMES),
+            )
+        else:
+            rows = _query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?, ?, ?)",
+                tuple(_LICENSING_TABLE_NAMES),
+            )
+        assert rows == []
+        assert _query("SELECT COUNT(*) AS c FROM users")[0]["c"] >= 0
+    finally:
+        # Recreate the licensing schema — ep_test is shared by every PG test.
+        db.init_db(db_path)
+        db.assert_licensing_constraints(db_path)
+        assert db.licensing_status() == {"ready": True, "reason": None}
