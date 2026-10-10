@@ -1,7 +1,7 @@
 # ExamPartner Windows — Seat-Pool Licensing
 ## Pilot V1 Implementation Spec
 
-**Date:** 27 September 2026 · **Revision 3** · amended 7 October 2026 (§0 citations, §3.1 timestamp types, §5.2 capacity-grant rulings) and 8 October 2026 (§4.2 licensing never stops the backend starting, §12 test 31; §8.4, §8.6, §8.7 and §10.3 point to `docs/LICENCE_API_CONTRACT.md`); see `docs/CLOUD_SESSION_BRIEF.md` §4
+**Date:** 27 September 2026 · **Revision 3** · amended 7 October 2026 (§0 citations, §3.1 timestamp types, §5.2 capacity-grant rulings) and 8 October 2026 (§4.2 licensing never stops the backend starting, §12 test 31; §8.4, §8.6, §8.7 and §10.3 point to `docs/LICENCE_API_CONTRACT.md`) and 10 October 2026 (§3.4, §3.6, §8.2–§8.4 and §8.6.1 aligned with brief §4.F–§4.G); see `docs/CLOUD_SESSION_BRIEF.md` §4
 **Status:** Ready for implementation
 **Audience:** the implementation session working on the ExamPartner FastAPI backend
 
@@ -186,9 +186,14 @@ No FK to `users` — newer tables here use indexes instead. Index `owner_identif
 | `revoked_at` | TEXT | **NULL = active.** |
 | `revoke_reason` | TEXT | `manual` \| `replacement` \| `hardware_failure` \| `retired` \| `renewal_retire` \| `support` \| `other` |
 | `revoked_by` | TEXT | |
+| `activation_request_id` | TEXT | The client's `request_id` for the activation or restore that last wrote this binding. Replay guard (brief §4.F F4). |
+| `activation_request_at` | TEXT | When that request arrived. Replays are honoured for 24 hours. |
+| `activation_request_fp` | TEXT | Digest of pool and normalised reading, so a reused `request_id` with a different body is detected. |
+| `activation_result` | TEXT | `activated` \| `restored` — what a replay returns. |
+| `current_lease` | TEXT | The lease string last issued, so a replay returns it byte-identical. |
 | `created_at` / `updated_at` | TEXT | |
 
-No separate lease table. The current lease lives on the binding; issuance and denial go to the log.
+No separate lease table. The current lease lives on the binding (`current_lease`, with `lease_serial`, `lease_issued_at`, `lease_expires_at`); issuance and denial go to the log.
 
 ### 3.5 `seat_activation_log` — immutable history
 
@@ -226,10 +231,13 @@ Needed because the log is immutable and an ambiguity has mutable state.
 | `presented_installation_id` | TEXT | |
 | `machine_label` | TEXT | |
 | `candidate_binding_ids_json` | TEXT | |
-| `status` | TEXT | `open` \| `resolved` \| `expired` |
+| `status` | TEXT | `open` \| `resolved` \| `consumed` \| `expired` (brief §4.C: single-use, 7-day expiry) |
+| `origin` | TEXT | `activate` \| `refresh` — which request raised it, and so how it is collected. |
+| `request_id` | TEXT | The raising request's `request_id`. Replay and race guard (brief §4.F F4). |
 | `resolution` | TEXT | `recognize_existing` \| `treat_as_new` |
 | `resolved_binding_id` | TEXT | |
 | `resolved_by` / `resolved_at` | TEXT | |
+| `consumed_at` | TEXT | When the resolved outcome was collected. |
 | `created_at` | TEXT | |
 
 ---
@@ -455,21 +463,34 @@ The full school survey must happen **before the thresholds are frozen**, but it 
 
 Collapsing these into one `hardware_id` — as the original task spec did — makes reformat recovery structurally impossible: there is nowhere to record that installation B is the same machine as installation A.
 
-### 8.2 Confidence — provisional, pending §7
+### 8.2 Identity quality and match strength — provisional, pending §7
 
-| Level | Provisional rule |
+Revision 3 used "confidence" for two different things. They are separate (brief §4.F F1, which has the full rules):
+
+**Identity quality of one reading** — what `fingerprint_confidence` records at claim time. A *usable UUID* is present, well-formed, not all-zeros or all-FFs, and not carried by two or more active bindings in the pool. A *usable serial* is a distinct normalised value among system, baseboard and BIOS serials (a BIOS serial equal to the system serial counts once), likewise not shared by two or more active bindings.
+
+| Quality | Rule |
 |---|---|
-| `strong` | System UUID present, non-degenerate and matching, **plus** at least one of baseboard / BIOS / system serial matching. |
-| `weak` | Only one stable signal matches; or the UUID is degenerate but baseboard **and** BIOS serials match. |
-| `degenerate` | UUID missing / all-zeros / all-FFs, **and** baseboard and system serials absent, empty, or already duplicated within this pool. |
+| `strong` | Usable UUID **and** at least one usable serial. |
+| `weak` | Exactly one of those two. |
+| `degenerate` | Neither. |
 
-Mark these constants as provisional in code. They are what the survey exists to replace.
+**Match strength between a reading and one binding.**
+
+| Match | Rule |
+|---|---|
+| strong | Same usable UUID **and** at least one shared usable serial. |
+| weak | Exactly one of those holds. |
+| mismatch | Both have usable UUIDs that differ, and no usable serial is shared. |
+| none | No usable evidence on one side or the other. |
+
+Normalisation, the placeholder list, the identity hash and the continuity signals are in brief §4.G. Matching is **signal by signal, never by hash**; `machine_fingerprint_hash` is for audit and an exact-match fast path only. Mark all of these constants as provisional in code. They are what the survey exists to replace.
 
 ### 8.3 Degenerate first activation — subtle, important
 
-A machine presenting a degenerate fingerprint on **first** activation has nothing to match against, so it claims capacity normally. It must be stored with `fingerprint_confidence = 'degenerate'`.
+A machine presenting a degenerate reading on **first** activation has no firmware identity to match on, so it claims capacity normally and is stored with `fingerprint_confidence = 'degenerate'`. A degenerate PC can therefore never be *restored* by hardware recognition: PC 7 reinstalling can never silently take PC 12's activation.
 
-That recording is the point: a later reinstall of that machine routes to **ambiguity resolution** rather than silently matching a different identical PC in the same lab. Without it, PC 7 reinstalling could restore PC 12's activation.
+What separates a reinstall from a genuinely different identical PC is **continuity evidence** (brief §4.F F2): the system disk's serial and the permanent address of an onboard network card, both of which survive a Windows reinstall. A weak or degenerate reading whose continuity signals match **any** active binding in the pool goes to **ambiguity resolution**; one with no such match is a new machine. That is what lets two identical lab PCs both activate (§12 test 12) while a reinstalled one goes to an administrator (§12 test 13).
 
 ### 8.4 Activation
 
@@ -485,16 +506,16 @@ Then:
 
 1. **Resolve** pool and account; verify pool `status = 'active'`.
 2. **Subscription gate** (rule C). If not `active`, or `subscription_expires_at` has passed, return `402` and issue **nothing**.
-3. **Compute** `machine_fingerprint_hash` and confidence.
-4. **Clone check.** If `installation_id` is supplied and maps to an active binding whose fingerprint differs materially: log `clone_flagged`, treat the supplied id as untrusted, **do not merge the machines**, and continue on fingerprint evidence alone. A duplicated installation ID is a *signal*, never an identity.
-5. **Match** against bindings in this pool by fingerprint hash:
+3. **Compute** the normalised reading, its identity quality (§8.2) and `machine_fingerprint_hash` (audit only). Then check for a **replay**: a `request_id` seen in this pool within 24 hours with the same reading returns the original outcome and consumes nothing (brief §4.F F4).
+4. **Clone check.** If `installation_id` is supplied and maps to an active binding whose match strength against this reading is not strong: log `clone_flagged`, treat the supplied id as untrusted, **do not merge the machines**, and continue on fingerprint evidence alone. A duplicated installation ID is a *signal*, never an identity.
+5. **Match** signal by signal (§8.2) against the **active** bindings in this pool — never by hash. The full decision order is brief §4.F F3:
 
 | Case | Condition | Action |
 |---|---|---|
-| **D — recognised reinstall** | Strong match to an **active** binding | Restore. Update `installation_id`, `last_seen_at`, label if supplied. Issue a lease, increment `lease_serial`. Log `restore`. **No capacity consumed.** |
-| **Duplicate/retry** | Same active machine repeats activation | As D. Idempotent. |
+| **D — recognised reinstall** | Strong match to **exactly one** active binding | Restore. Update `installation_id`, `last_seen_at`, label if supplied. Issue a lease, increment `lease_serial`. Log `restore`. **No capacity consumed.** |
+| **Duplicate/retry** | Same `request_id` within 24 hours | Replay: the original outcome and lease, byte-identical, nothing consumed (step 3). A repeat with a new `request_id` from a strongly matching machine is case D. |
 | **F — revoked match** | Matching bindings are all **revoked** | **Do not restore.** Fall through to G/H as a new activation. Explicit revocation always beats hardware recognition. |
-| **E — ambiguous** | Weak confidence, several candidates, or degenerate against an existing degenerate binding | **Claim nothing.** Create a `licence_ambiguities` row, log `ambiguous_flagged`, return `409` with its id. Requires admin resolution (§10.4). |
+| **E — ambiguous** | Strong match to more than one active binding; a weak match to any; or a weak or degenerate reading whose continuity signals match any active binding (§8.3) | **Claim nothing.** Create a `licence_ambiguities` row, log `ambiguous_flagged`, return `409` with its id. Requires admin resolution (§10.4). |
 | **G — new machine, capacity free** | No match, capacity available | `claim_capacity()` (§5.2). Create binding, issue lease, log `activate`. |
 | **H — no capacity** | No match, pool at or over entitlement | `409 pool_full`. **Never auto-evict.** |
 
@@ -524,7 +545,7 @@ Revision 1 looked the binding up by bare `installation_id` with no proof of poss
 
 ### 8.6.1 Machine verification on refresh
 
-Recompute the fingerprint from the submitted `fingerprint_signals` and compare it, using the same confidence rules as §8.2:
+Normalise the submitted `fingerprint_signals` and compare them with the binding using the match-strength rules of §8.2 (and, for a weak or degenerate binding, the installation-continuity rule of brief §4.A):
 
 | Outcome | Action |
 |---|---|
@@ -685,7 +706,7 @@ All runnable without waiting real time (§6.3).
 21. **Copied lease, different machine:** PC-A's validly signed lease presented from a materially different physical machine → `403 machine_mismatch`, `clone_flagged` logged, **no new lease issued**, and PC-A's activation left **untouched and active**. Must hold even when PC-A never reconnects, so no stale-serial signal ever fires.
 22. **Maintenance is not a mismatch:** same machine refreshes after a simulated disk replacement and RAM change, still a strong match → refresh succeeds, **and the binding's stored `machine_fingerprint_hash` is updated** to the new reading.
 23. **Ratchet accumulation:** three successive refreshes, each a strong match with a small drift → all three succeed. Assert the third succeeds *because* the binding ratcheted forward, by confirming the third reading would **not** be a strong match against the original day-one hash.
-24. **Weak identity on refresh:** presented signals give weak or degenerate confidence → `409`, `ambiguous_flagged` logged with an ambiguity id, no lease issued, activation untouched.
+24. **Weak identity on refresh, continuity broken:** the binding's identity is weak or degenerate *and* installation continuity does not hold (brief §4.A) → `409`, `ambiguous_flagged` logged with an ambiguity id, no lease issued, activation untouched. **With continuity intact, the same binding refreshes normally** and its continuity snapshot ratchets forward (brief §4.A) — test both.
 25. **Distinguishable denials:** a `machine_mismatch` response and a `lease_revoked` response carry different error codes, so a client can show the right remedy.
 
 **Authorisation**
