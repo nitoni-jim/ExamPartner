@@ -2,7 +2,7 @@
 
 **For:** the implementation session working on `nitoni-jim/ExamPartner`
 **Owner:** Nitoni (solo developer; works on this in evenings and weekends)
-**Date:** 5 October 2026 · **Revised:** 6 October 2026 (§3 environment, §6 pyflakes) · 7 October 2026 (§4.D rulings on the pre-code report, §8) · 8 October 2026 (§4.E licensing never stops the backend starting, §8)
+**Date:** 5 October 2026 · **Revised:** 6 October 2026 (§3 environment, §6 pyflakes) · 7 October 2026 (§4.D rulings on the pre-code report, §8) · 8 October 2026 (§4.E licensing never stops the backend starting, §8; §2 signing key per the API contract)
 
 Read this first, then `backend/CLAUDE.md`, then the Pilot V1 implementation spec. This brief answers the setup questions and settles the open spec gaps. Where it disagrees with the spec, this brief wins and the spec gets updated to match.
 
@@ -25,7 +25,7 @@ You own the **FastAPI backend** for seat-pool licensing, in `backend/`, on a bra
 - **The fingerprint survey collector.** Already written and tested — `Collect-Fingerprint.ps1`, `Run-Collector.bat`, `README.txt`. Do not rewrite it. If you think it has a bug, say so rather than replacing it.
 - **Android, the PWA in `frontend/`, the content pipeline, `paper_rules`.** Out of scope entirely.
 - **`main`.** Never push to it, never merge your own PR.
-- **Secrets.** Do not create, print, or commit a signing key. Read `LICENCE_SIGNING_KEY` from the environment and fail clearly when it is absent.
+- **Secrets.** Do not create, print, or commit a signing key. Read `LICENCE_SIGNING_KEY` from the environment. When it is absent, malformed or equal to the published TEST seed, licensing is unavailable (503) and an ERROR is logged — the backend still starts (§4.E, `docs/LICENCE_API_CONTRACT.md` §6.5). Tests use the contract's TEST key or a key generated in-process.
 
 ## 3. Setup answers
 

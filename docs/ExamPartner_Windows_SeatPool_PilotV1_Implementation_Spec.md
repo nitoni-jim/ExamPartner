@@ -1,7 +1,7 @@
 # ExamPartner Windows — Seat-Pool Licensing
 ## Pilot V1 Implementation Spec
 
-**Date:** 27 September 2026 · **Revision 3** · amended 7 October 2026 (§0 citations, §3.1 timestamp types, §5.2 capacity-grant rulings) and 8 October 2026 (§4.2 licensing never stops the backend starting, §12 test 31); see `docs/CLOUD_SESSION_BRIEF.md` §4
+**Date:** 27 September 2026 · **Revision 3** · amended 7 October 2026 (§0 citations, §3.1 timestamp types, §5.2 capacity-grant rulings) and 8 October 2026 (§4.2 licensing never stops the backend starting, §12 test 31; §8.4, §8.6, §8.7 and §10.3 point to `docs/LICENCE_API_CONTRACT.md`); see `docs/CLOUD_SESSION_BRIEF.md` §4
 **Status:** Ready for implementation
 **Audience:** the implementation session working on the ExamPartner FastAPI backend
 
@@ -473,11 +473,11 @@ That recording is the point: a later reinstall of that machine routes to **ambig
 
 ### 8.4 Activation
 
-`POST /licence/activate` — body: `pool_id`, `fingerprint_signals`, `machine_label`, optional `installation_id`.
+`POST /licence/activate` — body: `pool_id`, `fingerprint_signals`, `machine_label`, optional `installation_id`. **Exact request, response and error shapes are in `docs/LICENCE_API_CONTRACT.md` §5, which wins on any wire-format detail.**
 
 **Authorisation — this was missing in revision 1 and was a security hole.** A fresh Windows installation holds no activation and no lease, so it cannot authenticate as itself, and Deployment Sessions are deferred. As written, anyone who learned a `pool_id` could consume a school's capacity.
 
-> A fresh activation, or a reinstall that needs new authorisation, runs **under the authenticated institution owner** (or an ExamPartner admin). The technician signs in on the PC, the backend verifies ownership of the pool, and only then is capacity claimed. The server generates the `installation_id` and issues the signed lease. **Administrator credentials are not retained on the PC** — they authorise this one activation.
+> A fresh activation, or a reinstall that needs new authorisation, runs **under the authenticated institution owner** (or an ExamPartner admin). The technician signs in on the PC through the **15-minute activation-only session** (`POST /licence/activation-session`, contract §4) — not `/auth/login`, which would register the lab PC against the owner's Android device allowance or leave a year-long account token on it. The backend verifies ownership of the pool, and only then is capacity claimed. The server generates the `installation_id` and issues the signed lease. **Administrator credentials are not retained on the PC** — they authorise this one activation.
 
 That is exactly the friction the 24-hour Deployment Session removes later, which is a sign the sequencing is coherent rather than improvised.
 
@@ -511,7 +511,7 @@ Then:
 
 ### 8.6 Licence refresh
 
-`POST /licence/refresh` — body: **the current signed lease**, plus `fingerprint_signals`.
+`POST /licence/refresh` — body: **the current signed lease**, plus `fingerprint_signals`. Exact shapes, `request_id` idempotency and error codes: contract §9.
 
 Revision 1 looked the binding up by bare `installation_id` with no proof of possession, which quietly turned `installation_id` into a permanent bearer token — one also written into `seat_activation_log` and visible to support. The client presents its signed lease instead: `installation_id` is the **identifier**, the lease is the **authorisation**.
 
@@ -548,7 +548,7 @@ Not every fingerprint difference is a permanent denial. That would contradict th
 
 ### 8.7 Lease signing — minimal but real
 
-Ed25519 via `cryptography`. Private key from env (`LICENCE_SIGNING_KEY`); public key embedded in the client.
+Ed25519 via `cryptography`. Private key from env (`LICENCE_SIGNING_KEY`); public key embedded in the client. **Encoding, the `v` / `typ` / `kid` fields, key format, test vectors, and what happens when the key is missing are in contract §6** — a missing or invalid key makes licensing unavailable (503), it does not stop the backend.
 
 Payload: `binding_id`, `installation_id`, `account_id`, `seat_pool_id`, `machine_fingerprint_hash`, `lease_serial`, `issued_at`, `expires_at`, `subscription_expires_at`.
 
@@ -608,7 +608,8 @@ Why the owner matters in V1: the flow the pilot exists to validate is *"a comput
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /licence/activate` | §8.4 — authorised by the institution owner. |
+| `POST /licence/activation-session` | Contract §4 — owner or admin credentials exchanged for a 15-minute activation-only token. |
+| `POST /licence/activate` | §8.4 — authorised by that activation token. |
 | `POST /licence/refresh` | §8.6 — authorised by the presented lease. |
 
 ### 10.4 Support — ExamPartner admin

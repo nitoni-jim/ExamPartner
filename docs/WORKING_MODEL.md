@@ -25,7 +25,7 @@ Shared documents, all in the repo:
 | `docs/ExamPartner_Windows_SeatPool_PilotV1_Implementation_Spec.md` | The implementation spec | Planning |
 | `docs/WORKING_MODEL.md` | This document | Planning |
 | `docs/CLOUD_SESSION_BRIEF.md` | Current backend work unit | Planning |
-| `docs/LICENCE_API_CONTRACT.md` | Request/response shapes both sides build against | Planning — **does not exist yet, see §4** |
+| `docs/LICENCE_API_CONTRACT.md` | Request/response shapes both sides build against | Planning — version 1, 8 October 2026 |
 | `backend/CLAUDE.md` | Backend conventions | Planning; implementers may propose changes |
 
 
@@ -118,9 +118,9 @@ Everything that needs real Windows lives here, because a Linux container cannot 
 
 Backend and client meet at exactly one place: the licence API. Both will build against it simultaneously, from different machines, unable to see each other.
 
-**Nobody owns it yet. That is the live risk in this setup.** If the Cloud Session invents DTO shapes while the local agent invents its own, both sides will be internally correct and will not interoperate, and the mismatch surfaces at integration — the most expensive place to find it.
+**`docs/LICENCE_API_CONTRACT.md` exists (version 1, 8 October 2026). Build against it, and nothing else.** If the Cloud Session invented DTO shapes while the local agent invented its own, both sides would be internally correct and would not interoperate, and the mismatch would surface at integration — the most expensive place to find it. Anything missing from the contract is a finding for planning, not a gap to fill locally.
 
-Planning writes `docs/LICENCE_API_CONTRACT.md` before either side builds anything that crosses the boundary. It needs:
+It covers:
 
 - Endpoint paths and methods
 - Request and response JSON for `activate` and `refresh`, with every field named and typed
@@ -129,7 +129,7 @@ Planning writes `docs/LICENCE_API_CONTRACT.md` before either side builds anythin
 - Error codes and their meanings — `pool_full`, `lease_revoked`, `machine_mismatch`, the ambiguity 409 — since the client shows a different instruction to a technician for each
 - Which errors are retryable
 
-The backend work unit currently in flight (schema, time helpers, capacity) touches none of this, so it is not blocking yet. It blocks before the activation endpoints or any client networking code.
+It also carries signed-lease test vectors (§6.4) that both sides should run as unit tests — the cheapest way to catch a Python/.NET mismatch before integration.
 
 ---
 
@@ -164,7 +164,7 @@ Two ordering rules that matter:
 
 ## 6. What is settled, and what is not
 
-**Settled:** capacity is a count enforced under a pool-row lock, no slot numbers · release returns capacity immediately and revocation always beats hardware recognition · 30-day signed lease, self-recovering after expiry · refresh authorised by the presented lease *and* machine verification · activation authorised by the institution owner · degenerate machines refresh on installation continuity (§4.A of the Cloud Session brief) · per-signal matching with the hash kept for audit · ambiguity resolved then collected by resending with `ambiguity_id` · licensing timestamps are ISO-8601 `TEXT` on SQLite and `TIMESTAMPTZ` on Postgres · `claim_capacity()` always generates the new binding's `installation_id` and revalidates pool and subscription entitlement inside its transaction (brief §4.D) · the architecture handoff in `docs/` carries the fingerprint correction · a licensing schema failure closes licensing only — the backend, and the Android app on it, still starts (brief §4.E) · Render deploys manually, so merging to `main` never deploys by itself.
+**Settled:** capacity is a count enforced under a pool-row lock, no slot numbers · release returns capacity immediately and revocation always beats hardware recognition · 30-day signed lease, self-recovering after expiry · refresh authorised by the presented lease *and* machine verification · activation authorised by the institution owner · degenerate machines refresh on installation continuity (§4.A of the Cloud Session brief) · per-signal matching with the hash kept for audit · ambiguity resolved then collected by resending with `ambiguity_id` · licensing timestamps are ISO-8601 `TEXT` on SQLite and `TIMESTAMPTZ` on Postgres · `claim_capacity()` always generates the new binding's `installation_id` and revalidates pool and subscription entitlement inside its transaction (brief §4.D) · the architecture handoff in `docs/` carries the fingerprint correction · a licensing schema failure closes licensing only — the backend, and the Android app on it, still starts (brief §4.E) · Render deploys manually, so merging to `main` never deploys by itself · technicians activate through a 15-minute activation-only session, never `/auth/login` (contract §4) · a PC's clock may run 24 hours behind the highest time accepted before an online refresh is required, and a rollback never revokes or uses a seat (contract §8.3).
 
 **Open, and Nitoni's to decide:**
 
