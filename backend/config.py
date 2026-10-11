@@ -114,6 +114,29 @@ ATTACHMENT_RETENTION_DAYS: int = int(os.getenv("ATTACHMENT_RETENTION_DAYS", "90"
 # waiting 30 days or a year — see spec §6.3.
 ALLOW_TEST_CLOCK: bool = os.getenv("ALLOW_TEST_CLOCK", "").strip().lower() in {"1", "true", "yes"}
 
+# ---------------------------------------------------------------------------
+# Licensing — lease signing key and client version gate (Unit 2)
+# ---------------------------------------------------------------------------
+# LICENCE_SIGNING_KEY: standard base64 of the 32-byte raw Ed25519 private
+# seed. A Render secret only — never in the repo, a log or a chat. The
+# matching public key is compiled into the Windows client.
+# LICENCE_SIGNING_KID: the integer key id written into every lease; 1 for the
+# first production key. 0 is reserved for the published TEST key.
+#
+# Both are kept here as RAW STRINGS and validated by
+# services/licence_lease.load_signing_key() at startup, not parsed here. A
+# malformed value must make licensing unavailable (503, one ERROR in the
+# log), never stop the backend importing — the same backend serves the live
+# Android app (brief §4.E). int() on a bad LICENCE_SIGNING_KID at import
+# time would do exactly that.
+LICENCE_SIGNING_KEY: str = os.getenv("LICENCE_SIGNING_KEY", "")
+LICENCE_SIGNING_KID: str = os.getenv("LICENCE_SIGNING_KID", "")
+
+# Oldest Windows client allowed to call /licence/*, as MAJOR.MINOR.PATCH.
+# Default 0.0.0 blocks nothing; raise it to stop a broken client with 426.
+# Raw string for the same reason as above.
+MIN_WINDOWS_APP_VERSION: str = os.getenv("MIN_WINDOWS_APP_VERSION", "0.0.0")
+
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s | %(levelname)s | %(message)s",

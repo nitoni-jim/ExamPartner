@@ -9,3 +9,4 @@ resend==2.30.1
 boto3==1.43.94
 Pillow==12.3.0
 python-multipart==0.0.20
+cryptography==50.0.2
