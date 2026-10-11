@@ -2,7 +2,7 @@
 
 **For:** the implementation session working on `nitoni-jim/ExamPartner`
 **Owner:** Nitoni (solo developer; works on this in evenings and weekends)
-**Date:** 5 October 2026 · **Revised:** 6 October 2026 (§3 environment, §6 pyflakes) · 7 October 2026 (§4.D rulings on the pre-code report, §8) · 8 October 2026 (§4.E licensing never stops the backend starting, §8; §2 signing key per the API contract) · 10 October 2026 (Unit 1 merged; Unit 2 — §4.F, §4.G, §5 — reviewed and approved)
+**Date:** 5 October 2026 · **Revised:** 6 October 2026 (§3 environment, §6 pyflakes) · 7 October 2026 (§4.D rulings on the pre-code report, §8) · 8 October 2026 (§4.E licensing never stops the backend starting, §8; §2 signing key per the API contract) · 10 October 2026 (Unit 1 merged; Unit 2 — §4.F, §4.G, §5 — reviewed and approved) · 11 October 2026 (§4.H rulings on the Unit 2 pre-code report; §4.F, §4.G, §5 edited to match)
 
 Read this first, then `backend/CLAUDE.md`, then the Pilot V1 implementation spec. This brief answers the setup questions and settles the open spec gaps. Where it disagrees with the spec, this brief wins and the spec gets updated to match.
 
@@ -162,7 +162,7 @@ Revoked bindings are never candidates, which is spec rule F: release always beat
 - A request whose `request_id` matches a binding or ambiguity in this pool within the last **24 hours**, with the same fingerprint, is a **replay**: return the stored outcome — `activation_result` and `current_lease`, byte-identical — and consume nothing. The same ID with a different pool or fingerprint → `409 request_id_reused`. Older than 24 hours → treated as a new request.
 - **`claim_capacity()` takes the request ID and its fingerprint digest and stores them in the same insert.** After taking the pool lock, it first looks for an active binding in this pool already carrying that request ID and returns it instead of inserting. That closes the race between two concurrent retries of one activation; the existing lock already serialises them, so this costs one indexed query.
 - If the binding was created but the lease was not yet issued (a crash between the two steps, F5), a replay finds the binding with no `current_lease` and issues it then. Recovery is the replay path; nothing else is needed.
-- **Ambiguity creation must be race-safe too.** Invariant: two concurrent activation calls with the same `request_id` and the same body that both decide "ambiguity" create **exactly one** `licence_ambiguities` row and both return the **same** `ambiguity_id`. The pool lock covers new bindings only, so ambiguity creation needs its own atomic guard. **Propose the mechanism in your pre-code report**; do not pick one silently. If it involves a unique index, say how it relates to the §4.E rule on correctness-critical indexes.
+- **Ambiguity creation must be race-safe too.** Invariant: two concurrent activation calls with the same `request_id` and the same body that both decide "ambiguity" create **exactly one** `licence_ambiguities` row and both return the **same** `ambiguity_id`. The pool lock covers new bindings only, so ambiguity creation needs its own atomic guard. **The mechanism is decided in H2:** `create_or_get_ambiguity()` under a `last_ambiguity_at` pool-row lock, with no unique index.
 
 **F5. Leases.** Implement signing and verification as **pure functions** that take the key as an argument and read no configuration: `sign_lease(payload, private_key) -> str` and `verify_lease(lease, public_keys_by_kid) -> payload`, serialising exactly per contract §6.3. `verify_lease` is not used by an endpoint until Unit 3, but it is written now so the contract's §6.4 test vectors cover both directions in this unit.
 
@@ -194,7 +194,7 @@ A missing pool becomes `pool_access_denied` (403) at the route — the contract 
 
 **F10. The restore path is a binding write.** In one transaction:
 1. The live index check (the §4.E standing rule — restore changes `installation_id`).
-2. Update `installation_id` to a fresh `token_hex(16)`, `last_seen_at`, the label if one was supplied, and the request columns (F4).
+2. Update `installation_id` to a fresh `token_hex(16)`, `last_seen_at` and the request columns (F4). **Keep the existing `machine_label`**; use the request's only if the binding has none (H6).
 3. Ratchet the stored hash and signals snapshot forward on the strong match, as spec §8.6.1 does for refresh.
 4. Issue the lease.
 5. Log `restore`.
@@ -221,14 +221,55 @@ Everything here lives in `services/fingerprint_service.py`, in one place, marked
   Expect this list to grow from survey data. Growing it is a server change only.
 - **UUID:** strip braces and hyphens and upper-case before the checks in F1.
 - **Identity hash** (`machine_fingerprint_hash`): SHA-256, lowercase hex, over `key=value` pairs joined with `|`, in this fixed order, absent values as empty: `smbios_uuid`, `system_manufacturer`, `system_model`, `system_serial`, `baseboard_manufacturer`, `baseboard_product`, `baseboard_serial`, `bios_serial`. It is for audit and an exact-match fast path only. **Matching is signal by signal (F1), never by hash.**
-- **Continuity signals** (brief §4.A and F2):
-  - `windows_machine_guid`;
-  - the serial of the **one** disk marked `is_system_disk` — none if no disk is marked; never guess, and never use a USB disk;
-  - the network adapters whose `pnp_device_id` starts with `PCI\`. For each, use `permanent_address` when present, else `mac`, normalised to 12 hex digits. Ignore all-zero addresses and **locally administered** ones (bit `0x02` of the first byte set) — that is how Windows' random Wi-Fi addresses are marked.
+- **Continuity signals — two sets, for two jobs (H1):**
+  - **At activation** (F2, F3 step 5 — "is this a reinstall of a PC we know?"): only
+    - the serial of the **one** disk marked `is_system_disk` — none if no disk is marked; never guess, and never use a USB disk; and
+    - the network adapters whose `pnp_device_id` starts with `PCI\`. For each, use `permanent_address` when present, else `mac`, normalised to 12 hex digits. Ignore all-zero addresses and **locally administered** ones (bit `0x02` of the first byte set) — that is how Windows' random Wi-Fi addresses are marked.
+  - **At refresh** (§4.A, Unit 3 — "is the same installation still running?"): those two **plus** `windows_machine_guid`.
+  - `MachineGuid` is never an activation signal: unsysprepped images share it across a lab, and a reinstall changes it.
 
   Store the raw reading in `fingerprint_signals_json`, as spec §3.4 says, and derive these on demand.
 - **The survey collector does not yet record the continuity fields.** `tools/fingerprint-survey/Collect-Fingerprint.ps1` records each disk's model, serial, interface and size and each adapter's name and MAC, but not `is_system_disk`, `pnp_device_id`, `permanent_address`, `media_type`, `index` or `collection_errors`. Survey files therefore exercise the **identity** rules but not the continuity rules. Write the continuity tests from constructed readings, not survey files. **Do not modify the collector** (§2): planning revises it separately, before the school survey and the client phase.
 - **`fingerprint_unreadable`** when `collection_errors` names `Win32_ComputerSystemProduct`, `Win32_BaseBoard` or `Win32_BIOS`.
+
+### H. Rulings on the Unit 2 pre-code report (11 October 2026)
+
+The plan in your pre-code report is approved, with the rulings below. Where this section and your report differ, this section wins. §4.F, §4.G and §5 have been edited to match, so they no longer contradict it.
+
+**H1. `MachineGuid` is not an activation continuity signal.** Your proposal is right, and for a stronger reason than the report gives. PCs imaged from one master copy without sysprep share the same `MachineGuid`, so counting it would send every such lab PC after the first to ambiguity. And a Windows reinstall changes it, so it cannot recognise a reinstall in the first place. **At activation (F2, F3 step 5), continuity is the system disk's serial and the onboard network cards' permanent addresses only.** `MachineGuid` stays in the **refresh** installation-continuity rule (§4.A, Unit 3), where the binding's own installation history accompanies it. §4.G now lists the two sets separately.
+
+**H2. Race-safe ambiguity creation — your mechanism is approved.** All ambiguity creation goes through one function, `create_or_get_ambiguity()`:
+1. `UPDATE seat_pools SET last_ambiguity_at = ? WHERE id = ?` — a meaningful write that takes the pool-row lock, held to commit. Comment it the way the `last_claim_at` lock is commented.
+2. Under the lock, look up the request: the same `request_id` and `request_fp` within 24 hours → return that row's `ambiguity_id`; the same `request_id` with a different `request_fp` → `request_id_reused`.
+3. Otherwise insert exactly one row and its `ambiguous_flagged` audit row, in the same transaction, and commit.
+
+No unique index, for the reasons you gave. Unit 3's refresh-raised ambiguities must use the same function. Write that rule into `backend/CLAUDE.md` beside the `claim_capacity()` one.
+
+**H3. Lock order — a new standing rule.** No transaction may hold a lock on a binding row and then take a lock on its pool row, or the reverse. Today they never meet: restore locks only the binding, while claims and ambiguity creation lock only the pool. Unit 3's refresh is the first code that could want both — a refresh that turns into an ambiguity — and acquiring them in opposite orders in two transactions can deadlock. If a path ever needs both, it takes the **pool first**. Record this in `backend/CLAUDE.md` too.
+
+**H4. Cross-pool reuse — boundary.** A `request_id` reused **sequentially** in a different pool must give `request_id_reused`. Same-pool concurrent retries must be fully race-safe (H2 and F4). A broken client sending one `request_id` to two pools **at the same instant** is not guarded, and no global lock is to be added for it: it cannot push any pool past its entitlement, because `claim_capacity()` protects every pool independently.
+
+**H5. Indexes and the request digest.** Approved:
+- a best-effort index on `institution_seats(activation_request_id)` alone, replacing the two-column index the brief first named, because reuse must be detectable across pools;
+- a best-effort index on `licence_ambiguities(request_id)`;
+- a `request_fp` column on `licence_ambiguities`, storing the digest at creation. Never recompute it from stored signals, whose normalisation will change as the placeholder list grows.
+
+None of these indexes is correctness-critical; they go in the ordinary best-effort list.
+
+**H6. Restore keeps the existing machine label.** This changes F10's "the label if one was supplied". On a recognised restore, the binding's existing `machine_label` stands, because the owner may have renamed it, and a technician's typing at a reinstalled PC should not silently undo that. Use the request's `machine_label` only if the binding has none. Return the binding's actual label in the response, as contract §5 already provides, so the technician sees the PC's real name. A fresh activation uses the request's label as before. Renaming stays an explicit owner operation (Unit 3).
+
+**H7. `clone_flagged` is logged against the activating account, not the matched one.** The presented `installation_id` may belong to a binding of a **different school**. Logging the event — with its signals and label snapshot — into that school's history would show one school's PC details in another school's owner-facing history (spec §10.2). Log it against the account of the pool being activated into, and put the matched `binding_id` in `detail_json`, where ExamPartner support can see it.
+
+**H8. Confirmed as you proposed:**
+- `subscription_inactive` carries `subscription_expires_at`, since the contract governs wire details;
+- spec test 26 becomes 401 `activation_session_invalid` (the spec has been updated);
+- the activation-session error order — version, then validation, then `licensing_unavailable`, then credentials, then `no_licensing_access`;
+- reading the bearer token inside the route, so the 422-before-401 order holds;
+- `cryptography==50.0.2` as the only new direct pin, with `cffi` and `pycparser` arriving as its dependencies;
+- one guard-removed-by-hand check per race guard, as for spec test 6;
+- the test showing one ambiguity per pool for a batch of boards sharing a real serial.
+
+**H9. The secrets item is closed.** Nitoni has confirmed that `JWT_SECRET` and `ADMIN_IDENTIFIERS` are set on Render. The activation-token key derived from `JWT_SECRET` (F7) therefore rests on a real secret.
 
 ## 5. The current unit of work — Unit 2: a PC can be activated
 
@@ -241,7 +282,7 @@ Everything here lives in `services/fingerprint_service.py`, in one place, marked
 3. **Lease signing** — the pure `sign_lease` and `verify_lease` functions and the serialisation (F5, contract §6), plus `cryptography` in `requirements.txt`.
 4. **The activation session token** — issue and verify (F7, contract §11).
 5. **The error helper and wire timestamps** (F8).
-6. **Schema additions** — the F4 columns, both engines, idempotent as always, plus a best-effort index on `institution_seats(seat_pool_id, activation_request_id)`.
+6. **Schema additions** — the F4 columns, both engines, idempotent as always, plus `seat_pools.last_ambiguity_at` and `licence_ambiguities.request_fp` (H2, H5), and best-effort indexes on `institution_seats(activation_request_id)` and `licence_ambiguities(request_id)` (H5).
 7. **`claim_capacity()` changes** — the request ID and fingerprint digest (F4), the structured errors (F8), and a `fingerprint_confidence` passed in from the identity-quality calculation.
 8. **`routes/licensing.py`** — `POST /licence/activation-session` and `POST /licence/activate` exactly as contract §4–§5, implementing F3 and F10. Register the router in `app.py`.
 9. **The three pilot setup endpoints** (F11).
@@ -290,12 +331,7 @@ Do not build any of these, even where the code would be convenient to write now.
 
 **Deployment note for Nitoni, not for you:** after the Unit 2 PR is merged and before it is deployed, generate the production key locally (contract §6.5). Set only the private seed as `LICENCE_SIGNING_KEY`, and set `LICENCE_SIGNING_KID=1`, on Render; the public key goes into the WinUI client. Without them, the deploy is safe but licensing reports unavailable.
 
-**First deliverable, before any code:** a short pre-code report, as for Unit 1:
-- confirm the environment checks;
-- list any drift between this brief, the contract and the code on current `main`;
-- give your plan, and name any gap that blocks code (§7).
-
-Then wait for go-ahead. **Stop at the end of this unit** and open the PR.
+**The pre-code report is done** (11 October 2026), and its rulings are §4.H. Implement to §4.F–§4.H and the contract. Record H2's and H3's standing rules in `backend/CLAUDE.md` in your PR. **Stop at the end of this unit** and open the PR.
 
 ## 6. How to work
 
