@@ -1,7 +1,7 @@
 # ExamPartner Windows — Seat-Pool Licensing
 ## Pilot V1 Implementation Spec
 
-**Date:** 27 September 2026 · **Revision 3** · amended 7 October 2026 (§0 citations, §3.1 timestamp types, §5.2 capacity-grant rulings) and 8 October 2026 (§4.2 licensing never stops the backend starting, §12 test 31; §8.4, §8.6, §8.7 and §10.3 point to `docs/LICENCE_API_CONTRACT.md`) and 10 October 2026 (§3.4, §3.6, §8.2–§8.4 and §8.6.1 aligned with brief §4.F–§4.G); see `docs/CLOUD_SESSION_BRIEF.md` §4
+**Date:** 27 September 2026 · **Revision 3** · amended 7 October 2026 (§0 citations, §3.1 timestamp types, §5.2 capacity-grant rulings) and 8 October 2026 (§4.2 licensing never stops the backend starting, §12 test 31; §8.4, §8.6, §8.7 and §10.3 point to `docs/LICENCE_API_CONTRACT.md`) and 10 October 2026 (§3.4, §3.6, §8.2–§8.4 and §8.6.1 aligned with brief §4.F–§4.G) and 11 October 2026 (§3.3, §3.6, §8.3, §12 test 26 per brief §4.H); see `docs/CLOUD_SESSION_BRIEF.md` §4
 **Status:** Ready for implementation
 **Audience:** the implementation session working on the ExamPartner FastAPI backend
 
@@ -162,6 +162,7 @@ No FK to `users` — newer tables here use indexes instead. Index `owner_identif
 | `label` | TEXT | |
 | `status` | TEXT | `active` \| `suspended` |
 | `last_claim_at` | TEXT | **Load-bearing — see §5.2.** Updated inside every capacity claim. It both serialises claims and records when capacity was last consumed. |
+| `last_ambiguity_at` | TEXT | **Load-bearing — brief §4.H H2.** Updated inside every ambiguity creation; the pool-row lock that makes concurrent identical requests produce one ambiguity. |
 | `created_at` / `updated_at` | TEXT | |
 
 **No `CHECK` constraint on capacity is possible.** `CHECK (active_count <= pool_size)` was tested and rejects the shrink itself — you cannot reduce `pool_size` to 15 while 18 machines are active, and over-capacity is a state we deliberately support. Capacity is therefore enforced in code at one chokepoint, not by the schema. §14 records that trade.
@@ -234,6 +235,7 @@ Needed because the log is immutable and an ambiguity has mutable state.
 | `status` | TEXT | `open` \| `resolved` \| `consumed` \| `expired` (brief §4.C: single-use, 7-day expiry) |
 | `origin` | TEXT | `activate` \| `refresh` — which request raised it, and so how it is collected. |
 | `request_id` | TEXT | The raising request's `request_id`. Replay and race guard (brief §4.F F4). |
+| `request_fp` | TEXT | Digest of the raising request, stored at creation, so a reused `request_id` with a different body is detected. Never recomputed (brief §4.H H5). |
 | `resolution` | TEXT | `recognize_existing` \| `treat_as_new` |
 | `resolved_binding_id` | TEXT | |
 | `resolved_by` / `resolved_at` | TEXT | |
@@ -490,7 +492,7 @@ Normalisation, the placeholder list, the identity hash and the continuity signal
 
 A machine presenting a degenerate reading on **first** activation has no firmware identity to match on, so it claims capacity normally and is stored with `fingerprint_confidence = 'degenerate'`. A degenerate PC can therefore never be *restored* by hardware recognition: PC 7 reinstalling can never silently take PC 12's activation.
 
-What separates a reinstall from a genuinely different identical PC is **continuity evidence** (brief §4.F F2): the system disk's serial and the permanent address of an onboard network card, both of which survive a Windows reinstall. A weak or degenerate reading whose continuity signals match **any** active binding in the pool goes to **ambiguity resolution**; one with no such match is a new machine. That is what lets two identical lab PCs both activate (§12 test 12) while a reinstalled one goes to an administrator (§12 test 13).
+What separates a reinstall from a genuinely different identical PC is **continuity evidence** (brief §4.F F2): the system disk's serial and the permanent address of an onboard network card, both of which survive a Windows reinstall. Windows' `MachineGuid` is **not** used here — a reinstall changes it, and PCs imaged from one unsysprepped master share it (brief §4.H H1). A weak or degenerate reading whose continuity signals match **any** active binding in the pool goes to **ambiguity resolution**; one with no such match is a new machine. That is what lets two identical lab PCs both activate (§12 test 12) while a reinstalled one goes to an administrator (§12 test 13).
 
 ### 8.4 Activation
 
@@ -710,7 +712,7 @@ All runnable without waiting real time (§6.3).
 25. **Distinguishable denials:** a `machine_mismatch` response and a `lease_revoked` response carry different error codes, so a client can show the right remedy.
 
 **Authorisation**
-26. `POST /licence/activate` with no authenticated institution owner → `403`. **No capacity consumed.**
+26. `POST /licence/activate` with no valid activation session → `401 activation_session_invalid` (contract §9.3). **No capacity consumed.**
 27. Institution owner A attempts to release a binding on account B → `403`.
 28. Client holding a valid lease attempts to release any binding → `403`.
 
