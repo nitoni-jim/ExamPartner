@@ -78,6 +78,10 @@ def _run_simultaneous_claims(pool_id, monkeypatch):
 
             licensing_service.claim_capacity(
                 pool_id,
+                # 24 DIFFERENT activations: each its own request (brief F4),
+                # so the in-lock request check never short-circuits the race.
+                request_id=f"race-{n}-{pool_id}",
+                request_fp=f"digest-{n}",
                 machine_fingerprint_hash=f"fp-{n}",
                 fingerprint_confidence="strong",
                 fingerprint_signals_json=None,

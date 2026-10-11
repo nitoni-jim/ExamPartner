@@ -725,6 +725,11 @@ SEAT_POOLS_COLUMNS = [
     ("last_claim_at", "TEXT"),
     ("created_at",    "TEXT"),
     ("updated_at",    "TEXT"),
+    # Load-bearing, like last_claim_at (brief §4.H H2). Written as the first
+    # statement of every ambiguity creation, so that write is the pool-row
+    # lock making two concurrent identical requests produce ONE ambiguity.
+    # See create_or_get_ambiguity() in services/licensing_service.py.
+    ("last_ambiguity_at", "TEXT"),
 ]
 
 # institution_seats — the name is kept for continuity, but a row is NOT a
@@ -752,6 +757,17 @@ INSTITUTION_SEATS_COLUMNS = [
     ("revoked_by",               "TEXT"),
     ("created_at",               "TEXT"),
     ("updated_at",               "TEXT"),
+    # Idempotent activation (brief §4.F F4, contract §9.2). The client's
+    # request_id for the activation or restore that last wrote this binding,
+    # when it arrived, and a digest of the pool and the normalised reading,
+    # so a retry within 24 hours replays the stored outcome and a reused
+    # request_id with a different body is refused. The digest is stored,
+    # never recomputed from fingerprint_signals_json (H5).
+    ("activation_request_id",    "TEXT"),
+    ("activation_request_at",    "TEXT"),
+    ("activation_request_fp",    "TEXT"),
+    ("activation_result",        "TEXT"),               # activated | restored — what a replay returns
+    ("current_lease",            "TEXT"),               # the lease string last issued, so a replay is byte-identical
 ]
 
 # seat_activation_log — immutable: never updated, never deleted. Carries its
@@ -776,7 +792,8 @@ SEAT_ACTIVATION_LOG_COLUMNS = [
 
 # licence_ambiguities — separate from the log because the log is immutable
 # and an ambiguity has mutable state: open -> resolved -> consumed, or
-# expired (brief §4.C).
+# expired (brief §4.C). Created ONLY through create_or_get_ambiguity(),
+# which takes the pool-row lock (H2).
 LICENCE_AMBIGUITIES_COLUMNS = [
     ("id",                         "TEXT PRIMARY KEY"),
     ("account_id",                 "TEXT"),
@@ -792,6 +809,10 @@ LICENCE_AMBIGUITIES_COLUMNS = [
     ("resolved_by",                "TEXT"),
     ("resolved_at",                "TEXT"),
     ("created_at",                 "TEXT"),
+    ("origin",                     "TEXT"),             # activate | refresh — how it is collected
+    ("request_id",                 "TEXT"),             # the raising request's request_id (F4)
+    ("request_fp",                 "TEXT"),             # its digest, stored at creation, never recomputed (H5)
+    ("consumed_at",                "TEXT"),
 ]
 
 # (table name, column list) — the SQLite branch uses these lists as written,
@@ -816,6 +837,12 @@ LICENSING_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_seat_log_account_created ON seat_activation_log(account_id, created_at);",
     "CREATE INDEX IF NOT EXISTS idx_seat_log_binding ON seat_activation_log(binding_id);",
     "CREATE INDEX IF NOT EXISTS idx_ambiguities_open ON licence_ambiguities(status, created_at);",
+    # Request-ID lookups (brief §4.H H5). activation_request_id alone, not
+    # (seat_pool_id, activation_request_id): a reused request_id must be
+    # detectable across pools. Neither is correctness-critical — the guards
+    # are the pool-row locks, not these indexes — so they stay best-effort.
+    "CREATE INDEX IF NOT EXISTS idx_seat_bindings_activation_request ON institution_seats(activation_request_id);",
+    "CREATE INDEX IF NOT EXISTS idx_ambiguities_request ON licence_ambiguities(request_id);",
 ]
 
 # The licensing-critical constraint: one active binding per installation. It

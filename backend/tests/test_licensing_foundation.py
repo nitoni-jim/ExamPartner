@@ -29,9 +29,16 @@ def _clean_clock(monkeypatch):
 
 
 def _claim(pool_id, n=0, **overrides):
+    import uuid
+
     from services.licensing_service import claim_capacity
 
+    # Every claim is an activation with its own request (brief F4); a fresh
+    # request_id per call keeps these tests about capacity, not replay.
+    request_id = str(uuid.uuid4())
     kwargs = dict(
+        request_id=request_id,
+        request_fp=f"digest-{request_id}",
         machine_fingerprint_hash=f"fp-{n}",
         fingerprint_confidence="strong",
         fingerprint_signals_json='{"system_uuid": "X"}',
@@ -336,12 +343,12 @@ def test_admin_passes_on_any_account(sqlite_database, make_pool, monkeypatch):
 
 def test_claim_signature_rulings():
     """Brief §4.D: no installation_id parameter; performed_by and actor_role
-    required with no defaults."""
+    required with no defaults. Brief F4: request_id and request_fp likewise."""
     from services.licensing_service import claim_capacity
 
     params = inspect.signature(claim_capacity).parameters
     assert "installation_id" not in params
-    for name in ("performed_by", "actor_role"):
+    for name in ("performed_by", "actor_role", "request_id", "request_fp"):
         assert params[name].default is inspect.Parameter.empty
         assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
 
@@ -422,10 +429,13 @@ def test_over_capacity_after_shrink_is_slot_agnostic(sqlite_database, make_pool)
         _claim(pool["pool_id"], n=12)
 
 
-def test_missing_pool_is_404(sqlite_database):
+def test_missing_pool_is_pool_access_denied(sqlite_database):
+    """Brief F8: the contract returns the same code for a pool that does not
+    exist as for one the caller may not use."""
     with pytest.raises(HTTPException) as exc:
         _claim("no-such-pool")
-    assert exc.value.status_code == 404
+    assert exc.value.status_code == 403
+    assert exc.value.detail["code"] == "pool_access_denied"
 
 
 @pytest.mark.parametrize("pool_kwargs, status", [
@@ -476,12 +486,12 @@ def test_invalid_claim_inputs_are_refused_before_touching_the_pool(sqlite_databa
     assert p["last_claim_at"] is None
 
 
-@pytest.mark.parametrize("pool_kwargs, status, detail", [
-    ({"subscription_status": "suspended"}, 402, "Subscription is not active"),
-    ({"subscription_expires_at": "2020-01-01T00:00:00+00:00"}, 402, "Subscription is not active"),
-    ({"pool_status": "suspended"}, 409, "Seat pool is not active"),
+@pytest.mark.parametrize("pool_kwargs, status, code", [
+    ({"subscription_status": "suspended"}, 402, "subscription_inactive"),
+    ({"subscription_expires_at": "2020-01-01T00:00:00+00:00"}, 402, "subscription_inactive"),
+    ({"pool_status": "suspended"}, 409, "pool_inactive"),
 ])
-def test_entitlement_is_reported_before_capacity(sqlite_database, make_pool, pool_kwargs, status, detail):
+def test_entitlement_is_reported_before_capacity(sqlite_database, make_pool, pool_kwargs, status, code):
     """Brief §4.E point 5: a FULL pool whose entitlement has lapsed is told
     about the entitlement, not told to free a seat."""
     pool = make_pool(1, **pool_kwargs)
@@ -492,7 +502,7 @@ def test_entitlement_is_reported_before_capacity(sqlite_database, make_pool, poo
     )
     with pytest.raises(HTTPException) as exc:
         _claim(pool["pool_id"])
-    assert (exc.value.status_code, exc.value.detail) == (status, detail)
+    assert (exc.value.status_code, exc.value.detail["code"]) == (status, code)
 
 
 def test_claim_checks_the_index_live_not_the_startup_flag(sqlite_database, make_pool):
@@ -506,7 +516,7 @@ def test_claim_checks_the_index_live_not_the_startup_flag(sqlite_database, make_
 
     with pytest.raises(HTTPException) as exc:
         _claim(pool["pool_id"])
-    assert (exc.value.status_code, exc.value.detail) == (503, "Licensing is unavailable")
+    assert (exc.value.status_code, exc.value.detail["code"]) == (503, "licensing_unavailable")
     assert _query("SELECT id FROM institution_seats WHERE seat_pool_id = ?", (pool["pool_id"],)) == []
     assert _query("SELECT id FROM seat_activation_log WHERE seat_pool_id = ?", (pool["pool_id"],)) == []
     [p] = _query("SELECT last_claim_at FROM seat_pools WHERE id = ?", (pool["pool_id"],))

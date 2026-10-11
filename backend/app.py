@@ -28,6 +28,7 @@ from routes.theory import router as theory_router
 from routes.content import router as content_router
 from routes.paper_rules import router as paper_rules_router
 from routes.attachments import router as attachments_router
+from routes.licensing import router as licensing_router
 
 # ---------------------------------------------------------------------------
 # App
@@ -62,6 +63,7 @@ app.include_router(theory_router)     # AI theory grading
 app.include_router(attachments_router)  # candidate diagram uploads (Sprint A)
 app.include_router(content_router)    # content version / sync awareness
 app.include_router(paper_rules_router)  # paper_rules — CBT timing/count/marks metadata (Sprint 3)
+app.include_router(licensing_router)    # Windows seat-pool licensing — /licence/* and pilot setup
 
 # ---------------------------------------------------------------------------
 # Startup
@@ -71,6 +73,10 @@ def startup():
     logger.info("Starting ExamPartner API v2")
     init_db()
     logger.info("Database initialized OK")
+    # Lease signing key (brief §4.F F6). A missing or bad key logs one ERROR
+    # and leaves licensing unavailable; it never stops startup (§4.E).
+    from services.licence_lease import configure_signing
+    configure_signing()
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +91,7 @@ def health():
     # time, days later) points nowhere near its cause.
     from services import storage_service
     from db import licensing_status
+    from services.licence_lease import signing_status
 
     return {
         "ok": True,
@@ -93,10 +100,12 @@ def health():
         "db_path": DB_PATH,
         "db_mode": ("postgres" if os.getenv("DATABASE_URL") else "sqlite"),
         "attachment_storage": ("r2" if storage_service.is_durable() else "local-ephemeral"),
-        # Seat-pool licensing, as init_db() recorded it at startup. A
-        # licensing schema failure closes licensing only (brief §4.E), so
-        # this never turns /health non-200 — and it is read from memory, not
-        # the database, so polling /health never keeps Neon's compute awake.
-        # "unavailable" means read the ERROR line in the boot log.
-        "licensing": ("ready" if licensing_status()["ready"] else "unavailable"),
+        # Seat-pool licensing: ready only when init_db() recorded the schema
+        # ready at startup AND a lease signing key is loaded (brief §4.F F6).
+        # A licensing failure closes licensing only (brief §4.E), so this
+        # never turns /health non-200 — and both halves are read from
+        # memory, not the database, so polling /health never keeps Neon's
+        # compute awake. "unavailable" means read the ERROR line in the
+        # boot log.
+        "licensing": ("ready" if licensing_status()["ready"] and signing_status()["ready"] else "unavailable"),
     }

@@ -46,10 +46,15 @@ def _execute(sql, params=()):
 
 
 def _claim(pool_id):
+    import uuid
+
     from services.licensing_service import claim_capacity
 
+    request_id = str(uuid.uuid4())
     return claim_capacity(
         pool_id,
+        request_id=request_id,
+        request_fp=f"digest-{request_id}",
         machine_fingerprint_hash="fp-new",
         fingerprint_confidence="strong",
         performed_by="owner@school.example",
@@ -58,13 +63,26 @@ def _claim(pool_id):
 
 
 @pytest.mark.parametrize("engine", ["pg_database", "sqlite_database"])
-def test_31_licensing_failure_closes_licensing_not_the_backend(request, engine, make_pool, caplog):
+def test_31_licensing_failure_closes_licensing_not_the_backend(request, engine, make_pool, caplog, monkeypatch):
+    import base64
+    import os
+
+    import config
     import db
     from fastapi.testclient import TestClient
 
     from app import app
+    from services import licence_lease
 
     request.getfixturevalue(engine)
+    # Since Unit 2, /health is "ready" only with the schema ready AND a
+    # signing key loaded (brief F6), and the app's startup event loads the
+    # key from config. Configure a fresh in-process key, so this test is
+    # about the schema; restore whatever key state was there before.
+    monkeypatch.setattr(config, "LICENCE_SIGNING_KEY", base64.b64encode(os.urandom(32)).decode())
+    monkeypatch.setattr(config, "LICENCE_SIGNING_KID", "1")
+    request.addfinalizer(lambda saved=dict(licence_lease._signing): (
+        licence_lease._signing.clear(), licence_lease._signing.update(saved)))
     pool = make_pool(5)
     shared_installation = secrets.token_hex(16)
 
@@ -102,7 +120,7 @@ def test_31_licensing_failure_closes_licensing_not_the_backend(request, engine, 
         before_bindings = _query("SELECT id FROM institution_seats WHERE seat_pool_id = ?", (pool["pool_id"],))
         with pytest.raises(HTTPException) as exc:
             _claim(pool["pool_id"])
-        assert (exc.value.status_code, exc.value.detail) == (503, "Licensing is unavailable")
+        assert (exc.value.status_code, exc.value.detail["code"]) == (503, "licensing_unavailable")
         assert _query("SELECT id FROM institution_seats WHERE seat_pool_id = ?", (pool["pool_id"],)) == before_bindings
         assert _query("SELECT id FROM seat_activation_log WHERE seat_pool_id = ?", (pool["pool_id"],)) == []
 
@@ -151,7 +169,7 @@ def test_missing_licensing_tables_refuse_with_503_not_500(request, engine):
 
         with pytest.raises(HTTPException) as exc:
             _claim("any-pool-id")
-        assert (exc.value.status_code, exc.value.detail) == (503, "Licensing is unavailable")
+        assert (exc.value.status_code, exc.value.detail["code"]) == (503, "licensing_unavailable")
 
         # Wrote nothing: the tables are still absent (no statement recreated
         # or wrote to them), and core schema is untouched.
