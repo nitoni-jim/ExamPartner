@@ -73,10 +73,13 @@ def startup():
     logger.info("Starting ExamPartner API v2")
     init_db()
     logger.info("Database initialized OK")
-    # Lease signing key (brief §4.F F6). A missing or bad key logs one ERROR
-    # and leaves licensing unavailable; it never stops startup (§4.E).
+    # Licensing configuration: the lease signing key (brief §4.F F6) and the
+    # client version gate (F9). Anything unusable logs one ERROR and leaves
+    # licensing unavailable; it never stops startup (§4.E).
     from services.licence_lease import configure_signing
+    from services.licensing_service import configure_client_gate
     configure_signing()
+    configure_client_gate()
 
 
 # ---------------------------------------------------------------------------
@@ -90,8 +93,7 @@ def health():
     # the next deploy — a failure whose symptom (a missing file at grading
     # time, days later) points nowhere near its cause.
     from services import storage_service
-    from db import licensing_status
-    from services.licence_lease import signing_status
+    from services.licensing_service import licensing_config_ready
 
     return {
         "ok": True,
@@ -101,11 +103,12 @@ def health():
         "db_mode": ("postgres" if os.getenv("DATABASE_URL") else "sqlite"),
         "attachment_storage": ("r2" if storage_service.is_durable() else "local-ephemeral"),
         # Seat-pool licensing: ready only when init_db() recorded the schema
-        # ready at startup AND a lease signing key is loaded (brief §4.F F6).
-        # A licensing failure closes licensing only (brief §4.E), so this
-        # never turns /health non-200 — and both halves are read from
-        # memory, not the database, so polling /health never keeps Neon's
-        # compute awake. "unavailable" means read the ERROR line in the
-        # boot log.
-        "licensing": ("ready" if licensing_status()["ready"] and signing_status()["ready"] else "unavailable"),
+        # ready at startup, a lease signing key is loaded (brief §4.F F6) AND
+        # MIN_WINDOWS_APP_VERSION is valid (F9) — the same check every
+        # /licence/* request makes. A licensing failure closes licensing only
+        # (brief §4.E), so this never turns /health non-200 — and all three
+        # are read from memory, not the database, so polling /health never
+        # keeps Neon's compute awake. "unavailable" means read the ERROR line
+        # in the boot log.
+        "licensing": ("ready" if licensing_config_ready() else "unavailable"),
     }

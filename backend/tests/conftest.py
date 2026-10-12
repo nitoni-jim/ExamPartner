@@ -255,20 +255,28 @@ def make_degenerate_signals(disk, nic=None, **overrides):
 
 @pytest.fixture
 def licence_signing_key():
-    """A signing key generated in-process and installed as kid 1.
+    """Licensing configuration as a healthy startup leaves it.
 
-    Tests never use a real key, and never the published TEST seed as the
-    configured key. Yields the PUBLIC key map a verifier needs.
+    A signing key generated in-process and installed as kid 1 — tests never
+    use a real key, and never the published TEST seed as the configured key
+    — and the client version gate validated from config (default 0.0.0).
+    Both are what the app's startup event does; tests that build a
+    TestClient without `with` skip that event, so this does it for them.
+    Yields the PUBLIC key map a verifier needs. Restores both afterwards.
     """
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-    from services import licence_lease
+    from services import licence_lease, licensing_service
 
-    previous = dict(licence_lease._signing)
+    previous_signing = dict(licence_lease._signing)
+    previous_gate = dict(licensing_service._client_gate)
     key = Ed25519PrivateKey.generate()
     licence_lease.use_signing_key(key, 1)
+    assert licensing_service.configure_client_gate(), "MIN_WINDOWS_APP_VERSION in the test environment is malformed"
     try:
         yield {1: key.public_key()}
     finally:
         licence_lease._signing.clear()
-        licence_lease._signing.update(previous)
+        licence_lease._signing.update(previous_signing)
+        licensing_service._client_gate.clear()
+        licensing_service._client_gate.update(previous_gate)

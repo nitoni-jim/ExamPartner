@@ -391,34 +391,74 @@ def _parse_version(text: Any) -> Optional[tuple]:
     return tuple(int(g) for g in m.groups()) if m else None
 
 
+# The client version gate (F9), validated ONCE at startup as licensing
+# configuration, like the signing key. A malformed MIN_WINDOWS_APP_VERSION
+# fails CLOSED: one ERROR, licensing unavailable (503, /health
+# "unavailable"), the rest of the backend unaffected (brief §4.E). It is
+# never silently treated as "no minimum": that would switch off the one
+# lever for stopping a broken client, and nobody would notice. In memory,
+# so neither /health nor a request reads the environment or the database.
+_client_gate: Dict[str, Any] = {"minimum": None, "text": None,
+                                "reason": "configure_client_gate() has not run in this process"}
+
+
+def configure_client_gate() -> bool:
+    """Validate config.MIN_WINDOWS_APP_VERSION. Never raises; returns whether it is usable."""
+    raw = config.MIN_WINDOWS_APP_VERSION
+    text = raw.strip() if isinstance(raw, str) else ""
+    minimum = _parse_version(text)
+    if minimum is None:
+        _client_gate.update(minimum=None, text=None,
+                            reason=f"MIN_WINDOWS_APP_VERSION {raw!r} is not MAJOR.MINOR.PATCH")
+        logger.error(
+            "LICENSING UNAVAILABLE — MIN_WINDOWS_APP_VERSION %r is not MAJOR.MINOR.PATCH. Every "
+            "/licence/* endpoint returns 503; the rest of the backend is unaffected.",
+            raw,
+        )
+        return False
+    _client_gate.update(minimum=minimum, text=text, reason=None)
+    return True
+
+
+def client_gate_status() -> Dict[str, Any]:
+    return {"ready": _client_gate["minimum"] is not None, "reason": _client_gate["reason"]}
+
+
 def check_client(client: Mapping[str, Any]) -> None:
     """
     Version first (426), then the client object's own shape (400). A
-    malformed app_version cannot be compared, so it is invalid_request
-    (F9). MIN_WINDOWS_APP_VERSION is read at call time; if it is itself
-    malformed nothing is blocked and an ERROR is logged, because refusing
-    every client over a typo in a Render setting is the worse failure.
+    malformed app_version cannot be compared, so it is invalid_request (F9).
+
+    When the configured minimum is unusable, no 426 is decided here — there
+    is no minimum to compare against. The request still gets its shape
+    checks, and then require_licensing_available() refuses it with 503, so
+    the contract's precedence (426 → 400 → ... → 503) holds either way.
     """
     version = _parse_version(client.get("app_version"))
     if version is None:
         licence_fail("invalid_request", "client.app_version must be MAJOR.MINOR.PATCH", field="client.app_version")
-    minimum_text = (config.MIN_WINDOWS_APP_VERSION or "0.0.0").strip()
-    minimum = _parse_version(minimum_text)
-    if minimum is None:
-        logger.error("MIN_WINDOWS_APP_VERSION %r is not MAJOR.MINOR.PATCH; not enforcing a minimum", minimum_text)
-    elif version < minimum:
-        licence_fail("client_upgrade_required", min_app_version=minimum_text)
+    minimum = _client_gate["minimum"]
+    if minimum is not None and version < minimum:
+        licence_fail("client_upgrade_required", min_app_version=_client_gate["text"])
     if str(client.get("platform") or "").strip().lower() != "windows":
         licence_fail("invalid_request", "client.platform must be windows", field="client.platform")
 
 
+def licensing_config_ready() -> bool:
+    """Schema ready at startup, signing key loaded, client gate valid. Memory only."""
+    return (licensing_status()["ready"]
+            and licence_lease.signing_key() is not None
+            and _client_gate["minimum"] is not None)
+
+
 def require_licensing_available() -> None:
     """
-    503 unless the licensing schema was ready at startup AND a signing key
-    is loaded (F6). Both read from memory — no database query — like
-    /health. Binding writes additionally check the index live (§4.E).
+    503 unless the licensing schema was ready at startup, a signing key is
+    loaded (F6), AND the client version gate is valid (F9). All read from
+    memory — no database query — like /health. Binding writes additionally
+    check the index live (§4.E).
     """
-    if not licensing_status()["ready"] or licence_lease.signing_key() is None:
+    if not licensing_config_ready():
         licence_fail("licensing_unavailable")
 
 
@@ -779,12 +819,26 @@ def _ambiguity_outcome(row: Mapping[str, Any]) -> None:
     licence_fail("ambiguity_pending", ambiguity_id=row["id"])
 
 
-def _collect_ambiguity(ambiguity_id: str, pool_id: str) -> None:
+def _collect_ambiguity(ambiguity_id: str, pool_id: str, request_id: str, request_fp: str) -> None:
     """
-    A request carrying ambiguity_id. Resolving and collecting are Unit 3, so
-    here it only reports the row's state. An id that is not an activation-
-    raised ambiguity of THIS pool is ambiguity_mismatch — the same answer
-    whether it belongs to another pool or does not exist.
+    A request carrying ambiguity_id (contract §10). Resolving is Unit 3, so
+    here the outcome is only ever the row's state — pending or expired —
+    and ONLY for the PC that raised it. Checked in this order:
+
+    1. Not an activation-raised ambiguity of THIS pool → ambiguity_mismatch,
+       the same answer whether it belongs to another pool or does not exist.
+    2. The request reuses the ambiguity's ORIGINAL raising request_id →
+       request_id_reused. Contract §10 requires collection under a NEW
+       request_id; resending the raising one is a client bug, and must not
+       be mistaken for a replay of the raising request.
+    3. The current request's digest differs from the one stored when the
+       ambiguity was raised → ambiguity_mismatch (contract §9.3: the PC
+       presenting the id is not the one that raised it). request_fp covers
+       the pool and the normalised reading, so this is the identity check.
+       The stored digest is compared, never recomputed (H5).
+
+    Identity is settled before the state is revealed, so a different PC
+    holding someone else's ambiguity_id learns nothing about it.
     """
     db = db_conn()
     try:
@@ -795,6 +849,10 @@ def _collect_ambiguity(ambiguity_id: str, pool_id: str) -> None:
         db.close()
     row = _row_to_dict(row) if row else None
     if not row or row.get("seat_pool_id") != pool_id or row.get("origin") != "activate":
+        licence_fail("ambiguity_mismatch")
+    if row.get("request_id") == request_id:
+        licence_fail("request_id_reused")
+    if row.get("request_fp") != request_fp:
         licence_fail("ambiguity_mismatch")
     _ambiguity_outcome(row)
 
@@ -971,13 +1029,15 @@ def activate(caller: str, body: Mapping[str, Any]) -> Dict[str, Any]:
         licence_fail("subscription_inactive",
                      subscription_expires_at=wire_time_or_none(pool.get("subscription_expires_at")))
 
-    if ambiguity_id is not None:
-        _collect_ambiguity(ambiguity_id, pool_id)
-
     reading = fingerprint_service.read(signals)
     request_fp = fingerprint_service.request_digest(pool_id, reading)
     signals_json = json.dumps(signals, sort_keys=True, separators=(",", ":"))
     fingerprint_hash = fingerprint_service.identity_hash(reading)
+
+    # Collecting an ambiguity (contract §10). After the digest exists,
+    # because the collection must prove it comes from the PC that raised it.
+    if ambiguity_id is not None:
+        _collect_ambiguity(ambiguity_id, pool_id, request_id, request_fp)
 
     # F3 step 1 — replay. Looked up across ALL pools, so a request_id reused
     # sequentially in a different pool is refused (H4): the digest includes

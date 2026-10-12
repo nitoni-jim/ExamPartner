@@ -134,7 +134,9 @@ LICENCE_SIGNING_KID: str = os.getenv("LICENCE_SIGNING_KID", "")
 
 # Oldest Windows client allowed to call /licence/*, as MAJOR.MINOR.PATCH.
 # Default 0.0.0 blocks nothing; raise it to stop a broken client with 426.
-# Raw string for the same reason as above.
+# Raw string for the same reason as above. A malformed value fails CLOSED —
+# licensing unavailable, never "no minimum" — validated at startup by
+# services/licensing_service.configure_client_gate().
 MIN_WINDOWS_APP_VERSION: str = os.getenv("MIN_WINDOWS_APP_VERSION", "0.0.0")
 
 logging.basicConfig(

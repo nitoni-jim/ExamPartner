@@ -442,6 +442,57 @@ def test_collecting_an_ambiguity_reports_its_state(lic, make_pool):
     assert len(ambiguities(pool["pool_id"])) == 1
 
 
+def _raise_ambiguity(lic, pool_id, request_id=None):
+    """A degenerate PC, then its reinstall: returns (reinstalled signals, raising request_id, ambiguity_id)."""
+    lic.activate(pool_id, make_degenerate_signals(disk="WD-AAAA", nic="B44506AAAAAA"))
+    reinstalled = make_degenerate_signals(disk="WD-AAAA", nic="B44506AAAAAA", guid="99999999-8888-7777-6666-555555555555")
+    request_id = request_id or str(uuid.uuid4())
+    raised = assert_error(lic.activate(pool_id, reinstalled, request_id=request_id), 409, "ambiguity_pending")
+    return reinstalled, request_id, raised["ambiguity_id"]
+
+
+def test_collection_by_the_raising_pc_with_a_new_request_id_gets_the_same_pending_ambiguity(lic, make_pool):
+    pool = make_pool(5)
+    reinstalled, _, raised = _raise_ambiguity(lic, pool["pool_id"])
+    for _ in range(2):
+        again = assert_error(lic.activate(pool["pool_id"], reinstalled, ambiguity_id=raised,
+                                          request_id=str(uuid.uuid4())), 409, "ambiguity_pending")
+        assert again["ambiguity_id"] == raised
+    assert len(ambiguities(pool["pool_id"])) == 1
+    assert len(active_bindings(pool["pool_id"])) == 1
+
+
+def test_collection_by_a_different_pc_in_the_same_pool_is_ambiguity_mismatch(lic, make_pool):
+    """Contract §9.3: the PC presenting the ambiguity_id is not the one that
+    raised it. Same pool, same owner, valid id — wrong machine."""
+    pool = make_pool(5)
+    _, _, raised = _raise_ambiguity(lic, pool["pool_id"])
+    for other_pc in (make_signals(**PC_B), make_degenerate_signals(disk="WD-SOMEONE-ELSE")):
+        detail = assert_error(lic.activate(pool["pool_id"], other_pc, ambiguity_id=raised), 409, "ambiguity_mismatch")
+        assert "ambiguity_id" not in detail          # nothing about the row is revealed
+    assert len(ambiguities(pool["pool_id"])) == 1
+    assert len(active_bindings(pool["pool_id"])) == 1
+
+
+def test_collection_reusing_the_raising_request_id_is_request_id_reused(lic, make_pool):
+    """Contract §10: collection uses a NEW request_id."""
+    pool = make_pool(5)
+    reinstalled, raising_request_id, raised = _raise_ambiguity(lic, pool["pool_id"])
+    assert_error(lic.activate(pool["pool_id"], reinstalled, ambiguity_id=raised, request_id=raising_request_id),
+                 409, "request_id_reused")
+    assert len(ambiguities(pool["pool_id"])) == 1
+
+
+def test_collection_of_an_expired_ambiguity_by_its_pc(lic, make_pool):
+    pool = make_pool(5)
+    reinstalled, _, raised = _raise_ambiguity(lic, pool["pool_id"])
+    _execute("UPDATE licence_ambiguities SET created_at = ? WHERE id = ?",
+             ((datetime.now(timezone.utc) - timedelta(days=8)).isoformat(), raised))
+    assert_error(lic.activate(pool["pool_id"], reinstalled, ambiguity_id=raised), 409, "ambiguity_expired")
+    # …and a different PC still learns only that it is the wrong PC.
+    assert_error(lic.activate(pool["pool_id"], make_signals(**PC_B), ambiguity_id=raised), 409, "ambiguity_mismatch")
+
+
 def test_weak_match_routes_to_ambiguity(lic, make_pool):
     pool = make_pool(5)
     lic.activate(pool["pool_id"])
@@ -580,12 +631,14 @@ def test_invalid_credentials(lic, make_pool, identifier, password):
 def test_session_error_order(lic, make_pool, monkeypatch):
     """H8: version → validation → licensing_unavailable → credentials."""
     import config
-    from services import licence_lease
+    from services import licence_lease, licensing_service
 
     make_pool(5)
     monkeypatch.setattr(config, "MIN_WINDOWS_APP_VERSION", "2.0.0")
+    assert licensing_service.configure_client_gate()   # startup configuration (the fixture restores it)
     assert_error(lic.session(password=""), 426, "client_upgrade_required")
     monkeypatch.setattr(config, "MIN_WINDOWS_APP_VERSION", "0.0.0")
+    assert licensing_service.configure_client_gate()
     assert_error(lic.session(password=""), 400, "invalid_request")
     licence_lease.use_signing_key(None, None)
     assert_error(lic.session(password="wrong"), 503, "licensing_unavailable")
@@ -693,10 +746,12 @@ def test_fingerprint_unreadable(lic, make_pool):
 
 def test_426_below_the_minimum_version(lic, make_pool, monkeypatch):
     import config
+    from services import licensing_service
 
     pool = make_pool(5)
     token = lic.token()
     monkeypatch.setattr(config, "MIN_WINDOWS_APP_VERSION", "1.10.0")
+    assert licensing_service.configure_client_gate()   # startup configuration (the fixture restores it)
     detail = assert_error(lic.activate(pool["pool_id"], token=token,
                                        client={"platform": "windows", "app_version": "1.9.12"}), 426,
                           "client_upgrade_required")
