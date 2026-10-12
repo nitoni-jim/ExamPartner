@@ -2,7 +2,7 @@
 
 **For:** the implementation session working on `nitoni-jim/ExamPartner`
 **Owner:** Nitoni (solo developer; works on this in evenings and weekends)
-**Date:** 5 October 2026 · **Revised:** 6 October 2026 (§3 environment, §6 pyflakes) · 7 October 2026 (§4.D rulings on the pre-code report, §8) · 8 October 2026 (§4.E licensing never stops the backend starting, §8; §2 signing key per the API contract) · 10 October 2026 (Unit 1 merged; Unit 2 — §4.F, §4.G, §5 — reviewed and approved) · 11 October 2026 (§4.H rulings on the Unit 2 pre-code report; §4.F, §4.G, §5 edited to match)
+**Date:** 5 October 2026 · **Revised:** 6 October 2026 (§3 environment, §6 pyflakes) · 7 October 2026 (§4.D rulings on the pre-code report, §8) · 8 October 2026 (§4.E licensing never stops the backend starting, §8; §2 signing key per the API contract) · 10 October 2026 (Unit 1 merged; Unit 2 — §4.F, §4.G, §5 — reviewed and approved) · 11 October 2026 (§4.H rulings on the Unit 2 pre-code report; §4.F, §4.G, §5 edited to match) · 12 October 2026 (Unit 2 merged as PR #38; §9 carried into Unit 3)
 
 Read this first, then `backend/CLAUDE.md`, then the Pilot V1 implementation spec. This brief answers the setup questions and settles the open spec gaps. Where it disagrees with the spec, this brief wins and the spec gets updated to match.
 
@@ -351,3 +351,25 @@ Two qualifications. Be specific about why it blocks code rather than listing eve
 ## 8. Not yours to decide — raised with Nitoni separately
 
 Items listed here are not yours to act on; they may change the spec under you. **None is open at the moment.** Closed since the last revision: the boot behaviour (decided — §4.E), Render deployment (manual), and the architecture handoff: `docs/ExamPartner_Windows_SeatPool_Architecture_Handoff.md` (updated 27 September) already carries the fingerprint correction, and spec §0 now cites that file.
+
+## 9. Carried into Unit 3 — mandatory
+
+Recorded on 12 October 2026, when PR #38 (Unit 2) was approved for merge with this limitation known. **These are correctness requirements for Unit 3, not optional clean-up.**
+
+**R1. One authoritative 24-hour request-ID history.** Unit 2 keeps only the **latest** activation or restore `request_id` on the binding (`institution_seats.activation_request_id`), and ambiguity collection checks only the target ambiguity's own raising ID. So:
+- after a restore overwrites a binding's request ID, the earlier activation's ID drops out of view and a reuse of it is treated as new;
+- ambiguity collection can accept a `request_id` that was used within 24 hours by another binding or another ambiguity, including in another pool.
+
+Neither can consume a seat, issue a lease, alter an ambiguity, cross a school boundary or reveal another PC's state in Unit 2 — collection there only reports pending or expired. In Unit 3 it becomes correctness-critical, because collecting a **resolved** ambiguity restores or creates a binding and issues a lease.
+
+**Rule:** before any activation, refresh, or ambiguity collection performs or returns an idempotent outcome, the server must be able to tell whether that `request_id` has been used **anywhere** in the preceding 24 hours — including earlier activation and restore IDs that are no longer a binding's latest, and IDs used by ambiguities. The same logical request → replay its stored outcome. A different pool, body or operation → `409 request_id_reused`. Do **not** rely solely on `institution_seats.activation_request_id`. Propose the storage — for example a request log keyed by `request_id` — in the Unit 3 pre-code report. It is a sequential-misuse check: H4 still applies, and no global lock is to be added.
+
+**Required tests:**
+1. Ambiguity collection reusing a recent successful activation `request_id` from the **same** pool → `request_id_reused`.
+2. Ambiguity collection reusing a recent `request_id` from **another** pool → `request_id_reused`.
+3. Ambiguity collection reusing **another ambiguity's** `request_id` → `request_id_reused`.
+4. A genuinely new collection `request_id` from the raising PC → the same ambiguity outcome.
+5. Activate with R1, then restore with R2, then reuse R1 within 24 hours → replayed or refused according to R1's **original** operation, never treated as a new request.
+
+**R2. The ambiguity race test should fail every time when its guard is removed.** With the `last_ambiguity_at` lock removed, the Unit 2 race test failed 2 of 3 iterations in planning's re-run, because its barrier sits before `create_or_get_ambiguity()` rather than between that function's lookup and its insert. Tighten it so removing the lock fails deterministically, as test 4 does for the claim lock.
+
