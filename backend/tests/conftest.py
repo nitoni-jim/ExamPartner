@@ -176,3 +176,107 @@ def make_pool():
         return {"account_id": account_id, "pool_id": pool_id}
 
     return _make
+
+
+# ---------------------------------------------------------------------------
+# Licensing — hardware readings and signing keys (Unit 2)
+# ---------------------------------------------------------------------------
+
+def make_signals(
+    uuid="4C4C4544-0042-3510-8051-B4C04F4D3732",
+    serial="B5QMT32",
+    board_serial="/B5QMT32/CNFCW0012345/",
+    bios_serial=None,
+    disk="S4ELNX0N123456",
+    nic="B44506123456",
+    guid="1f0e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b",
+    collection_errors=None,
+    **overrides,
+):
+    """A contract §7.2 reading, raw as the client sends it.
+
+    Defaults to a strong, ordinary PC. Pass disk=None or nic=None to drop
+    that continuity signal; bios_serial defaults to the system serial, as on
+    most real PCs. Readings for continuity are constructed here rather than
+    taken from survey files, which do not record those fields (brief §4.G).
+    """
+    signals = {
+        "schema": 1,
+        "smbios_uuid": uuid,
+        "system_manufacturer": "Dell Inc.",
+        "system_model": "OptiPlex 3080",
+        "system_serial": serial,
+        "system_version": "",
+        "baseboard_manufacturer": "Dell Inc.",
+        "baseboard_product": "0RD3Y3",
+        "baseboard_serial": board_serial,
+        "baseboard_version": "A00",
+        "bios_manufacturer": "Dell Inc.",
+        "bios_version": "2.11.0",
+        "bios_serial": serial if bios_serial is None else bios_serial,
+        "bios_release_date": "2023-05-10T00:00:00",
+        "cpu_name": "Intel(R) Core(TM) i5-10500 CPU @ 3.10GHz",
+        "cpu_manufacturer": "GenuineIntel",
+        "cpu_processor_id": "BFEBFBFF000A0653",
+        "cpu_family": 205,
+        "cpu_cores": 6,
+        "cpu_logical": 12,
+        "windows_machine_guid": guid,
+        "total_physical_memory_bytes": 8441204736,
+        "disk_serials": [] if disk is None else [{
+            "index": 0, "model": "SAMSUNG MZVLB256HBHQ-000L7", "serial": disk,
+            "interface": "SCSI", "media_type": "Fixed hard disk media",
+            "pnp_device_id": "SCSI\\DISK&VEN_NVME&PROD_SAMSUNG_MZVLB256\\5&1A2B3C4D&0&000000",
+            "size_bytes": 256052966400, "is_system_disk": True,
+        }],
+        "mac_addresses": [] if nic is None else [{
+            "mac": ":".join(nic[i:i + 2] for i in range(0, 12, 2)), "permanent_address": nic,
+            "name": "Realtek PCIe GbE Family Controller",
+            "pnp_device_id": "PCI\\VEN_10EC&DEV_8168&SUBSYS_09A41028&REV_15\\01000000684CE00000",
+            "net_connection_id": "Ethernet",
+        }],
+        "collection_errors": collection_errors or [],
+    }
+    signals.update(overrides)
+    return signals
+
+
+def make_degenerate_signals(disk, nic=None, **overrides):
+    """An all-zeros-UUID, no-serial lab PC: identity quality 'degenerate'."""
+    return make_signals(
+        uuid="00000000-0000-0000-0000-000000000000",
+        serial="To Be Filled By O.E.M.",
+        board_serial="Default string",
+        disk=disk,
+        nic=nic,
+        **overrides,
+    )
+
+
+@pytest.fixture
+def licence_signing_key():
+    """Licensing configuration as a healthy startup leaves it.
+
+    A signing key generated in-process and installed as kid 1 — tests never
+    use a real key, and never the published TEST seed as the configured key
+    — and the client version gate validated from config (default 0.0.0).
+    Both are what the app's startup event does; tests that build a
+    TestClient without `with` skip that event, so this does it for them.
+    Yields the PUBLIC key map a verifier needs. Restores both afterwards.
+    """
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from services import licence_lease, licensing_service
+
+    previous_signing = dict(licence_lease._signing)
+    previous_gate = dict(licensing_service._client_gate)
+    key = Ed25519PrivateKey.generate()
+    licence_lease.use_signing_key(key, 1)
+    assert licensing_service.configure_client_gate(), "MIN_WINDOWS_APP_VERSION in the test environment is malformed"
+    try:
+        yield {1: key.public_key()}
+    finally:
+        licence_lease._signing.clear()
+        licence_lease._signing.update(previous_signing)
+        licensing_service._client_gate.clear()
+        licensing_service._client_gate.update(previous_gate)

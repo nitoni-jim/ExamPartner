@@ -81,6 +81,14 @@ Every index in `db.py` runs inside `try/except` — a savepoint on Postgres, a p
 
 Licensing is the exception to "fail at startup": this backend also serves the live Android app, so a licensing schema failure is caught by `init_db()`, logged at ERROR, recorded (`db.licensing_status()`, shown on `/health`), and **licensing closes while everything else starts**. The guarantee is then enforced where bindings are written: any path that creates a binding or changes a binding's `installation_id` calls `db.licensing_index_present(cur)` inside its own transaction and refuses with 503, as `claim_capacity()` does. Never gate on the startup flag alone.
 
+Two licensing writes are guarded by a **pool-row lock taken in code**, not by any index, so each has exactly one chokepoint function in `services/licensing_service.py`, and nothing may write around it:
+- **Capacity:** `claim_capacity()` is the only path that creates an active binding (`last_claim_at` is its lock).
+- **Ambiguities:** `create_or_get_ambiguity()` is the only path that creates a `licence_ambiguities` row (`last_ambiguity_at` is its lock) — activation now, and refresh-raised ambiguities in Unit 3 too. It is what makes two concurrent identical requests produce one ambiguity, not two.
+
+Both lock statements look like bookkeeping writes and are the whole guarantee. Their tests run on Postgres; SQLite would pass without them.
+
+**Lock order: pool before binding.** No transaction may hold a lock on a binding row and then take a lock on its pool row, or the reverse order in another transaction — the two can deadlock. Today they never meet: restore and lease issue lock only the binding; claims and ambiguity creation lock only the pool. If a path ever needs both (Unit 3's refresh that turns into an ambiguity is the first candidate), it takes the **pool first**.
+
 ### NULLs are distinct in unique indexes
 
 Both engines treat `NULL != NULL` for uniqueness, so a unique index over a nullable column does **not** deduplicate rows where that column is NULL. `paper_rules` learned this the hard way — see the comments on `ux_paper_rules_unique_row_v2` and the four-branch predicate in `upsert_paper_rule()`. If row identity involves a nullable column, the real guard is an explicit `IS NULL` branch in the lookup, not the index.
@@ -112,7 +120,7 @@ So `row["expires_at"] > datetime.now(timezone.utc)` works on Postgres and raises
 - `requirements.txt` is **production**. Render runs `pip install -r requirements.txt`. Anything added here ships to the live service.
 - `requirements-dev.txt` pulls in production via `-r requirements.txt` and adds `pytest`, `httpx` and `pyflakes`. `httpx` is pinned deliberately to the version `anthropic` already resolves, so local and production agree.
 - Pin exact versions, matching the existing style.
-- `cryptography` is **not currently a dependency**. Signing work needs it added to `requirements.txt`.
+- `cryptography` is a production dependency since licensing Unit 2 (lease signing), pinned in `requirements.txt`; it brings `cffi` and `pycparser` with it.
 
 ---
 
@@ -126,6 +134,8 @@ So `row["expires_at"] > datetime.now(timezone.utc)` works on Postgres and raises
 - `pg_database` — points `DATABASE_URL` at the local throwaway Postgres from `TEST_DATABASE_URL` (local hosts only; **fails, never skips**, when unset) and runs `init_db()`
 - `sqlite_database` — a fresh initialised SQLite file, with both `DB_PATH` bindings set
 - `make_pool` — factory for a licensing account plus seat pool on whichever engine is active
+- `licence_signing_key` — a lease signing key generated in-process and installed as kid 1; tests never use a real key, nor the contract's TEST seed as the configured key
+- `make_signals()` / `make_degenerate_signals()` — plain functions (import from `conftest`) building a raw contract §7.2 hardware reading
 
 Use `other_auth_headers` for any ownership or isolation test. Proving user A cannot read user B's data needs two real identities; one identity plus a missing header only proves that unauthenticated access is refused.
 
