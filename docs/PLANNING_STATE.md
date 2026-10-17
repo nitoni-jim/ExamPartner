@@ -1,7 +1,7 @@
 # Planning state — ExamPartner Windows seat-pool licensing
 
-**Handover from the planning window of 5–12 October 2026.** Read this first in a new planning window, then `docs/WORKING_MODEL.md`.
-**State as of:** 12 October 2026 · `main` at `bdaff67` (PR #38 merged).
+**Handover from the planning windows of 5–17 October 2026.** Read this first in a new planning window, then `docs/WORKING_MODEL.md`.
+**State as of:** 17 October 2026 · `main` at `d60d6ff`. This revision replaces the 12 October version.
 
 ---
 
@@ -9,24 +9,23 @@
 
 | Area | State |
 |---|---|
-| **Backend Unit 1** — time helpers, schema, owner check, `claim_capacity()` | Merged as PR #37 (`3a8e313`). Deployed; `/health` showed `"licensing": "ready"`. |
-| **Backend Unit 2** — fingerprint rules, activation session, activate and restore, lease signing, error envelope, pilot setup endpoints | Merged as PR #38 (`bdaff67`). 372 tests passing, 0 skipped. **Production deploy pending** (§2). |
-| **Backend Unit 3** — refresh, collecting resolved ambiguities, release, owner reads, support endpoints, test clock | Not briefed. **Must include brief §9** (mandatory request-ID history rule, and a tightened race test). |
+| **Backend Unit 1** — time helpers, schema, owner check, `claim_capacity()` | Merged as PR #37 (`3a8e313`). Deployed. |
+| **Backend Unit 2** — fingerprint rules, activation session, activate and restore, lease signing, error envelope, pilot setup endpoints | Merged as PR #38 (`bdaff67`). 372 tests passing, 0 skipped. **Deployed to production** (confirmed by Nitoni, 17 October): signing key configured as kid 1, `/health` returns `"licensing": "ready"`. |
+| **Android smoke test after the Unit 2 deploy** | Passed: the live Android app loads questions from the production backend. Auth, payment and device registration were **not** re-tested as part of this. |
+| **Backend Unit 3** — refresh, collecting resolved ambiguities, release, owner reads, support endpoints, test clock | Not briefed. **Must include brief §9** (mandatory request-ID history rule, and a tightened race test). No change from survey finding S1 (§9.3). |
 | **API contract** | `docs/LICENCE_API_CONTRACT.md` v1, 8 October 2026; §7.3 clarified 10 October. Signed-lease test vectors in §6.4. |
-| **WinUI client** | Not started. First brief: `docs/LOCAL_AGENT_BRIEF.md` (12 October) — L0 collector v2, L1 licence core, L2 activation UI, packaging decision. |
+| **WinUI client** | Not started. Brief: `docs/LOCAL_AGENT_BRIEF.md`, revised 17 October with the survey findings — L0 collector v2, L1 licence core, L2 activation UI, packaging decision. |
 | **Survey collector** | v1 in `tools/fingerprint-survey/`. Records the identity signals but not the continuity fields; v2 is local-agent work unit L0. |
-| **Hardware survey** | Not run yet. Thresholds stay provisional until the school survey (spec §13 step 12). |
+| **Hardware survey** | **Preliminary v1 run done** on five of Nitoni's own PCs, 15–16 October (§9). It is the spec §7.4 first pass, not the school survey. Thresholds stay provisional until the school survey (spec §13 step 12). |
+| **Internal test school** | Not created yet (§2). |
 
 ## 2. Waiting on Nitoni right now
 
-1. **Deploy Unit 2.**
-   - Generate the production Ed25519 key locally, outside the repository.
-   - Set `LICENCE_SIGNING_KEY` and `LICENCE_SIGNING_KID=1` on Render. Leave `MIN_WINDOWS_APP_VERSION` **absent** (an empty value closes licensing). Keep `ALLOW_TEST_CLOCK` absent.
-   - Turn off or clear Windows clipboard history around the paste.
-   - Deploy manually, and confirm `/health` shows `"licensing": "ready"`. If a log line starts `LICENSING UNAVAILABLE`, bring that line to planning — it never contains the key.
-2. **Create the internal test school** for client development (§6 has the commands).
+1. **Upload this file and the revised `docs/LOCAL_AGENT_BRIEF.md`** in one commit, replacing the 12 October versions (upload over them; do not delete first).
+2. **Create the internal test school** for client development (§6 has the commands). The local agent's L1 needs it.
 3. **Decide the 10 November trial's scope** beyond activation and offline licence checking.
 4. **Start the local agent** on `docs/LOCAL_AGENT_BRIEF.md`.
+5. **Keep the five v1 survey files** privately, outside the repository. L0 compares v2 output against them machine by machine.
 
 ## 3. Documents and what each is for
 
@@ -51,6 +50,8 @@ The project attached to the planning chat holds copies of the main docs, kept in
   - It runs under a **15-minute activation-only token**, obtained with owner or admin credentials — not `/auth/login`. It registers no device. Owner and admin status are re-checked at activation.
   - The **lease** is Ed25519 over the ASCII payload segment, with `kid` 0 reserved for the published TEST key. A missing, malformed or TEST signing key → licensing unavailable.
   - Matching is **signal by signal**, never by hash. Identity *quality* (of a reading) and match *strength* (against a binding) are separate concepts (brief F1).
+  - Signals are compared by **exact equality after normalisation** — no prefix or similarity matching. An identifier carried by two or more active bindings in a pool is unusable in that pool (F1).
+  - A PC is **restored** only on exactly one strong match (same usable UUID *and* a shared usable serial). Weak matches go to admin review as an ambiguity, never to an automatic restore.
   - A **degenerate or weak PC** goes to admin review only if its system disk or onboard network card matches an active binding (F2). `MachineGuid` is **not** an activation signal (H1).
 - **Retries.** Every state-changing request carries a client `request_id`. Replays return the identical result. Ambiguity creation is race-safe through its own pool-row lock (H2).
 - **Lock order** (H3): never hold a binding lock and then take a pool lock; if a path needs both, take the pool first.
@@ -65,7 +66,7 @@ The project attached to the planning chat holds copies of the main docs, kept in
 
 - **The 10 November trial's scope** beyond activation and offline licence checking (Nitoni).
 - **Unit 3 brief** — planning's next backend task. It must carry brief §9 R1 (one authoritative 24-hour request-ID history, five required tests) and R2 (make the ambiguity race test fail deterministically when its lock is removed). Unit 3's refresh is the first code that could take both a binding and a pool lock, so H3 applies.
-- **Collector v2 → school survey → freeze thresholds**, before licensing is called complete.
+- **Collector v2 → rerun on the five PCs → school survey → freeze thresholds**, before licensing is called complete. The freeze must also answer survey question S1 (§9.3).
 
 ## 6. Creating the internal test school (Nitoni)
 
@@ -90,7 +91,7 @@ Invoke-RestMethod -Method Patch -Uri "$Base/institutions/accounts/$aid/subscript
 "account $aid  pool $($pool.seat_pool.id)"
 ```
 
-Logging in **without** a `device_id` registers no device. The response shapes (`account.id`, `seat_pool.id`) are the merged Unit 2 code's, checked end to end by planning on 12 October. Retire the test data before the real pilot school is created.
+Logging in **without** a `device_id` registers no device. The response shapes (`account.id`, `seat_pool.id`) are the merged Unit 2 code's, checked end to end by planning on 12 October. Five seats fit the five survey PCs exactly (brief L1). Retire the test data before the real pilot school is created.
 
 ## 7. How planning has worked — keep doing this
 
@@ -100,8 +101,12 @@ Logging in **without** a `device_id` registers no device. The response shapes (`
   - clones the branch, reruns the full suite, and repeats spec test 6 (the claim lock removed by hand);
   - removes race guards by hand and checks that their tests fail;
   - runs its own end-to-end script through the real app, separate from the PR's tests.
-- **ChatGPT cross-reviews in parallel** (Nitoni relays it). Accept its points on the merits; say plainly where planning was wrong. Unit 2 shipped two corrections it found: ambiguity collection identity, and the fail-closed version gate.
+- **ChatGPT cross-reviews in parallel** (Nitoni relays it). Accept its points on the merits; say plainly where planning was wrong. Unit 2 shipped two corrections it found: ambiguity collection identity, and the fail-closed version gate. On the survey, its repo check confirmed the exact-matching and Wi-Fi findings. Its review also corrected planning three times on S1:
+- the wording, since both machines also have a distinct baseboard serial;
+- the Dell diagnostic, which must verify the serial, not just the marker;
+- the freeze question, which must be scoped to machines whose UUID encodes the serial.
 - **Uploading.** Nitoni uploads docs through the GitHub web UI. Uploading a file of the same name replaces it in one commit, so never delete first. Nothing is uploaded into `backend/` while a backend branch is open.
+- **Survey files** reach planning from Nitoni directly, never through the repository. Planning's documents record aggregate findings and machine labels only — no serial, MAC, UUID or MachineGuid.
 - **Planning's environment.** Clone read-only with `git clone --depth 1 https://github.com/nitoni-jim/exampartner` (public repository). Local Postgres 16 is on `127.0.0.1:5433/ep_test`, with Python 3.11 in `/opt/ep-venv`. A container reset can need `ep-pg-start`, or the setup script rerun.
 
 ## 8. Known small issues (not blocking)
@@ -109,3 +114,56 @@ Logging in **without** a `device_id` registers no device. The response shapes (`
 - The SQLite startup warning `duplicate column name: revoke_reason` predates licensing and is harmless.
 - Unit 2's ambiguity race test fails 2 of 3 times, not every time, when its lock is removed — brief §9 R2.
 - The repository is public. Survey output (serial numbers, MAC addresses) must never be committed.
+- `fingerprint_service.py`'s header says the thresholds were set from two machines. That is still true of the code; the five-PC survey changed no threshold.
+
+## 9. Preliminary survey — v1 collector, five PCs, 15–16 October
+
+### 9.1 The machines
+
+Labels only. Model names identify no machine.
+
+| Label | Machine | Windows | Role in later tests |
+|---|---|---|---|
+| `PERSONAL-PC-01` | Dell Latitude 5410 laptop | 11 Pro 25H2 | UUID built by Dell's scheme from the service tag (S1) |
+| `OFFICE-PC-01` | HP 250 G10 laptop | 11 Pro 25H2 | UUID is the system serial in ASCII (S1); its only PCI adapter is Wi-Fi; USB Ethernet dongle attached |
+| `OFFICE-PC-02` | HP EliteDesk 800 G5 tower | **10 Pro 1903** (build 18362) | Oldest OS — compatibility and activation test machine; USB Wi-Fi card attached |
+| `OFFICE-PC-03` | HP EliteDesk 800 G4 DM | 10 Pro 20H2 | Same-model control pair with PC-04 |
+| `OFFICE-PC-04` | HP EliteDesk 800 G4 DM | 10 Pro 22H2 | Same-model control pair; current Wi-Fi address is randomised |
+
+### 9.2 What it showed
+
+Verified by reading the five files and, for the server's behaviour, `backend/services/fingerprint_service.py` and `licensing_service.py` at `d60d6ff`:
+
+- **Collection.** All five complete, no class failures, every UUID usable.
+- **Uniqueness.** No UUID, system serial, baseboard serial or MachineGuid appears on two machines.
+- **BIOS serial equals system serial on all five.** The server already counts serials as a set, so it counts that value once. v1's `strong_signals_present: 4` overstates it; L0 fixes the diagnostic.
+- **Same-batch PCs look nearly alike.** PC-03 and PC-04 share model, board product and CPU ID (PC-02 shares the CPU ID too). Their baseboard serials and onboard Ethernet addresses differ only in the last characters. The server matches on exact normalised equality, so they stay apart. L1 confirms it live.
+- **Network adapters.** Two of five have USB adapters. PC-01's only PCI adapter is Wi-Fi. PC-04's current Wi-Fi address has the locally-administered bit set. The server takes onboard adapters by the `PCI\` PnP prefix, prefers `permanent_address`, rejects locally administered addresses, and does **not** require Ethernet — so PC-01 has a continuity adapter. v1 cannot exercise any of this; v2 can.
+- **Disk serials.** The two NVMe disks report serials grouped by underscores and ending in a full stop. The server only trims and upper-cases, so the value must reach it exactly as Windows reports it. L0 and L1 check that. *Believed, not verified:* a storage-driver change can change how the same NVMe disk reports its serial; watch for it.
+- **Old Windows.** Three of five run Windows 10:
+  - PC-02 (1903) and PC-03 (20H2) are on versions whose servicing ended years ago.
+  - PC-04 runs 22H2, whose normal support ended on 14 October 2025 unless the machine is covered by Extended Security Updates.
+  - School labs are likely to be similar or older.
+  - This does not decide ExamPartner's OS floor. Microsoft's support status and whether the client runs are separate questions; L1 tests the runtime, installer and TLS on PC-02.
+
+### 9.3 S1 — a UUID built from a serial is not independent evidence
+
+**Finding.** On two of the five machines the SMBIOS UUID is derived from the system serial:
+- **OFFICE-PC-01 (HP 250 G10):** the UUID's 16 bytes, in Windows' little-endian field order, are the system serial in ASCII plus padding. Verified by decoding.
+- **PERSONAL-PC-01 (Dell):** the UUID begins with Dell's marker and encodes the service tag, which is also the system serial. Verified by decoding: seven of its bytes, with the top bit cleared, are exactly the service tag's seven characters. Changing one character of the serial makes the test fail. Dell's encoding is not a plain ASCII copy. The byte positions come from this one machine, so collector v2 checks the characters, not their order (brief L0).
+
+Both machines also have a **distinct baseboard serial**, so neither rests on a single value (the Dell's baseboard serial carries the service tag plus a board-specific part). But where the UUID is built from the system serial, "same UUID plus shared serial" can be one fact counted twice.
+
+**Where it matters.** Restore needs exactly one strong match: same usable UUID and a shared usable serial. Suppose two *distinct* PCs on a derived-UUID platform carry the same **non-placeholder** system serial. The second PC strong-matches the first and restores onto its binding, so two PCs share one seat silently. The pool rule that disqualifies shared identifiers does not catch this: a restore never creates the second binding that would bring the count to two.
+
+- A **placeholder** serial is normalised away, leaving no shared serial — at most a weak match, so admin review. That case is safe.
+- The cost of the unsafe case is **seat leakage**, not lockout. No school loses access.
+
+**Ruling.**
+1. **No backend change now** — not in Unit 2, not in Unit 3. The evidence is two dissimilar machines with unique serials; the risk needs duplicated serials across distinct machines, which only a lab survey can show.
+2. **L0 records it.** Collector v2 adds `uuid_encodes_serial` and an independent-signal count (brief L0).
+3. **The threshold freeze (spec §13 step 12) must answer S1:** among machines whose `uuid_encodes_serial` is **not** `"no"`, does the same non-placeholder system serial occur on two distinct physical PCs?
+   - If **none**: keep the rule and record the evidence.
+   - If **any**: the two-signal strong rule is shown unsafe on that platform. Change it so a serial the UUID encodes cannot be the second signal. The candidate is to require the baseboard serial or the system disk as the second signal on those machines; the decision is made then, with the data.
+   - **Out of scope for S1:** a serial shared by machines whose UUIDs are independent and different. Those machines cannot strong-match, because sharing a serial without the UUID is only a weak match and goes to admin review. Record such a case as survey evidence, not as this failure.
+4. When the spec is next amended, its §7.3 survey questions gain S1.
