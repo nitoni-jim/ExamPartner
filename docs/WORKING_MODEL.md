@@ -26,6 +26,8 @@ Shared documents, all in the repo:
 | `docs/WORKING_MODEL.md` | This document | Planning |
 | `docs/CLOUD_SESSION_BRIEF.md` | Current backend work unit | Planning |
 | `docs/LICENCE_API_CONTRACT.md` | Request/response shapes both sides build against | Planning — version 1, 8 October 2026 |
+| `docs/LOCAL_AGENT_BRIEF.md` | Current WinUI client work units | Planning |
+| `docs/PLANNING_STATE.md` | Handover: where everything stands, what is open, how planning works | Planning |
 | `backend/CLAUDE.md` | Backend conventions | Planning; implementers may propose changes |
 
 
@@ -97,7 +99,7 @@ Reports findings up to the planning surface. Does not change the spec itself.
 
 ## 3. Local agent — WinUI client
 
-**Owns `windows/` on Nitoni's own machine. Nothing else.**
+**Owns `windows/` on Nitoni's own machine — and `tools/fingerprint-survey/` for work unit L0 (collector v2) only. Nothing else.** Current work: `docs/LOCAL_AGENT_BRIEF.md`.
 
 Everything that needs real Windows lives here, because a Linux container cannot do any of it:
 
@@ -169,4 +171,4 @@ Two ordering rules that matter:
 **Open, and Nitoni's to decide:**
 
 - The MVP scope for 10 November — which client features beyond activation and offline licence checking the trial needs. (The vehicle is decided: the native WinUI client.)
-- When the survey collector is revised to record the continuity fields (`is_system_disk`, `pnp_device_id`, `permanent_address`) the contract expects. It must happen before the school survey and the client phase.
+- When collector v2 (local-agent unit L0, which records the continuity fields the contract expects) goes to the pilot school's lab for the survey that freezes the thresholds.
