@@ -1,7 +1,7 @@
 # Planning state — ExamPartner Windows seat-pool licensing
 
-**Handover from the planning windows of 5–17 October 2026.** Read this first in a new planning window, then `docs/WORKING_MODEL.md`.
-**State as of:** 17 October 2026 · `main` at `d60d6ff`. This revision replaces the 12 October version.
+**Handover from the planning windows of 5–19 October 2026.** Read this first in a new planning window, then `docs/WORKING_MODEL.md`.
+**State as of:** 19 October 2026 · `main` at `50df3c0`. This revision replaces the 17 October version. It changes only which PCs are available for future testing (§9.1); the survey findings are unchanged.
 
 ---
 
@@ -14,18 +14,18 @@
 | **Android smoke test after the Unit 2 deploy** | Passed: the live Android app loads questions from the production backend. Auth, payment and device registration were **not** re-tested as part of this. |
 | **Backend Unit 3** — refresh, collecting resolved ambiguities, release, owner reads, support endpoints, test clock | Not briefed. **Must include brief §9** (mandatory request-ID history rule, and a tightened race test). No change from survey finding S1 (§9.3). |
 | **API contract** | `docs/LICENCE_API_CONTRACT.md` v1, 8 October 2026; §7.3 clarified 10 October. Signed-lease test vectors in §6.4. |
-| **WinUI client** | Not started. Brief: `docs/LOCAL_AGENT_BRIEF.md`, revised 17 October with the survey findings — L0 collector v2, L1 licence core, L2 activation UI, packaging decision. |
+| **WinUI client** | Not started. Brief: `docs/LOCAL_AGENT_BRIEF.md`, revision 3 (19 October) — L0 collector v2, L1 licence core, L2 activation UI, packaging decision. L0 and L1 must pass on the two guaranteed PCs; the other three are opportunistic. |
 | **Survey collector** | v1 in `tools/fingerprint-survey/`. Records the identity signals but not the continuity fields; v2 is local-agent work unit L0. |
 | **Hardware survey** | **Preliminary v1 run done** on five of Nitoni's own PCs, 15–16 October (§9). It is the spec §7.4 first pass, not the school survey. Thresholds stay provisional until the school survey (spec §13 step 12). |
 | **Internal test school** | Not created yet (§2). |
 
 ## 2. Waiting on Nitoni right now
 
-1. **Upload this file and the revised `docs/LOCAL_AGENT_BRIEF.md`** in one commit, replacing the 12 October versions (upload over them; do not delete first).
+1. **Upload this file and the revised `docs/LOCAL_AGENT_BRIEF.md`** in one commit, replacing the 17 October versions (upload over them; do not delete first).
 2. **Create the internal test school** for client development (§6 has the commands). The local agent's L1 needs it.
 3. **Decide the 10 November trial's scope** beyond activation and offline licence checking.
 4. **Start the local agent** on `docs/LOCAL_AGENT_BRIEF.md`.
-5. **Keep the five v1 survey files** privately, outside the repository. L0 compares v2 output against them machine by machine.
+5. **Keep the five v1 survey files** privately, outside the repository. L0 compares v2 output against them machine by machine — on the two guaranteed PCs, and on the others whenever you have access.
 
 ## 3. Documents and what each is for
 
@@ -66,7 +66,8 @@ The project attached to the planning chat holds copies of the main docs, kept in
 
 - **The 10 November trial's scope** beyond activation and offline licence checking (Nitoni).
 - **Unit 3 brief** — planning's next backend task. It must carry brief §9 R1 (one authoritative 24-hour request-ID history, five required tests) and R2 (make the ambiguity race test fail deterministically when its lock is removed). Unit 3's refresh is the first code that could take both a binding and a pool lock, so H3 applies.
-- **Collector v2 → rerun on the five PCs → school survey → freeze thresholds**, before licensing is called complete. The freeze must also answer survey question S1 (§9.3).
+- **Collector v2 → rerun on the two guaranteed PCs (others when available) → school survey → freeze thresholds**, before licensing is called complete. The freeze must also answer survey question S1 (§9.3).
+- **A live activation on Windows 10 1903 must happen before any school install.** OFFICE-PC-02 is no longer guaranteed, so this is not part of L1's "done". If PC-02 is not reached during L1, test on PC-02 or another 1903-or-older PC before the 10 November trial. If none is available, the pilot school's own PCs are the first test, and the OS-floor finding in the L1 report becomes the only evidence.
 
 ## 6. Creating the internal test school (Nitoni)
 
@@ -91,7 +92,7 @@ Invoke-RestMethod -Method Patch -Uri "$Base/institutions/accounts/$aid/subscript
 "account $aid  pool $($pool.seat_pool.id)"
 ```
 
-Logging in **without** a `device_id` registers no device. The response shapes (`account.id`, `seat_pool.id`) are the merged Unit 2 code's, checked end to end by planning on 12 October. Five seats fit the five survey PCs exactly (brief L1). Retire the test data before the real pilot school is created.
+Logging in **without** a `device_id` registers no device. The response shapes (`account.id`, `seat_pool.id`) are the merged Unit 2 code's, checked end to end by planning on 12 October. Keep five seats: room for both guaranteed PCs and the three opportunistic ones (brief §4.1). Retire the test data before the real pilot school is created.
 
 ## 7. How planning has worked — keep doing this
 
@@ -122,13 +123,15 @@ Logging in **without** a `device_id` registers no device. The response shapes (`
 
 Labels only. Model names identify no machine.
 
-| Label | Machine | Windows | Role in later tests |
-|---|---|---|---|
-| `PERSONAL-PC-01` | Dell Latitude 5410 laptop | 11 Pro 25H2 | UUID built by Dell's scheme from the service tag (S1) |
-| `OFFICE-PC-01` | HP 250 G10 laptop | 11 Pro 25H2 | UUID is the system serial in ASCII (S1); its only PCI adapter is Wi-Fi; USB Ethernet dongle attached |
-| `OFFICE-PC-02` | HP EliteDesk 800 G5 tower | **10 Pro 1903** (build 18362) | Oldest OS — compatibility and activation test machine; USB Wi-Fi card attached |
-| `OFFICE-PC-03` | HP EliteDesk 800 G4 DM | 10 Pro 20H2 | Same-model control pair with PC-04 |
-| `OFFICE-PC-04` | HP EliteDesk 800 G4 DM | 10 Pro 22H2 | Same-model control pair; current Wi-Fi address is randomised |
+All five were available for the v1 run. For later testing, only **PERSONAL-PC-01 and OFFICE-PC-01 are guaranteed** (Nitoni, 19 October). The other three are tested when access allows, and no unit's completion depends on them.
+
+| Label | Machine | Windows | Later testing | Role in later tests |
+|---|---|---|---|---|
+| `PERSONAL-PC-01` | Dell Latitude 5410 laptop | 11 Pro 25H2 | Guaranteed | UUID built by Dell's scheme from the service tag (S1) |
+| `OFFICE-PC-01` | HP 250 G10 laptop | 11 Pro 25H2 | Guaranteed | UUID is the system serial in ASCII (S1); its only PCI adapter is Wi-Fi; USB Ethernet dongle attached |
+| `OFFICE-PC-02` | HP EliteDesk 800 G5 tower | **10 Pro 1903** (build 18362) | Opportunistic | Oldest OS — compatibility and activation test machine; USB Wi-Fi card attached |
+| `OFFICE-PC-03` | HP EliteDesk 800 G4 DM | 10 Pro 20H2 | Opportunistic | Same-model control pair with PC-04 |
+| `OFFICE-PC-04` | HP EliteDesk 800 G4 DM | 10 Pro 22H2 | Opportunistic | Same-model control pair; current Wi-Fi address is randomised |
 
 ### 9.2 What it showed
 
@@ -137,14 +140,15 @@ Verified by reading the five files and, for the server's behaviour, `backend/ser
 - **Collection.** All five complete, no class failures, every UUID usable.
 - **Uniqueness.** No UUID, system serial, baseboard serial or MachineGuid appears on two machines.
 - **BIOS serial equals system serial on all five.** The server already counts serials as a set, so it counts that value once. v1's `strong_signals_present: 4` overstates it; L0 fixes the diagnostic.
-- **Same-batch PCs look nearly alike.** PC-03 and PC-04 share model, board product and CPU ID (PC-02 shares the CPU ID too). Their baseboard serials and onboard Ethernet addresses differ only in the last characters. The server matches on exact normalised equality, so they stay apart. L1 confirms it live.
+- **Same-batch PCs look nearly alike.** PC-03 and PC-04 share model, board product and CPU ID (PC-02 shares the CPU ID too). Their baseboard serials and onboard Ethernet addresses differ only in the last characters. The server matches on exact normalised equality, so they stay apart. **Verified on 19 October**: planning replayed their v1 identity readings through `fingerprint_service` at `50df3c0`. They come out as `mismatch` in both directions, whether the pool holds one of them or both, and each is rated `strong`. A live two-seat activation in L1 confirms this when the pair is available; it is no longer required.
 - **Network adapters.** Two of five have USB adapters. PC-01's only PCI adapter is Wi-Fi. PC-04's current Wi-Fi address has the locally-administered bit set. The server takes onboard adapters by the `PCI\` PnP prefix, prefers `permanent_address`, rejects locally administered addresses, and does **not** require Ethernet — so PC-01 has a continuity adapter. v1 cannot exercise any of this; v2 can.
 - **Disk serials.** The two NVMe disks report serials grouped by underscores and ending in a full stop. The server only trims and upper-cases, so the value must reach it exactly as Windows reports it. L0 and L1 check that. *Believed, not verified:* a storage-driver change can change how the same NVMe disk reports its serial; watch for it.
 - **Old Windows.** Three of five run Windows 10:
   - PC-02 (1903) and PC-03 (20H2) are on versions whose servicing ended years ago.
   - PC-04 runs 22H2, whose normal support ended on 14 October 2025 unless the machine is covered by Extended Security Updates.
   - School labs are likely to be similar or older.
-  - This does not decide ExamPartner's OS floor. Microsoft's support status and whether the client runs are separate questions; L1 tests the runtime, installer and TLS on PC-02.
+  - This does not decide ExamPartner's OS floor. Microsoft's support status and whether the client runs are separate questions.
+  - The L1 report checks the OS floor by reading, on any machine. A live test of the runtime, installer and TLS on 1903 happens on PC-02 if it is available during L1; otherwise it stays the open item in §5, to close before any school install.
 
 ### 9.3 S1 — a UUID built from a serial is not independent evidence
 

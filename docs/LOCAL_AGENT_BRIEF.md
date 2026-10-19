@@ -2,7 +2,7 @@
 
 **For:** the local agent working on Nitoni's own Windows machine (`docs/WORKING_MODEL.md` §0.5 and §3)
 **Owner:** Nitoni (solo developer; evenings and weekends)
-**Date:** 17 October 2026 · **Status:** revision 2 — adds the five test PCs (§4.1) and the preliminary-survey checks to L0 and L1. Replaces the 12 October brief.
+**Date:** 19 October 2026 · **Status:** revision 3 — only two test PCs are guaranteed (§4.1). L0 and L1 completion depends on those two; the other three are tested when available. Replaces the 17 October brief.
 
 Read this first, then `docs/WORKING_MODEL.md`, then `docs/LICENCE_API_CONTRACT.md` in full. The contract is the only description of the server you may build against. Where this brief and the contract disagree on a wire detail, the contract wins; report the disagreement.
 
@@ -44,17 +44,19 @@ ExamPartner is a Nigerian WAEC/NECO/JAMB exam-preparation platform. Its Android 
 
 ### 4.1 The five test PCs
 
-Nitoni ran the v1 collector on these five machines on 15–16 October (`docs/PLANNING_STATE.md` §9). They are the test set for L0 and L1. Nitoni holds their v1 survey files privately; they never enter the repository.
+Nitoni ran the v1 collector on these five machines on 15–16 October (`docs/PLANNING_STATE.md` §9). Nitoni holds their v1 survey files privately; they never enter the repository.
 
-| Label | Machine | Windows | What it tests |
-|---|---|---|---|
-| `PERSONAL-PC-01` | Dell Latitude 5410 laptop | 11 Pro 25H2 | A UUID built by Dell's scheme from the service tag |
-| `OFFICE-PC-01` | HP 250 G10 laptop | 11 Pro 25H2 | A UUID that is the system serial in ASCII. Its only PCI network adapter is Wi-Fi; a USB Ethernet dongle is attached. An NVMe serial ending in a full stop. |
-| `OFFICE-PC-02` | HP EliteDesk 800 G5 tower | **10 Pro 1903** (build 18362) | **The oldest OS** — collector, client runtime, installer and TLS to Render. A USB Wi-Fi card is attached. |
-| `OFFICE-PC-03` | HP EliteDesk 800 G4 DM | 10 Pro 20H2 | Same-model control pair with PC-04: identical model, board and CPU ID; serials and network addresses differ only in their last characters |
-| `OFFICE-PC-04` | HP EliteDesk 800 G4 DM | 10 Pro 22H2 | The other half of the pair. Its current Wi-Fi address is randomised. |
+Only **two are guaranteed** for repeat testing. L0 and L1 are complete when they pass on those two. The other three are **opportunistic**: when Nitoni has access, rerun collector v2 and activation on them and report the results; when he does not, the unit is not blocked.
 
-If a machine is unavailable, say so in your report; do not substitute another one silently.
+| Label | Machine | Windows | Availability | What it tests |
+|---|---|---|---|---|
+| `PERSONAL-PC-01` | Dell Latitude 5410 laptop | 11 Pro 25H2 | **Guaranteed** | A UUID built by Dell's scheme from the service tag. An NVMe serial ending in a full stop. |
+| `OFFICE-PC-01` | HP 250 G10 laptop | 11 Pro 25H2 | **Guaranteed** | A UUID that is the system serial in ASCII. Its only PCI network adapter is Wi-Fi; a USB Ethernet dongle is attached. An NVMe serial ending in a full stop. |
+| `OFFICE-PC-02` | HP EliteDesk 800 G5 tower | **10 Pro 1903** (build 18362) | Opportunistic | **The oldest OS** — collector, client runtime, installer and TLS to Render. A USB Wi-Fi card is attached. |
+| `OFFICE-PC-03` | HP EliteDesk 800 G4 DM | 10 Pro 20H2 | Opportunistic | Same-model control pair with PC-04: identical model, board and CPU ID; serials and network addresses differ only in their last characters |
+| `OFFICE-PC-04` | HP EliteDesk 800 G4 DM | 10 Pro 22H2 | Opportunistic | The other half of the pair. Its current Wi-Fi address is randomised. |
+
+In every report, list which opportunistic PCs you tested and which you could not reach. Do not substitute another machine silently.
 
 ## 5. Work units
 
@@ -79,17 +81,25 @@ The current collector records the identity signals but **not** the continuity fi
 - **Keep it read-only, offline and runnable without administrator rights** — test as a standard user.
 - **Keep `Clean-Value`** for the survey's own diagnostics only. The raw values must also be recorded, so the server's normaliser can be checked against them.
 
-**Test it on all five PCs in §4.1**, as a standard user, and **from a USB stick** on at least two of them. The stick must appear in the disk list with `is_system_disk: false` and must not be chosen as the system disk. On each PC, check:
+**Mandatory tests — both guaranteed PCs** (PERSONAL-PC-01 and OFFICE-PC-01), as a standard user, each also run **from a USB stick**. The stick must appear in the disk list with `is_system_disk: false` and must not be chosen as the system disk. On each, check:
 
 - **v1 → v2 agreement.** Every value v1 recorded is **identical, character for character**, in v2's output for the same machine — including the NVMe disk serials with their underscores and trailing full stop. Ignore only `collected_at_utc`, `schema_version` and the `diagnostics` that this unit changes. Any difference is a finding for planning, not something to fix in the collector.
 - **Exactly one** disk has `is_system_disk: true`.
 - **Network adapters:**
-  - USB adapters (PC-01's Ethernet dongle, PC-02's Wi-Fi card) are recorded, with a PnP ID that does **not** begin `PCI\`.
-  - PC-01's Wi-Fi adapter **does** begin `PCI\`.
-  - PC-04's Wi-Fi `permanent_address` is recorded, and is not the randomised current address.
+  - PC-01's USB Ethernet dongle is recorded, with a PnP ID that does **not** begin `PCI\`.
+  - PC-01's Wi-Fi adapter **does** begin `PCI\`, and its `permanent_address` is recorded.
   - Bluetooth entries, if recorded, do not begin `PCI\`.
-- **`uuid_encodes_serial`** is `"ascii"` on OFFICE-PC-01, `"dell_scheme"` on PERSONAL-PC-01, and `"no"` on PC-02, PC-03 and PC-04.
-- **PC-02** (Windows 10 1903, PowerShell 5.1) runs the collector with no errors, including `MSFT_NetAdapter`.
+- **`uuid_encodes_serial`** is `"ascii"` on OFFICE-PC-01 and `"dell_scheme"` on PERSONAL-PC-01.
+- **Synthetic test of the `"no"` value.** Neither guaranteed PC gives `"no"`, so test the classifier as a function. Feed it made-up UUID and serial pairs, never real ones:
+  - an independent UUID → `"no"`;
+  - a UUID built from a made-up serial's ASCII → `"ascii"`;
+  - a Dell-marker UUID whose characters don't match the serial → `"dell_marker_unverified"`;
+  - a missing serial → `null`.
+
+**Opportunistic tests — when Nitoni has access.** Run the same checks, plus:
+- **OFFICE-PC-02:** the USB Wi-Fi card's PnP ID does not begin `PCI\`, and the collector runs with no errors on Windows 10 1903 and PowerShell 5.1, including `MSFT_NetAdapter`.
+- **OFFICE-PC-04:** its Wi-Fi `permanent_address` is recorded, and is not the randomised current address.
+- **PC-02, PC-03 and PC-04:** `uuid_encodes_serial` is `"no"`.
 
 **Survey output is private.** Never commit JSON or CSV output; Nitoni sends the files to planning directly. Your L0 report and PR give results **per machine label as pass/fail**, with no identifiers.
 
@@ -118,17 +128,19 @@ A .NET class library inside `windows/`, plus a console harness. It contains:
 
 **Exact preservation of raw values.** The server only trims and upper-cases, so a string altered anywhere on the client never matches. Unit-test it: a **synthetic** NVMe-style serial (made up — underscore-grouped hex ending in a full stop), plus values with leading or trailing spaces, must reach the request body unchanged. What must be unchanged is the string the server decodes from the JSON, not the escaped bytes on the wire. On each real PC, every value in the harness's signals file must equal the collector v2 value for the same key.
 
-**Done means:**
+**Done means** — all of these, on the two guaranteed PCs:
 - the §6.4 vectors pass;
 - the clock rule is unit-tested with an injected clock;
-- all **five §4.1 PCs** are activated against production, and each lease verifies with the kid 1 key. In particular:
-  - **PC-03 and PC-04** each get their own seat (`activated`) — neither restores onto the other's binding, and neither raises an ambiguity;
-  - **PC-02** activates on Windows 10 1903, over TLS to Render;
-  - **PC-01** activates with its USB dongle present in `mac_addresses`;
-- a second run on a PC gives `restored`, or a replay — not a second seat;
+- **PERSONAL-PC-01 and OFFICE-PC-01** are both activated against production, each gets its own seat, and each lease verifies with the kid 1 key;
+- **OFFICE-PC-01** activates with its USB dongle present in `mac_addresses`;
+- a second run on each gives `restored`, or a replay — not a second seat;
 - each PC's harness signals file matches its collector v2 output.
 
-The five PCs fill the five-seat test pool exactly. Do not activate any other machine without asking Nitoni.
+**Opportunistic, when Nitoni has access — not required for done:**
+- **PC-03 and PC-04** each get their own seat (`activated`): neither restores onto the other's binding, and neither raises an ambiguity. Planning has already replayed their v1 readings through the server's matching code and they do not match (`PLANNING_STATE.md` §9.2). This is the live confirmation.
+- **PC-02** activates on Windows 10 1903, over TLS to Render. If it is not tested in L1, it remains an open item that must be closed before any school install (`PLANNING_STATE.md` §5).
+
+The test pool has five seats, which is room for all five PCs. Do not activate any machine outside §4.1 without asking Nitoni.
 
 ### L2 — Activation UI and lease status (WinUI 3)
 
@@ -158,7 +170,7 @@ A finished app that cannot be installed on twenty lab PCs is not a deliverable (
   - anything that blocks you.
 
   Then wait.
-- **OS floor (L1 report).** State the minimum Windows build that your chosen .NET version, Windows App SDK version and packaging route each support. Cite the source, and say plainly whether build 18362 is inside all three. If it is not, **stop and report**: dropping old lab PCs is planning's and Nitoni's decision, not a version choice to make quietly.
+- **OS floor (L1 report).** State the minimum Windows build that your chosen .NET version, Windows App SDK version and packaging route each support. Cite the source, and say plainly whether build 18362 is inside all three. If it is not, **stop and report**: dropping old lab PCs is planning's and Nitoni's decision, not a version choice to make quietly. This check is by reading, so it applies whether or not OFFICE-PC-02 is available.
 - **Ed25519 in .NET.** Check whether the .NET version you target includes Ed25519 in the base library. If it does not, propose a library — for example NSec or BouncyCastle — in the L1 report, with your reason. Do not pick one silently. It must also run on build 18362.
 - **Every claim in a report is either verified by running or believed by reading.** Keep the two separate, as the backend reports do.
 - **Real-machine facts beat assumptions.** If a WMI property behaves differently from the contract's description on a real PC, that is a finding for planning, not something to work around quietly.
@@ -167,4 +179,4 @@ A finished app that cannot be installed on twenty lab PCs is not a deliverable (
 ## 7. Open — not yours to decide
 
 - **The 10 November trial's scope beyond activation and offline licence checking:** which exam features, content packs and screens the trial needs. Nitoni decides; planning briefs it.
-- **When collector v2 goes to the pilot school's lab** — after L0 passes on the five §4.1 PCs.
+- **When collector v2 goes to the pilot school's lab** — after L0 passes on the two guaranteed §4.1 PCs.
