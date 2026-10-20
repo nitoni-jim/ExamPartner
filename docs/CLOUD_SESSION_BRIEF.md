@@ -2,7 +2,7 @@
 
 **For:** the implementation session working on `nitoni-jim/ExamPartner`
 **Owner:** Nitoni (solo developer; works on this in evenings and weekends)
-**Date:** 5 October 2026 · **Revised:** 6 October 2026 (§3 environment, §6 pyflakes) · 7 October 2026 (§4.D rulings on the pre-code report, §8) · 8 October 2026 (§4.E licensing never stops the backend starting, §8; §2 signing key per the API contract) · 10 October 2026 (Unit 1 merged; Unit 2 — §4.F, §4.G, §5 — reviewed and approved) · 11 October 2026 (§4.H rulings on the Unit 2 pre-code report; §4.F, §4.G, §5 edited to match) · 12 October 2026 (Unit 2 merged as PR #38; §9 carried into Unit 3)
+**Date:** 5 October 2026 · **Revised:** 6 October 2026 (§3 environment, §6 pyflakes) · 7 October 2026 (§4.D rulings on the pre-code report, §8) · 8 October 2026 (§4.E licensing never stops the backend starting, §8; §2 signing key per the API contract) · 10 October 2026 (Unit 1 merged; Unit 2 — §4.F, §4.G, §5 — reviewed and approved) · 11 October 2026 (§4.H rulings on the Unit 2 pre-code report; §4.F, §4.G, §5 edited to match) · 12 October 2026 (Unit 2 merged as PR #38; §9 carried into Unit 3) · 19 October 2026 (Unit 3 split into 3a and 3b for review, both before 4 November; §4.I rulings for Unit 3a; §5 is now Unit 3a; §3 branch and baseline)
 
 Read this first, then `backend/CLAUDE.md`, then the Pilot V1 implementation spec. This brief answers the setup questions and settles the open spec gaps. Where it disagrees with the spec, this brief wins and the spec gets updated to match.
 
@@ -34,7 +34,7 @@ You own the **FastAPI backend** for seat-pool licensing, in `backend/`, on a bra
 
 Yes — check §2 of the spec against the live code and report any drift. The conventions in it were derived from the repository at commit `c7422c8`, so they should hold, but verify rather than trust.
 
-**Branch and deploy.** Unit 1's branch `licensing/pilot-v1` is merged and deleted. Work on a new branch per unit, cut from current `main`: **`licensing/unit-2`** for this one. Open a PR. Never push to `main`, never merge. Nitoni reviews and merges in the GitHub web UI.
+**Branch and deploy.** Unit 1's branch `licensing/pilot-v1` is merged and deleted. Work on a new branch per unit, cut from current `main`: **`licensing/unit-3a`** for this one (Unit 2's `licensing/unit-2` is merged). Open a PR. Never push to `main`, never merge. Nitoni reviews and merges in the GitHub web UI.
 
 While your branch is open, Nitoni does not hand-upload files under `backend/` through the GitHub website. If you see an unexpected commit touching your files, stop and say so rather than merging around it.
 
@@ -48,7 +48,7 @@ While your branch is open, Nitoni does not hand-upload files under `backend/` th
 cd backend && /opt/ep-venv/bin/python -m pytest -q
 ```
 
-The system `python3` is 3.13, and the pinned `psycopg2-binary==2.9.9` has no wheel for it, so `pip install` there tries to build from source and fails. **Never change a pin in `requirements.txt` to make something install** — that file ships to production. **Starting baseline for Unit 2:** current `main` at `3a8e313` (Unit 1 merged), verified by running on Python 3.11 with local PostgreSQL 16: **160 passed, 4 warnings, 0 skipped** — the 103 pre-licensing tests plus Unit 1's 57. Any count below 160 before you change anything means the environment, not your work, is wrong.
+The system `python3` is 3.13, and the pinned `psycopg2-binary==2.9.9` has no wheel for it, so `pip install` there tries to build from source and fails. **Never change a pin in `requirements.txt` to make something install** — that file ships to production. **Starting baseline for Unit 3a:** Unit 2 merged at `bdaff67` with **372 passed, 0 skipped** on Python 3.11 with local PostgreSQL 16, verified by planning on 12 October. `main` has moved since then (documentation uploads, and possibly Sprint B work). **Run the suite on current `main` before changing anything, and report the count in your pre-code report.** A count below 372, or any skip, means the environment or `main` is wrong, not your work — stop and say which.
 
 ## 4. Rulings
 
@@ -271,67 +271,180 @@ None of these indexes is correctness-critical; they go in the ordinary best-effo
 
 **H9. The secrets item is closed.** Nitoni has confirmed that `JWT_SECRET` and `ADMIN_IDENTIFIERS` are set on Render. The activation-token key derived from `JWT_SECRET` (F7) therefore rests on a real secret.
 
-## 5. The current unit of work — Unit 2: a PC can be activated
+### I. Rulings for Unit 3a (19 October 2026)
 
-**Unit 1 is done.** It was spec §13 steps 2–5: time helpers, schema, owner check and `claim_capacity()`. It merged as PR #37 (`3a8e313`) on 10 October 2026, is deployed, and `/health` reports `"licensing": "ready"` on production.
+Unit 3a makes a licensed PC **keep working**: it renews its lease, a school can free a seat, and a PC stuck in an ambiguity can be unstuck. It implements contract §9 (refresh) and §10 (collecting a resolved ambiguity), spec §8.5, §8.6, §8.6.1 and §10.4's ambiguity endpoints, and brief §9 R1 and R2. Where this section and the spec disagree, this section wins. The contract was amended on 19 October to match (contract §13); where the contract governs a wire detail, it wins.
 
-**Unit 2 builds everything the Windows client needs in order to activate**, to `docs/LICENCE_API_CONTRACT.md`, under the rulings in §4.F and §4.G:
+**I1. Refresh — the decision order.** `POST /licence/refresh` takes **no `Authorization` header**; the lease is the authorisation. Never call `get_current_user()` on this route. After FastAPI's `422`, check in this order:
 
-1. **Configuration** — `LICENCE_SIGNING_KEY`, `LICENCE_SIGNING_KID` and `MIN_WINDOWS_APP_VERSION` in `config.py`; key loading and validation (F6, F9).
-2. **`services/fingerprint_service.py`** — normalisation, identity quality, match strength, continuity signals and the identity hash (F1, G).
-3. **Lease signing** — the pure `sign_lease` and `verify_lease` functions and the serialisation (F5, contract §6), plus `cryptography` in `requirements.txt`.
-4. **The activation session token** — issue and verify (F7, contract §11).
-5. **The error helper and wire timestamps** (F8).
-6. **Schema additions** — the F4 columns, both engines, idempotent as always, plus `seat_pools.last_ambiguity_at` and `licence_ambiguities.request_fp` (H2, H5), and best-effort indexes on `institution_seats(activation_request_id)` and `licence_ambiguities(request_id)` (H5).
-7. **`claim_capacity()` changes** — the request ID and fingerprint digest (F4), the structured errors (F8), and a `fingerprint_confidence` passed in from the identity-quality calculation.
-8. **`routes/licensing.py`** — `POST /licence/activation-session` and `POST /licence/activate` exactly as contract §4–§5, implementing F3 and F10. Register the router in `app.py`.
-9. **The three pilot setup endpoints** (F11).
-10. **`/health`** — licensing is ready only when the schema is ready *and* the key is loaded (F6).
+1. `client_upgrade_required` (426) → `invalid_request` (400: shape, `request_id`, `lease` a string, `fingerprint_signals` per `validate_signals()`) → `fingerprint_unreadable` (400) → `licensing_unavailable` (503).
+2. **Verify the lease** with `verify_lease()` and the public key of the **configured** kid only. Malformed, wrong signature, or any other kid — including kid 0 — → `403 lease_invalid`, log `refresh_denied`. Key rotation is deferred (spec §8.7).
+3. **Resolve the binding** by the payload's `binding_id`. If the payload's `account_id` or `seat_pool_id` differs from the binding's → `lease_invalid` (a correctly signed lease that disagrees with its binding is a server defect; log it at ERROR). Not found or **revoked** → `403 lease_revoked`, log `refresh_denied`. Release beats everything after this point.
+4. **Superseded installation.** The payload's `installation_id` differs from the binding's **current** `installation_id` → `403 machine_mismatch`, log `refresh_denied` with `detail.reason = "installation_superseded"`. The binding was restored onto a newer installation (a reinstall, or a cloned image that activated later); this lease belongs to an installation that no longer holds the activation. The client's remedy for `machine_mismatch` — discard the lease and activate — is the right one: the same PC is restored without a new seat, a different one claims its own.
+5. **Replay** (I4). The same logical refresh within 24 hours → return the binding's **current** lease byte-identical, issue nothing, flag nothing.
+6. **Pool and subscription.** Pool not `active` → `409 pool_inactive`. Subscription not active or expired → `402 subscription_inactive` with `subscription_expires_at`. Log `refresh_denied` for both. The client keeps its current lease until its own expiry. This comes before collection, so no path issues a lease beyond the paid term.
+7. **Collection** (I6) if the body carries `ambiguity_id`.
+8. **Machine verification** (I2) → refresh, `machine_mismatch`, or an ambiguity.
+9. **Stale serial.** The presented `lease_serial` is below the binding's `lease_serial` → log `stale_serial_flagged` and **carry on**. Evidence for a human, never a denial (spec §8.6.1). A replay (step 5) is never counted.
+10. **Issue** (I3).
 
-**Not in this unit** (Unit 3):
-- `POST /licence/refresh` and machine verification on refresh;
-- the refresh ratchet, stale-serial signalling and refresh request IDs;
-- resolving and collecting ambiguities, and the support endpoints;
-- release and the owner read endpoints;
-- account editing and pool resizing;
-- the test-clock endpoint.
+An **expired** presented lease is never a bar at any step (spec §8.6 step 5).
 
-Do not build any of these, even where the code would be convenient to write now. One exception: `verify_lease` is written here, for the vectors (F5).
+**I2. Machine verification.** Compare the presented reading with the **binding's stored snapshot**, never with the lease (spec §8.6.1), using `match_strength()` and a `PoolIndex` of the pool's active bindings, exactly as activation does.
 
-**Write these tests first, where they pin behaviour:**
-- **The contract §6.4 vectors**, in both directions, against `sign_lease` and `verify_lease`.
-- **Spec §12 tests**, through the real routes:
-  - **1** — activation into a pool with room returns a lease;
-  - **2** — a repeated activation, both for a strong PC and, via `request_id`, for a **degenerate** PC: same binding, no second seat, no ambiguity;
-  - **3** — pool full → `pool_full`, nothing evicted;
-  - **7** — a reformatted PC with a strong match is restored with a new `installation_id` and no new seat;
-  - **9** — a strong match to a **revoked** binding is not restored (set `revoked_at` directly; release is Unit 3);
-  - **10** — a cloned image on different hardware gets its own seat;
-  - **11** — a reused `installation_id` from a conflicting machine logs `clone_flagged` and is not merged;
-  - **12** — two all-zeros-UUID PCs with different disks both activate, both `degenerate`;
-  - **13** — a reinstalled degenerate PC with the same disk → `409 ambiguity_pending` and an ambiguity row;
-  - **26** — activate with no activation token → 401, no capacity consumed.
-- **Contract behaviour:**
-  - an activation token is **rejected** by `get_current_user()`, and an ordinary user token is **rejected** by `/licence/activate`;
-  - the session registers **no** device — the `user_devices` count is unchanged;
-  - an owner of no account → `no_licensing_access`; an admin sees every pool;
-  - another owner's pool and a non-existent pool both return the same `pool_access_denied`;
-  - precedence: a suspended full pool → `pool_inactive`, and a lapsed full pool → `subscription_inactive`;
-  - `request_id_reused`;
-  - **two concurrent activations with the same `request_id`** on Postgres, barrier-synchronised as in test 4 → exactly one binding;
-  - **two concurrent activations with the same `request_id` that lead to ambiguity**, the same way → exactly one ambiguity row, and both responses carry the same `ambiguity_id` (F4);
-  - key absent, key equal to the TEST seed, or kid 0 → 503 on both endpoints and `/health` `"unavailable"`;
-  - `426` below the minimum version;
-  - every error body carries `code`, `message`, `retryable` and `server_time`;
-  - every wire timestamp matches the §2 format;
-  - the returned lease verifies with the public key and carries the right payload, with `expires_at = min(30 days, subscription end)`;
-  - the restore path refuses with 503 when the index is missing (the standing rule).
-- **Fingerprint unit tests** — every collector placeholder maps to absent; repeated-character values; UUID degenerate forms; locally administered and all-zero MACs ignored; a USB disk never used as the system disk; `bios_serial == system_serial` counted once.
-- **Test 4 still passes, and spec test 6 by hand still fails without the lock.**
+- **strong** → refresh.
+- **mismatch** (both have usable UUIDs that differ, and no usable serial is shared) → `403 machine_mismatch`, log `clone_flagged` against this binding's account with the presented signals, issue nothing, **leave the binding untouched**. This holds whether or not installation continuity also holds: a motherboard replacement is resolved by the school releasing the old activation (spec §8.6.1, contract §9.3).
+- **weak** or **none** → the **installation-continuity rule** (brief §4.A). It holds when **all** of:
+  - the lease's `installation_id` is the binding's current one (already guaranteed by I1 step 4);
+  - the presented `windows_machine_guid`, normalised, equals the snapshot's and is not absent;
+  - **if** the snapshot carries a system-disk serial or an onboard network address (`Reading.activation_disk`, `activation_nics`), at least one of them is shared with the presented reading. A snapshot with neither relies on the first two alone.
 
-**Deployment note for Nitoni, not for you:** after the Unit 2 PR is merged and before it is deployed, generate the production key locally (contract §6.5). Set only the private seed as `LICENCE_SIGNING_KEY`, and set `LICENCE_SIGNING_KID=1`, on Render; the public key goes into the WinUI client. Without them, the deploy is safe but licensing reports unavailable.
+  Continuity holds → refresh. Continuity broken → an ambiguity, `origin = 'refresh'`, the binding as its one candidate, through `create_or_get_ambiguity()` (H2) → `409 ambiguity_pending`. The client keeps its current lease until expiry.
 
-**The pre-code report is done** (11 October 2026), and its rulings are §4.H. Implement to §4.F–§4.H and the contract. Record H2's and H3's standing rules in `backend/CLAUDE.md` in your PR. **Stop at the end of this unit** and open the PR.
+**This extends brief §4.A on purpose**, the way F2 extended spec §8.4 case E: the continuity rule applies to **any** binding whose match is weak or none, not only bindings recorded `weak` or `degenerate` at claim. A PC activated with strong identity whose firmware later stops reporting a serial — a BIOS update that resets it to a placeholder is the realistic case — is still the same running installation, and must not join the review queue every month for it. The rule needs the same installation, the same `MachineGuid` and the same disk or network card, so a copied lease on a cloned-image PC still fails it: the disk and network card differ.
+
+"At least one of disk or NIC", rather than both, is what makes the §4.A ratchet survive maintenance: a disk swapped by cloning the old disk keeps the installation and the `MachineGuid`, so it passes on the network card and then ratchets the new disk in.
+
+**I3. Issuing a refreshed lease, and the ratchet.** One transaction, locking the **binding row only** (H3):
+
+1. Take the binding-row lock with a meaningful write, as `_restore()` does.
+2. Under the lock, re-read the binding and re-check revoked (→ `lease_revoked`), the installation (→ `machine_mismatch`) and the replay (→ return current lease). A release or restore that committed while this request was deciding wins.
+3. **Ratchet.** If the recomputed identity hash or the stored snapshot differs from the presented reading, write the presented reading's hash and raw signals onto the binding — on a strong match (spec §8.6.1) **and** on a continuity refresh (§4.A). `fingerprint_confidence` is **not** changed: it records quality at claim time (spec §3.4).
+4. `lease_serial + 1`, `expires_at = min(now + 30 days, subscription_expires_at)`, sign with `_sign_for_binding()`, store `current_lease` and the lease columns, set `last_seen_at`, store the refresh request (I4).
+5. **Log** — spec §3.5 says do not log every refresh. Log `refresh` only when the presented lease had expired, when `last_seen_at` was null or more than 7 days old, or when step 3 ratcheted (put the previous hash in `detail_json`). Otherwise update `last_seen_at` silently.
+
+No capacity is touched, no binding is created, and `installation_id` does not change, so the §4.E live index check is not required on this path.
+
+**I4. One authoritative request history (brief §9 R1).** R1 is mandatory and its five tests stand. In addition:
+
+- The history covers **every** state-changing licensing request: activation, restore, refresh, and ambiguity collection on either endpoint. Record each with its `request_id`, its operation, the pool, the binding or ambiguity it concerns, its request digest, the outcome a replay must return, and when it arrived.
+- **A refresh replay** is the same `request_id`, the same binding and the same digest within 24 hours. Return the binding's **current** lease unchanged (contract §9.2) — even when a later refresh under a different `request_id` has issued a newer one, since issuing again is the thing a replay must never do. Not a stale-serial signal.
+- **The refresh digest** covers the binding ID, the normalised reading and the `ambiguity_id`, and is computed once and stored (H5). Not the lease bytes: a retry presents the same old lease, but a client that lost its response may hold either.
+- **Cross-operation reuse** — a `request_id` seen in the last 24 hours under a different operation, pool, binding or digest → `409 request_id_reused`. This holds across endpoints: an activation `request_id` reused for a refresh is refused.
+- **Propose the storage in your pre-code report** (brief §9 R1). A request-log table keyed by `request_id` is the expected shape. Its index is best-effort, like H5's: correctness rests on the lookup, and H4 still applies — no global lock.
+- Do **not** retire Unit 2's request columns on `institution_seats` or `licence_ambiguities`. Write the history alongside them, and read it first.
+
+**I5. Ambiguity resolution — `POST /support/licensing/ambiguities/{id}/resolve`.** ExamPartner admin only (`require_admin()`, ordinary bearer token). Body `{"decision": "recognize_existing" | "treat_as_new", "binding_id": "…"}` — `binding_id` required for `recognize_existing` and refused otherwise. Logs `ambiguity_resolved`, with the decision and binding in `detail_json`, `actor_role = 'exampartner_admin'`.
+
+- Only an `open` ambiguity younger than 7 days can be resolved. Expired, resolved or consumed → `409` with the matching `ambiguity_*` code. An expired-but-still-`open` row is reported, and may be marked, `expired`.
+- **`recognize_existing`.** The `binding_id` must be one of the ambiguity's candidates **and still active**. Otherwise → `409` (a released candidate can never be recognised: rule F). Records the decision only; the restore or ratchet happens when the PC collects (I6), so a PC that never comes back changes nothing.
+- **`treat_as_new`, activation-raised.** Capacity is claimed **at resolution**, through `claim_capacity()` — the single chokepoint — with the ambiguity's presented signals, hash and label, `performed_by` the admin, `actor_role = 'exampartner_admin'`, and `fingerprint_confidence` computed from the presented reading against the pool now. The new binding becomes `resolved_binding_id`; its lease is issued when the PC collects. Claiming now means a full pool is reported to the admin, who can tell the school to release a PC, rather than discovered later by the technician. `pool_full`, `pool_inactive` and `subscription_inactive` come back to the admin, and the ambiguity stays `open`.
+- **`treat_as_new`, refresh-raised.** The admin has decided the PC presenting the lease is **not** the binding's machine. Nothing is claimed. The decision is recorded, and collection returns `403 machine_mismatch` (I6), so the PC goes through ordinary activation with the owner's sign-in and claims its own seat there. The refresh response has no `installation_id` field (contract §9.1), so a refresh can never hand a PC a new binding.
+- **Invariants — propose the mechanism in your pre-code report:** exactly one resolution per ambiguity, even with two concurrent resolve calls; a `treat_as_new` claim never leaves an orphan binding behind a failed status update, or a resolved status behind a failed claim; and `claim_capacity()` stays the only path that creates a binding. Where a path needs the pool lock and a row lock, take the **pool first** (H3).
+
+**I6. Collecting a resolved ambiguity (contract §10).** Keep Unit 2's identity checks exactly, in their order — wrong pool or origin → `ambiguity_mismatch`; the raising `request_id` → `request_id_reused`; a different digest → `ambiguity_mismatch` — and add the I4 history check. Then, by state:
+
+| State | Activation-raised (`activate` + `ambiguity_id`) | Refresh-raised (`refresh` + `ambiguity_id`) |
+|---|---|---|
+| `open`, under 7 days | `409 ambiguity_pending` | `409 ambiguity_pending` |
+| `open`, 7 days or older, or `expired` | `409 ambiguity_expired` | `409 ambiguity_expired` |
+| `consumed` | `409 ambiguity_consumed` — unless this is a replay (I4), which returns the original result | same |
+| resolved, its binding now revoked | `403 lease_revoked` | `403 lease_revoked` |
+| resolved `recognize_existing` | **Restore** onto the resolved binding as `_restore()` does — new `installation_id`, ratchet, lease, `restore` log — and return `200`, `result: "restored"` | **Refresh** the lease's binding through I3, ratcheting the presented reading in, and return `200`, `result: "refreshed"` |
+| resolved `treat_as_new` | Issue the new binding's lease with `_ensure_lease()`, return `200`, `result: "activated"` | `403 machine_mismatch` |
+
+- **Refresh-raised collection** also requires the lease to verify (I1 steps 2–4) and its `binding_id` to be the ambiguity's candidate. Otherwise → `ambiguity_mismatch`.
+- **Single use.** The transaction that issues the lease marks the ambiguity `consumed` with `consumed_at`, conditionally on its still being `resolved`. Two concurrent collections of one resolved ambiguity issue **one** lease: the loser replays it if it is the same logical request, and gets `ambiguity_consumed` otherwise. `recognize_existing` restores lock the binding row; nothing here takes the pool lock.
+- The collected restore changes `installation_id`, so it performs the §4.E live index check.
+- A resolved ambiguity that is never collected does not expire. A `treat_as_new` binding with no lease is an ordinary active binding: the school releases it if the PC never returns.
+
+**I7. Release — `POST /institutions/seats/{binding_id}/release`** (spec §8.5).
+
+- **Authorisation:** an ordinary bearer token, then `require_account_owner()` against the **binding's own** account (spec §9: resolve the object, then check the caller owns it). An unknown binding and another school's binding return the **same** `403 binding_access_denied` — no existence leak. No token → `401 not_authenticated`. A lease is not a bearer token; spec test 28 is the proof.
+- **Body**, optional: `{"revoke_reason": "manual" | "replacement" | "hardware_failure" | "retired" | "renewal_retire" | "support" | "other", "reason": "free text, at most 500 characters"}`. Default `manual`. An unknown `revoke_reason` → `400 invalid_request`. **Neither field ever gates the release** (spec §8.5).
+- **Effect**, in one transaction locking the **binding row only**: set `revoked_at`, `revoke_reason` and `revoked_by`, and log `release` with the binding's snapshots and `reason`. Capacity is free the moment it commits. Pending ambiguities naming the binding as a candidate are left alone; they fail at resolution or collection because the binding is revoked.
+- **Idempotent:** releasing an already released binding returns `200` with `result: "already_released"` and the original `released_at`, and writes nothing.
+- **Response `200`:** `{"result": "released" | "already_released", "binding_id", "released_at", "seat_pool_id", "pool_size", "active", "available", "over_capacity", "server_time"}`, with the pool counts read **after** the commit, and wire timestamps (F8).
+- **Errors use `licence_error()` and the contract §9.3 body** (F8), not plain `HTTPException` strings. Unit 3b writes this endpoint into contract v1.1 exactly as built here, so build it to that standard now.
+- **Not in 3a:** accepting the licence session token on this route. That is Unit 3b (I9).
+
+**I8. Admin visibility — `GET /support/licensing/ambiguities`.** ExamPartner admin only. Query `status`, default `open`. For each ambiguity: `ambiguity_id`, `account_id`, `account_name`, `seat_pool_id`, `pool_label`, `origin`, `machine_label`, `created_at`, `expires_at` (`created_at` + 7 days), `status`, the presented reading **normalised** (UUID, serials, system disk, onboard addresses, `MachineGuid`), and each candidate's `binding_id`, `machine_label`, `last_seen_at`, `fingerprint_confidence`, whether it is still active, and its match strength against the presented reading. That is everything Nitoni needs to decide by PowerShell. Plain `{"ok": true, …}` bodies, like F11. The clone and stale-serial review list is Unit 3b.
+
+**I9. What Unit 3b will add, so you do not build it now.** Recorded so the 3a code does not close it off:
+- **The licence session token** (Nitoni's decision, 19 October). The 15-minute token from `/licence/activation-session` is extended from activation-only to **licensing-only management**. It will authorise activate, the owner's machine list, owner-visible history, rename and **release**, and nothing else: not ambiguity resolution, account editing, subscription changes, pool resizing, the support endpoints, or any non-licensing route. It stays short-lived, in memory on the client, bound to the signed-in identity and the accounts it may manage, and useless on every Android route. The owner endpoints **also keep** accepting the ordinary bearer token, for PowerShell and support use. The path `/licence/activation-session` stays.
+  - **For 3a:** keep authorisation in `release` in one small function, so 3b can add the second token type without restructuring the route. Do not change `F7`'s token or its verification.
+- Contract v1.1: the owner endpoints, written into the contract, with I7's release shape unchanged.
+- The owner reads, rename, account editing, pool resizing, the signals review list, and the test-clock endpoint.
+
+**I10. Tests use the in-process clock.** Spec tests 15–19 shift time with `licensing_time.set_clock_offset()` under `ALLOW_TEST_CLOCK` patched true, as Unit 1 made possible. The test-clock **endpoint** is Unit 3b, and `ALLOW_TEST_CLOCK` stays absent in production.
+
+## 5. The current unit of work — Unit 3a: a licensed PC keeps working
+
+**Units 1 and 2 are done.** Unit 1 (time helpers, schema, owner check, `claim_capacity()`) merged as PR #37 (`3a8e313`). Unit 2 (fingerprint rules, activation session, activate and restore, lease signing, error envelope, pilot setup endpoints) merged as PR #38 (`bdaff67`) on 12 October 2026, and is **deployed to production**: the kid 1 signing key is set, and `/health` reports `"licensing": "ready"`.
+
+**Unit 3 is split in two for review, not for scope.** Nitoni's decision, 19 October 2026: **the whole of Unit 3 is finished before 4 November 2026**, the last day this Cloud Session is available, and before the first school trial on 10 November. Unit 3a comes first; Unit 3b is briefed as soon as 3a's PR is open. Nothing in Unit 3 is deferred past the trial. Plan your work so 3a's PR can be opened within about a week.
+
+**Unit 3a builds**, under §4.I and contract §9–§10:
+
+1. **`POST /licence/refresh`** — the I1 decision order, I2 machine verification, I3 issuing and the ratchet, and stale-serial flagging. Register it in `routes/licensing.py`.
+2. **One request history** for activation, restore, refresh and collection — brief §9 R1 and I4. Schema, both engines, idempotent as always.
+3. **Ambiguity resolution** — `POST /support/licensing/ambiguities/{id}/resolve` (I5).
+4. **Collecting a resolved ambiguity** on both `activate` and `refresh` (I6), replacing Unit 2's report-the-state-only behaviour.
+5. **Release** — `POST /institutions/seats/{binding_id}/release` (I7).
+6. **`GET /support/licensing/ambiguities`** (I8).
+7. **Brief §9 R2** — tighten the ambiguity race test so removing the `last_ambiguity_at` lock fails it every time.
+8. **`backend/CLAUDE.md`** — add the refresh path to the H3 lock-order note (it takes the binding lock, and only `create_or_get_ambiguity()` takes the pool lock, never both in one transaction), and a line that every state-changing licensing request records itself in the request history.
+
+**Not in this unit** (Unit 3b, briefed next, still before 4 November):
+- the licence session token extension (I9);
+- the owner endpoints `GET /institutions/accounts/{id}/seat_pools`, `…/machines` and `…/history`, and rename (`PATCH /institutions/seats/{binding_id}`);
+- account editing (`PATCH /institutions/accounts/{id}`) and pool resizing (`PATCH /institutions/seat_pools/{id}`);
+- `GET /support/licensing/signals` (the clone and stale-serial review list);
+- `POST /support/licensing/test-clock`;
+- contract v1.1.
+
+Do not build any of these, even where the code would be convenient to write now.
+
+**Tests — write these first, where they pin behaviour:**
+
+- **Spec §12, through the real routes:**
+  - **8** — dead PC, old installation unreachable, owner releases → revoked, capacity free immediately, a replacement activates with no extra seat;
+  - **9** — now with a real release instead of setting `revoked_at` by hand;
+  - **14** — admin resolves `recognize_existing` → the PC collects, is restored onto the right binding, no new seat, `ambiguity_resolved` logged;
+  - **15–19** — the lease and expiry tests, on the in-process clock (I10). **16** is the one that matters most: a 40-day-old expired lease self-recovers with no administrator;
+  - **20** — stale serial: logged, not denied;
+  - **21–25** — machine verification. In **24**, test both halves: continuity broken → ambiguity; continuity intact → refreshed, with the snapshot ratcheted;
+  - **27** — owner A cannot release owner B's binding: `binding_access_denied`, identical to an unknown binding;
+  - **28** — a lease presented as a bearer token cannot release anything.
+- **Brief §9 R1's five tests**, plus:
+  - an activation `request_id` reused for a refresh → `request_id_reused`;
+  - a refresh retried after a lost response → the same lease, byte-identical, serial unchanged, no `stale_serial_flagged`;
+  - a refresh retried after a later refresh has issued a newer lease → the current lease, nothing issued.
+- **Refresh decision order:**
+  - kid 0 (the TEST key) and an unknown kid → `lease_invalid`;
+  - a revoked binding → `lease_revoked`, ahead of every later check;
+  - a superseded installation → `machine_mismatch` with `installation_superseded` logged;
+  - a suspended pool → `pool_inactive`; a lapsed subscription → `subscription_inactive`;
+  - **the I2 extension:** a binding recorded `strong` whose firmware now reports a placeholder serial, with continuity intact → refreshed, not an ambiguity;
+  - a copied lease on a cloned-image PC — same `installation_id` and `MachineGuid`, different disk and network card → not refreshed;
+  - a disk cloned onto a new disk — same installation and `MachineGuid` and network card, new disk serial → refreshed, the new disk ratcheted in, and the next refresh still passes.
+- **Resolution and collection:**
+  - `treat_as_new` on a full pool → `pool_full` to the admin, the ambiguity still `open`;
+  - `treat_as_new` activation-raised → the PC collects `activated` and the pool has one more active binding;
+  - `treat_as_new` refresh-raised → collection returns `machine_mismatch`, nothing claimed;
+  - `recognize_existing` on a candidate released before resolution → refused; released after resolution → collection returns `lease_revoked`;
+  - collecting twice → one lease, then `ambiguity_consumed`;
+  - an ambiguity older than 7 days → cannot be resolved, and collects as `ambiguity_expired`.
+- **Concurrency, on Postgres, barrier-synchronised as in test 4**, each with its guard removed by hand to show it fails:
+  - two concurrent refreshes with the same `request_id` → one lease issued, both responses identical;
+  - two concurrent refreshes with different `request_id`s → two leases, serials N+1 and N+2, never two with the same serial;
+  - two concurrent collections of one resolved ambiguity → one lease;
+  - two concurrent `resolve` calls → one resolution, and at most one binding claimed;
+  - a release concurrent with a refresh → the refresh either completes before the release or returns `lease_revoked`, never a lease issued after `revoked_at`.
+- **Release:** idempotent second call; the pool counts in the response are post-commit; capacity freed by release is immediately claimable (spec test 5 still passes).
+- **Every response carries `server_time`**, and every new error body the §9.3 shape.
+- **Test 4 still passes, spec test 6 by hand still fails without the lock**, and the R2-tightened ambiguity race test fails every time without its lock.
+
+**The pre-code report** comes first, as for every unit (§6, §7). It must include:
+- the baseline test count on current `main` (§3);
+- the storage for the request history (I4, brief §9 R1);
+- the mechanism for the I5 resolution invariants;
+- how each new path follows H3, path by path;
+- any drift between this brief, the contract and the code.
+
+Then wait for go-ahead. Implement to §4.F–§4.I and the contract. **Stop at the end of this unit** and open the PR on `licensing/unit-3a`.
+
+**Deployment note for Nitoni, not for you:** Unit 3a adds tables or columns, so the next manual deploy runs its schema step on Neon. Nothing needs setting on Render. Keep `ALLOW_TEST_CLOCK` absent.
 
 ## 6. How to work
 
@@ -350,9 +463,11 @@ Two qualifications. Be specific about why it blocks code rather than listing eve
 
 ## 8. Not yours to decide — raised with Nitoni separately
 
-Items listed here are not yours to act on; they may change the spec under you. **None is open at the moment.** Closed since the last revision: the boot behaviour (decided — §4.E), Render deployment (manual), and the architecture handoff: `docs/ExamPartner_Windows_SeatPool_Architecture_Handoff.md` (updated 27 September) already carries the fingerprint correction, and spec §0 now cites that file.
+Items listed here are not yours to act on; they may change the spec under you. **None is open at the moment.** The licence session token (I9) is decided and is Unit 3b's; do not start it in 3a. Closed since the last revision: the boot behaviour (decided — §4.E), Render deployment (manual), and the architecture handoff: `docs/ExamPartner_Windows_SeatPool_Architecture_Handoff.md` (updated 27 September) already carries the fingerprint correction, and spec §0 now cites that file.
 
 ## 9. Carried into Unit 3 — mandatory
+
+**Now part of Unit 3a** (§5, §4.I I4). R1's five tests and R2 stand unchanged; I4 extends R1 to refresh.
 
 Recorded on 12 October 2026, when PR #38 (Unit 2) was approved for merge with this limitation known. **These are correctness requirements for Unit 3, not optional clean-up.**
 

@@ -1,6 +1,6 @@
 # ExamPartner Windows — Licence API Contract
 
-**Version:** 1 · **Date:** 8 October 2026 · **Owner:** Planning
+**Version:** 1 · **Date:** 8 October 2026 · **Amended:** 10 and 19 October 2026 (additive; §13) · **Owner:** Planning
 **Both implementers build against this document.** The backend (Cloud Session) and the WinUI client (local agent) cannot see each other; this is the only place their shapes meet. If something you need is not here, **stop and report it** — do not invent a field, a code or a behaviour, because the other side is building against the same page and a guess silently diverges.
 
 This contract governs the wire format and the client–server behaviour. The *business rules* behind it — capacity, matching, ambiguity, release — remain in `docs/ExamPartner_Windows_SeatPool_PilotV1_Implementation_Spec.md` and `docs/CLOUD_SESSION_BRIEF.md`. Where this document and the spec disagree about a field name, a format or an error code, **this document wins** and the spec is updated to match.
@@ -472,8 +472,8 @@ Some codes add fields, listed below. This is the shape FastAPI produces from `HT
 | 403 | `pool_access_denied` | activate | no | — | "This account cannot activate computers in that lab." Returned identically for a pool that does not exist. |
 | 403 | `lease_invalid` | refresh | no | — | The lease is malformed, unsigned, or signed by an unknown key. Discard it and go to activation. |
 | 403 | `lease_revoked` | refresh, activate (ambiguity collection) | no | — | "This computer's licence was released by the school. An administrator must activate it again, which uses a seat." **Discard the lease.** |
-| 403 | `machine_mismatch` | refresh | no | — | "This licence belongs to a different computer." Discard the lease and go to activation. If this *is* the same PC after a motherboard replacement, the administrator releases the old activation first. |
-| 409 | `pool_inactive` | activate | no | — | "This lab's licence pool is suspended. Contact ExamPartner." |
+| 403 | `machine_mismatch` | refresh | no | — | "This licence belongs to a different computer." Discard the lease and go to activation. If this *is* the same PC after a motherboard replacement, the administrator releases the old activation first. Also returned when the lease belongs to an installation the activation has since moved away from (a newer installation was restored onto it), and when collecting a refresh-raised ambiguity that ExamPartner decided is a different machine (§10). The remedy is the same in every case. |
+| 409 | `pool_inactive` | activate, refresh | no | — | "This lab's licence pool is suspended. Contact ExamPartner." On refresh, the current lease stays usable until its own expiry. |
 | 409 | `pool_full` | activate | no | `pool_size`, `active` | "All seats in this lab are in use. Release a computer that is no longer used, or add seats." **Never evicts anything.** |
 | 409 | `ambiguity_pending` | activate, refresh | later | `ambiguity_id` | "ExamPartner needs to confirm this computer's identity. This usually takes up to one working day." Store `ambiguity_id`; see §10. On refresh, the current lease stays usable until its expiry. |
 | 409 | `ambiguity_expired` | activate, refresh | no | — | The request went unresolved for 7 days. Clear `ambiguity_id` and start again without it. |
@@ -505,7 +505,11 @@ When `activate` or `refresh` returns `409 ambiguity_pending`, an ExamPartner adm
 3. To collect, resend the **same kind of request** with `ambiguity_id` set and a **new** `request_id`:
    - **Refresh-raised:** resend `refresh` with the current lease. No sign-in needed.
    - **Activation-raised:** resend `activate`, which requires a **fresh activation session** — the 15-minute token will usually have expired by the time an admin has resolved it. The technician signs in again.
-4. Outcomes: still open → `ambiguity_pending` again; resolved → `200` with a lease (`result` is `restored` for `recognize_existing`, `activated` for `treat_as_new`); otherwise `ambiguity_expired`, `ambiguity_consumed`, `ambiguity_mismatch` or `lease_revoked`.
+4. Outcomes: still open → `ambiguity_pending` again. Resolved:
+   - **activation-raised** → `200` with the §5 response: `result` is `restored` for `recognize_existing`, `activated` for `treat_as_new`;
+   - **refresh-raised** → `200` with the §9.1 response and `result: "refreshed"` for `recognize_existing`; `403 machine_mismatch` for `treat_as_new` (ExamPartner decided this is a different machine, so it activates as one).
+
+   Otherwise `ambiguity_expired`, `ambiguity_consumed`, `ambiguity_mismatch` or `lease_revoked`.
 5. Clear `ambiguity_id` on any definitive answer.
 
 An ambiguity is single-use and expires after 7 days unresolved (brief §4.C).
@@ -541,3 +545,4 @@ For the Cloud Session; listed here because breaking any of them breaks the clien
 |---|---|
 | 8 October 2026 | Version 1. |
 | 10 October 2026 | §7.3 clarified: the current survey collector does not record the continuity fields, so survey files exercise identity matching only. No wire change. |
+| 19 October 2026 | Additive, for backend Unit 3a. §9.3: `pool_inactive` can also come from refresh; `machine_mismatch` also covers a superseded installation and a refresh-raised ambiguity resolved as a different machine. §10 step 4: the outcomes of collecting a refresh-raised ambiguity. No field, format or existing meaning changed. |

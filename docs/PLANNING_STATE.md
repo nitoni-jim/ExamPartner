@@ -1,7 +1,7 @@
 # Planning state — ExamPartner Windows seat-pool licensing
 
 **Handover from the planning windows of 5–19 October 2026.** Read this first in a new planning window, then `docs/WORKING_MODEL.md`.
-**State as of:** 19 October 2026 · `main` at `50df3c0`. This revision replaces the 17 October version. It changes only which PCs are available for future testing (§9.1); the survey findings are unchanged.
+**State as of:** 19 October 2026 (evening) · `main` at `684f359`. This revision adds the Unit 3 plan and deadline (§1, §2, §5, §10) and the licence session token decision (§4).
 
 ---
 
@@ -12,7 +12,8 @@
 | **Backend Unit 1** — time helpers, schema, owner check, `claim_capacity()` | Merged as PR #37 (`3a8e313`). Deployed. |
 | **Backend Unit 2** — fingerprint rules, activation session, activate and restore, lease signing, error envelope, pilot setup endpoints | Merged as PR #38 (`bdaff67`). 372 tests passing, 0 skipped. **Deployed to production** (confirmed by Nitoni, 17 October): signing key configured as kid 1, `/health` returns `"licensing": "ready"`. |
 | **Android smoke test after the Unit 2 deploy** | Passed: the live Android app loads questions from the production backend. Auth, payment and device registration were **not** re-tested as part of this. |
-| **Backend Unit 3** — refresh, collecting resolved ambiguities, release, owner reads, support endpoints, test clock | Not briefed. **Must include brief §9** (mandatory request-ID history rule, and a tightened race test). No change from survey finding S1 (§9.3). |
+| **Backend Unit 3a** — refresh, request history (brief §9 R1), ambiguity resolve and collect, release, admin ambiguity list, R2 race test | **Briefed** 19 October: `docs/CLOUD_SESSION_BRIEF.md` §4.I and §5; contract amended additively (§13, 19 October). Waiting for upload, then the pre-code report. No change from survey finding S1 (§9.3). |
+| **Backend Unit 3b** — licence session token, owner reads and rename, account editing, pool resizing, signals review, test-clock endpoint, contract v1.1 | Not briefed. Planning writes it once 3a's PR is open. |
 | **API contract** | `docs/LICENCE_API_CONTRACT.md` v1, 8 October 2026; §7.3 clarified 10 October. Signed-lease test vectors in §6.4. |
 | **WinUI client** | Not started. Brief: `docs/LOCAL_AGENT_BRIEF.md`, revision 3 (19 October) — L0 collector v2, L1 licence core, L2 activation UI, packaging decision. L0 and L1 must pass on the two guaranteed PCs; the other three are opportunistic. |
 | **Survey collector** | v1 in `tools/fingerprint-survey/`. Records the identity signals but not the continuity fields; v2 is local-agent work unit L0. |
@@ -21,7 +22,7 @@
 
 ## 2. Waiting on Nitoni right now
 
-1. **Upload this file and the revised `docs/LOCAL_AGENT_BRIEF.md`** in one commit, replacing the 17 October versions (upload over them; do not delete first).
+1. **Upload this file, `docs/CLOUD_SESSION_BRIEF.md` and `docs/LICENCE_API_CONTRACT.md`** in one commit, replacing the existing versions (upload over them; do not delete first). Then start the Cloud Session on Unit 3a (§10).
 2. **Create the internal test school** for client development (§6 has the commands). The local agent's L1 needs it.
 3. **Decide the 10 November trial's scope** beyond activation and offline licence checking.
 4. **Start the local agent** on `docs/LOCAL_AGENT_BRIEF.md`.
@@ -33,7 +34,7 @@
 |---|---|
 | `docs/WORKING_MODEL.md` | Who does what across planning, the Cloud Session and the local agent; settled versus open decisions (§6). |
 | `docs/LICENCE_API_CONTRACT.md` | The only place client and server shapes meet. **Wins on any wire detail.** |
-| `docs/CLOUD_SESSION_BRIEF.md` | Backend brief. §4.A–H rulings, §5 current unit (Unit 2, done), **§9 carried into Unit 3**. |
+| `docs/CLOUD_SESSION_BRIEF.md` | Backend brief. §4.A–I rulings, §5 current unit (**Unit 3a**), §9 carried into Unit 3a. |
 | `docs/LOCAL_AGENT_BRIEF.md` | WinUI client brief. |
 | `docs/ExamPartner_Windows_SeatPool_PilotV1_Implementation_Spec.md` | The business rules, kept consistent with the brief rulings (amended through 11 October). |
 | `docs/ExamPartner_Windows_SeatPool_Architecture_Handoff.md` | Product decisions of record, including the fingerprint correction. |
@@ -61,11 +62,13 @@ The project attached to the planning chat holds copies of the main docs, kept in
 - **Deployment:**
   - Render deploys **manually**. The trial is the **native WinUI client**.
   - Development uses **production Render with an internal test school**; the base URL stays configurable.
+- **The licence session token** (Nitoni, 19 October; built in Unit 3b, brief §4.I I9). The 15-minute token from `/licence/activation-session` becomes a **licensing-only management** token: activate, the owner's machine list and history, rename and release — nothing else, and useless on every Android route. It stays short-lived, memory-only, registers no device, and is bound to the signed-in identity's accounts. The WinUI client never uses `/auth/login`. Owner endpoints also keep accepting the ordinary bearer token, for PowerShell and support. The endpoint path stays `/licence/activation-session`; the contract's wording changes from "activation-only token" in v1.1.
 
 ## 5. Open
 
 - **The 10 November trial's scope** beyond activation and offline licence checking (Nitoni).
-- **Unit 3 brief** — planning's next backend task. It must carry brief §9 R1 (one authoritative 24-hour request-ID history, five required tests) and R2 (make the ambiguity race test fail deterministically when its lock is removed). Unit 3's refresh is the first code that could take both a binding and a pool lock, so H3 applies.
+- **Unit 3b brief** — planning's next backend task, once 3a's PR is open. It carries the licence session token (§4), contract v1.1 with contract-grade shapes for the four owner endpoints (machine list, history, rename, release as built in 3a), whether or not the trial UI uses them, and the rest of §1's 3b row.
+- **Whether the trial's WinUI client gets an owner screen** (machine list, release, rename) — decided with the trial scope, not in Unit 3. School self-service needs those screens; ambiguity resolution stays with ExamPartner either way.
 - **Collector v2 → rerun on the two guaranteed PCs (others when available) → school survey → freeze thresholds**, before licensing is called complete. The freeze must also answer survey question S1 (§9.3).
 - **A live activation on Windows 10 1903 must happen before any school install.** OFFICE-PC-02 is no longer guaranteed, so this is not part of L1's "done". If PC-02 is not reached during L1, test on PC-02 or another 1903-or-older PC before the 10 November trial. If none is available, the pilot school's own PCs are the first test, and the OS-floor finding in the L1 report becomes the only evidence.
 
@@ -171,3 +174,20 @@ Both machines also have a **distinct baseboard serial**, so neither rests on a s
    - If **any**: the two-signal strong rule is shown unsafe on that platform. Change it so a serial the UUID encodes cannot be the second signal. The candidate is to require the baseboard serial or the system disk as the second signal on those machines; the decision is made then, with the data.
    - **Out of scope for S1:** a serial shared by machines whose UUIDs are independent and different. Those machines cannot strong-match, because sharing a serial without the UUID is only a weak match and goes to admin review. Record such a case as survey evidence, not as this failure.
 4. When the spec is next amended, its §7.3 survey questions gain S1.
+
+## 10. Unit 3 plan and deadline (Nitoni, 19 October)
+
+**The Cloud Session is available until 4 November 2026.** All of Unit 3 is finished before then, and before the 10 November trial. It is split into two PRs **for review only** — nothing is deferred past the trial.
+
+| When | What |
+|---|---|
+| Now | Unit 3a brief reviewed and uploaded; Cloud Session pre-code report; planning's rulings |
+| About a week | Unit 3a PR. Planning briefs 3b as soon as it is open. |
+| By 4 November | Unit 3b PR. Both PRs implemented and reviewed enough to leave the Cloud Session. |
+| 5–9 November | Merge, manual Render deploy, production end-to-end tests, Windows integration, trial preparation |
+| 10 November | School trial |
+
+Planning verifies each PR as §7 describes. If the 4 November date comes under pressure, planning says so as soon as it is visible, with what would not make it — never by quietly cutting scope.
+
+**Operating the trial before any owner screen exists.** Release and ambiguity resolution are HTTP endpoints only. Planning writes PowerShell scripts for them, as §6 does for the test school, once 3a is merged.
+
