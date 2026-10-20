@@ -1,6 +1,6 @@
 # ExamPartner Windows — Licence API Contract
 
-**Version:** 1 · **Date:** 8 October 2026 · **Amended:** 10 and 19 October 2026 (additive; §13) · **Owner:** Planning
+**Version:** 1 · **Date:** 8 October 2026 · **Amended:** 10, 19 and 20 October 2026 (additive; §13) · **Owner:** Planning
 **Both implementers build against this document.** The backend (Cloud Session) and the WinUI client (local agent) cannot see each other; this is the only place their shapes meet. If something you need is not here, **stop and report it** — do not invent a field, a code or a behaviour, because the other side is building against the same page and a guess silently diverges.
 
 This contract governs the wire format and the client–server behaviour. The *business rules* behind it — capacity, matching, ambiguity, release — remain in `docs/ExamPartner_Windows_SeatPool_PilotV1_Implementation_Spec.md` and `docs/CLOUD_SESSION_BRIEF.md`. Where this document and the spec disagree about a field name, a format or an error code, **this document wins** and the spec is updated to match.
@@ -441,8 +441,9 @@ Replace the stored lease only after the new one passes §8.2 checks 1–3.
 - Generate a fresh UUID v4 **before the first attempt** of each logical operation, **persist it** (with the lease state), and reuse it for every retry of that operation.
 - Start a new `request_id` only after a **definitive** answer: any `2xx`, or a non-retryable error (§9.3).
 - **Activate:** a repeat of the same `request_id` with the same `pool_id` and the same fingerprint returns the **same outcome** — the same binding, a lease for it, no second seat, no ambiguity — within 24 hours of the first attempt. The same `request_id` with a different body → `request_id_reused`.
-- **Refresh:** a repeat of the binding's most recent refresh `request_id` returns the **current lease unchanged** — same `lease_serial`, byte-identical — and is not counted as a stale-serial signal. Without this, every lost refresh response on a weak connection would look like a cloned lease.
+- **Refresh:** a repeat of a refresh `request_id` within 24 hours, for the same binding and the same fingerprint, returns the binding's **current lease unchanged** — byte-identical, no new `lease_serial` — and is not counted as a stale-serial signal. This holds for any refresh `request_id` in that window, not only the most recent one: a replay never issues a lease. Without it, every lost refresh response on a weak connection would look like a cloned lease.
 - Collecting an ambiguity (§10) uses a **new** `request_id`.
+- **One history, across every operation.** The server remembers every state-changing licensing request for 24 hours: activation, restore, refresh, ambiguity collection, and the owner and admin operations (release, ambiguity resolution). A `request_id` belongs to the **one** logical request that first used it. Reusing it within 24 hours for a different operation, endpoint, pool, binding or body → `409 request_id_reused`, even when the earlier use was on another endpoint or has since been overtaken by a later request. A client that generates a fresh UUID v4 per logical operation, as above, never sees this.
 
 ### 9.3 Error body and codes
 
@@ -523,7 +524,8 @@ For the Cloud Session; listed here because breaking any of them breaks the clien
 - **The activation token is useless as an account token, and an account token is useless here.** Sign activation tokens with a key **derived for this purpose only** — e.g. HMAC-SHA256 keyed with `HMAC(JWT_SECRET, "exampartner-activation-v1")` — not with `make_token()`. `auth_utils.read_token()` checks only signature and expiry, not a type, so a token signed the ordinary way would be accepted by `get_current_user()` as a full login on every Android route. A test must prove `get_current_user()` returns `None` for an activation token, and that `/licence/activate` refuses an ordinary user token.
 - **`/licence/activation-session` registers no device** and never calls `register_device()`. It verifies the password the way `/auth/login` does.
 - **Activation tokens expire 15 minutes after issue.** They carry the caller's identifier and role, and authorise only `/licence/activate`.
-- **Store `request_id`s** so §9.2 holds: the activation's `request_id` on the binding (or a request log), and the most recent refresh `request_id` per binding. These need new columns in the next unit's schema.
+- **Keep one authoritative 24-hour request history** so §9.2 holds: every state-changing licensing request — activation, restore, refresh, ambiguity collection, release and ambiguity resolution — with its operation, target, request digest and the outcome a replay must return. Read it before acting on any of them. The latest-request columns on a binding are not enough on their own: a later request overwrites them (brief §9 R1, §4.I I4).
+- **The request history fails closed.** If it cannot be read or written — its storage missing, or the licensing schema step failed — every operation that depends on it returns `503 licensing_unavailable` and writes nothing. It never falls back to the per-binding columns and never surfaces a raw database error. The rest of the backend keeps working (brief §4.E, §4.I I4).
 - **Licensing unavailable is a 503, never a crash**, including when the signing key is missing, malformed or equal to the TEST seed (§6.5), and when startup recorded licensing as unavailable — in addition to the live index check inside every binding write (brief §4.E).
 - **Error precedence** follows §5, so entitlement problems outrank capacity.
 - **Every response carries `server_time`**, in the §2 format.
@@ -546,3 +548,4 @@ For the Cloud Session; listed here because breaking any of them breaks the clien
 | 8 October 2026 | Version 1. |
 | 10 October 2026 | §7.3 clarified: the current survey collector does not record the continuity fields, so survey files exercise identity matching only. No wire change. |
 | 19 October 2026 | Additive, for backend Unit 3a. §9.3: `pool_inactive` can also come from refresh; `machine_mismatch` also covers a superseded installation and a refresh-raised ambiguity resolved as a different machine. §10 step 4: the outcomes of collecting a refresh-raised ambiguity. No field, format or existing meaning changed. |
+| 20 October 2026 | Additive, for backend Unit 3a, after cross-review. §9.2: one 24-hour request history across every operation; any refresh `request_id` in the window replays, not only the latest; cross-operation reuse is `request_id_reused`. §11: the history is authoritative and fails closed with `503`. No field or format changed; a client that follows §9.2's one-UUID-per-operation rule is unaffected. |

@@ -1,7 +1,7 @@
 # Planning state — ExamPartner Windows seat-pool licensing
 
 **Handover from the planning windows of 5–19 October 2026.** Read this first in a new planning window, then `docs/WORKING_MODEL.md`.
-**State as of:** 19 October 2026 (evening) · `main` at `684f359`. This revision adds the Unit 3 plan and deadline (§1, §2, §5, §10) and the licence session token decision (§4).
+**State as of:** 20 October 2026 · `main` at `684f359`. This revision adds the Unit 3 plan and deadline (§1, §2, §5, §10) and the licence session token decision (§4).
 
 ---
 
@@ -12,9 +12,9 @@
 | **Backend Unit 1** — time helpers, schema, owner check, `claim_capacity()` | Merged as PR #37 (`3a8e313`). Deployed. |
 | **Backend Unit 2** — fingerprint rules, activation session, activate and restore, lease signing, error envelope, pilot setup endpoints | Merged as PR #38 (`bdaff67`). 372 tests passing, 0 skipped. **Deployed to production** (confirmed by Nitoni, 17 October): signing key configured as kid 1, `/health` returns `"licensing": "ready"`. |
 | **Android smoke test after the Unit 2 deploy** | Passed: the live Android app loads questions from the production backend. Auth, payment and device registration were **not** re-tested as part of this. |
-| **Backend Unit 3a** — refresh, request history (brief §9 R1), ambiguity resolve and collect, release, admin ambiguity list, R2 race test | **Briefed** 19 October: `docs/CLOUD_SESSION_BRIEF.md` §4.I and §5; contract amended additively (§13, 19 October). Waiting for upload, then the pre-code report. No change from survey finding S1 (§9.3). |
+| **Backend Unit 3a** — refresh, one fail-closed request history (brief §9 R1) covering every operation including release and resolution, ambiguity resolve and collect, release, admin ambiguity list, R2 race test | **Briefed** 19 October, revised 20 October after ChatGPT's cross-review: `docs/CLOUD_SESSION_BRIEF.md` §4.I and §5; contract amended additively (§13, 19 October). Waiting for upload, then the pre-code report. No change from survey finding S1 (§9.3). |
 | **Backend Unit 3b** — licence session token, owner reads and rename, account editing, pool resizing, signals review, test-clock endpoint, contract v1.1 | Not briefed. Planning writes it once 3a's PR is open. |
-| **API contract** | `docs/LICENCE_API_CONTRACT.md` v1, 8 October 2026; §7.3 clarified 10 October. Signed-lease test vectors in §6.4. |
+| **API contract** | `docs/LICENCE_API_CONTRACT.md` v1, 8 October 2026; §7.3 clarified 10 October; additive amendments for Unit 3a on 19 and 20 October (§9.2, §9.3, §10, §11; change log §13). Signed-lease test vectors in §6.4. v1.1 comes with Unit 3b. |
 | **WinUI client** | Not started. Brief: `docs/LOCAL_AGENT_BRIEF.md`, revision 3 (19 October) — L0 collector v2, L1 licence core, L2 activation UI, packaging decision. L0 and L1 must pass on the two guaranteed PCs; the other three are opportunistic. |
 | **Survey collector** | v1 in `tools/fingerprint-survey/`. Records the identity signals but not the continuity fields; v2 is local-agent work unit L0. |
 | **Hardware survey** | **Preliminary v1 run done** on five of Nitoni's own PCs, 15–16 October (§9). It is the spec §7.4 first pass, not the school survey. Thresholds stay provisional until the school survey (spec §13 step 12). |

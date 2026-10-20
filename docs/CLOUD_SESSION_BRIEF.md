@@ -317,20 +317,37 @@ No capacity is touched, no binding is created, and `installation_id` does not ch
 
 **I4. One authoritative request history (brief §9 R1).** R1 is mandatory and its five tests stand. In addition:
 
-- The history covers **every** state-changing licensing request: activation, restore, refresh, and ambiguity collection on either endpoint. Record each with its `request_id`, its operation, the pool, the binding or ambiguity it concerns, its request digest, the outcome a replay must return, and when it arrived.
+- The history covers **every** state-changing licensing request: activation, restore, refresh, ambiguity collection on either endpoint, **release (I7) and ambiguity resolution (I5)**. Record each with its `request_id`, its operation, the pool, the binding or ambiguity it concerns, its request digest, the outcome a replay must return, and when it arrived.
 - **A refresh replay** is the same `request_id`, the same binding and the same digest within 24 hours. Return the binding's **current** lease unchanged (contract §9.2) — even when a later refresh under a different `request_id` has issued a newer one, since issuing again is the thing a replay must never do. Not a stale-serial signal.
 - **The refresh digest** covers the binding ID, the normalised reading and the `ambiguity_id`, and is computed once and stored (H5). Not the lease bytes: a retry presents the same old lease, but a client that lost its response may hold either.
 - **Cross-operation reuse** — a `request_id` seen in the last 24 hours under a different operation, pool, binding or digest → `409 request_id_reused`. This holds across endpoints: an activation `request_id` reused for a refresh is refused.
 - **Propose the storage in your pre-code report** (brief §9 R1). A request-log table keyed by `request_id` is the expected shape. Its index is best-effort, like H5's: correctness rests on the lookup, and H4 still applies — no global lock.
 - Do **not** retire Unit 2's request columns on `institution_seats` or `licence_ambiguities`. Write the history alongside them, and read it first.
+- **The history fails closed** (contract §11). It is correctness-critical: without it a retry can consume a second seat or a reused ID can be mistaken for a replay. So:
+  - its table is created in the **licensing DDL step** (§4.E), and a failure there records licensing unavailable, like any other licensing schema failure;
+  - if it cannot be read or written at request time — the table missing after startup, or any database error from it — the operation returns **`503 licensing_unavailable`**, rolls back, and writes nothing: no binding, no lease, no log row, no ambiguity change, no release;
+  - it **never** falls back to the per-binding request columns, and never surfaces a raw database `500`;
+  - the rest of the backend is untouched: `/auth`, CBT, Study and every non-licensing route keep working, and `/health` still makes no database query (§4.E). It reports what startup recorded.
 
-**I5. Ambiguity resolution — `POST /support/licensing/ambiguities/{id}/resolve`.** ExamPartner admin only (`require_admin()`, ordinary bearer token). Body `{"decision": "recognize_existing" | "treat_as_new", "binding_id": "…"}` — `binding_id` required for `recognize_existing` and refused otherwise. Logs `ambiguity_resolved`, with the decision and binding in `detail_json`, `actor_role = 'exampartner_admin'`.
+  On Postgres, a failed statement aborts the transaction, so roll back before raising the `503`.
 
-- Only an `open` ambiguity younger than 7 days can be resolved. Expired, resolved or consumed → `409` with the matching `ambiguity_*` code. An expired-but-still-`open` row is reported, and may be marked, `expired`.
-- **`recognize_existing`.** The `binding_id` must be one of the ambiguity's candidates **and still active**. Otherwise → `409` (a released candidate can never be recognised: rule F). Records the decision only; the restore or ratchet happens when the PC collects (I6), so a PC that never comes back changes nothing.
+**I5. Ambiguity resolution — `POST /support/licensing/ambiguities/{id}/resolve`.** ExamPartner admin only (`require_admin()`, ordinary bearer token). Body `{"request_id": "<UUID v4>", "decision": "recognize_existing" | "treat_as_new", "binding_id": "…"}`. `request_id` is required. `binding_id` is required for `recognize_existing` and refused otherwise. Logs `ambiguity_resolved`, with the decision and binding in `detail_json`, `actor_role = 'exampartner_admin'`. Errors use `licence_error()` and the contract §9.3 body; success is `{"ok": true, "ambiguity_id", "status", "resolution", "resolved_binding_id", "resolved_at", "server_time"}`.
+
+- **Order:** `401` without a valid bearer token → `403` for a non-admin → `400 invalid_request` → `503 licensing_unavailable` → an unknown `ambiguity_id` → `404 ambiguity_not_found` → the request history (I4) → the state checks below.
+- **The request history.** The same `request_id` with the same ambiguity, decision and binding within 24 hours **replays the stored outcome** — success or the refusal it got — and changes nothing. The same `request_id` with any other body, or one used by any other operation → `409 request_id_reused`.
+- **Only an `open` ambiguity younger than 7 days can be resolved.** A new request against any other state gets exactly one of:
+
+  | State | Response |
+  |---|---|
+  | `open`, 7 days or older, or `expired` | `409 ambiguity_expired`. An expired-but-still-`open` row may be marked `expired` at this point. |
+  | `resolved` — **including** by an identical decision under a different `request_id` | `409 ambiguity_already_resolved`, with `resolution`, `resolved_binding_id` and `resolved_at` in the body, so the admin sees what was decided |
+  | `consumed` | `409 ambiguity_consumed`, with the same three fields |
+
+  A resolution is never changed once made. To undo one, the school releases the binding.
+- **`recognize_existing`.** The `binding_id` must be one of the ambiguity's candidates **and still active**. Otherwise → `409 ambiguity_candidate_invalid`, with the ambiguity's candidate IDs in the body (a released candidate can never be recognised: rule F). This check follows the state checks above, so a resolved, consumed or expired ambiguity reports its state first. Records the decision only; the restore or ratchet happens when the PC collects (I6), so a PC that never comes back changes nothing.
 - **`treat_as_new`, activation-raised.** Capacity is claimed **at resolution**, through `claim_capacity()` — the single chokepoint — with the ambiguity's presented signals, hash and label, `performed_by` the admin, `actor_role = 'exampartner_admin'`, and `fingerprint_confidence` computed from the presented reading against the pool now. The new binding becomes `resolved_binding_id`; its lease is issued when the PC collects. Claiming now means a full pool is reported to the admin, who can tell the school to release a PC, rather than discovered later by the technician. `pool_full`, `pool_inactive` and `subscription_inactive` come back to the admin, and the ambiguity stays `open`.
 - **`treat_as_new`, refresh-raised.** The admin has decided the PC presenting the lease is **not** the binding's machine. Nothing is claimed. The decision is recorded, and collection returns `403 machine_mismatch` (I6), so the PC goes through ordinary activation with the owner's sign-in and claims its own seat there. The refresh response has no `installation_id` field (contract §9.1), so a refresh can never hand a PC a new binding.
-- **Invariants — propose the mechanism in your pre-code report:** exactly one resolution per ambiguity, even with two concurrent resolve calls; a `treat_as_new` claim never leaves an orphan binding behind a failed status update, or a resolved status behind a failed claim; and `claim_capacity()` stays the only path that creates a binding. Where a path needs the pool lock and a row lock, take the **pool first** (H3).
+- **Invariants — propose the mechanism in your pre-code report:** exactly one resolution per ambiguity, even with two concurrent resolve calls — the loser gets `ambiguity_already_resolved`, or the stored outcome if it is a replay of the winner's request; a `treat_as_new` claim never leaves an orphan binding behind a failed status update, or a resolved status behind a failed claim; and `claim_capacity()` stays the only path that creates a binding. Where a path needs the pool lock and a row lock, take the **pool first** (H3).
 
 **I6. Collecting a resolved ambiguity (contract §10).** Keep Unit 2's identity checks exactly, in their order — wrong pool or origin → `ambiguity_mismatch`; the raising `request_id` → `request_id_reused`; a different digest → `ambiguity_mismatch` — and add the I4 history check. Then, by state:
 
@@ -351,9 +368,11 @@ No capacity is touched, no binding is created, and `installation_id` does not ch
 **I7. Release — `POST /institutions/seats/{binding_id}/release`** (spec §8.5).
 
 - **Authorisation:** an ordinary bearer token, then `require_account_owner()` against the **binding's own** account (spec §9: resolve the object, then check the caller owns it). An unknown binding and another school's binding return the **same** `403 binding_access_denied` — no existence leak. No token → `401 not_authenticated`. A lease is not a bearer token; spec test 28 is the proof.
-- **Body**, optional: `{"revoke_reason": "manual" | "replacement" | "hardware_failure" | "retired" | "renewal_retire" | "support" | "other", "reason": "free text, at most 500 characters"}`. Default `manual`. An unknown `revoke_reason` → `400 invalid_request`. **Neither field ever gates the release** (spec §8.5).
+- **Body:** `{"request_id": "<UUID v4>", "revoke_reason": "manual" | "replacement" | "hardware_failure" | "retired" | "renewal_retire" | "support" | "other", "reason": "free text, at most 500 characters"}`. `request_id` is **required**; the other two are optional, `revoke_reason` defaulting to `manual`. A missing or malformed `request_id`, or an unknown `revoke_reason` → `400 invalid_request`. **Neither reason field ever gates the release** (spec §8.5).
+- **Order:** `401 not_authenticated` → `400 invalid_request` → `503 licensing_unavailable` → `403 binding_access_denied` → the request history (I4) → the effect.
+- **The request history.** Release is the first owner operation the WinUI client will call (Unit 3b), so it follows contract §9.2 like every client operation. The same `request_id`, binding, `revoke_reason` and `reason` within 24 hours **replays the stored response** byte-for-byte, including the original `result` and pool counts. The same `request_id` with a different body, or one used by any other operation → `409 request_id_reused`. Authorisation runs **before** the replay check, so a replay never shows one owner another school's response.
 - **Effect**, in one transaction locking the **binding row only**: set `revoked_at`, `revoke_reason` and `revoked_by`, and log `release` with the binding's snapshots and `reason`. Capacity is free the moment it commits. Pending ambiguities naming the binding as a candidate are left alone; they fail at resolution or collection because the binding is revoked.
-- **Idempotent:** releasing an already released binding returns `200` with `result: "already_released"` and the original `released_at`, and writes nothing.
+- **Idempotent by state, too:** a **new** `request_id` releasing an already released binding returns `200` with `result: "already_released"` and the original `released_at`, records the request, and writes nothing else.
 - **Response `200`:** `{"result": "released" | "already_released", "binding_id", "released_at", "seat_pool_id", "pool_size", "active", "available", "over_capacity", "server_time"}`, with the pool counts read **after** the commit, and wire timestamps (F8).
 - **Errors use `licence_error()` and the contract §9.3 body** (F8), not plain `HTTPException` strings. Unit 3b writes this endpoint into contract v1.1 exactly as built here, so build it to that standard now.
 - **Not in 3a:** accepting the licence session token on this route. That is Unit 3b (I9).
@@ -363,7 +382,7 @@ No capacity is touched, no binding is created, and `installation_id` does not ch
 **I9. What Unit 3b will add, so you do not build it now.** Recorded so the 3a code does not close it off:
 - **The licence session token** (Nitoni's decision, 19 October). The 15-minute token from `/licence/activation-session` is extended from activation-only to **licensing-only management**. It will authorise activate, the owner's machine list, owner-visible history, rename and **release**, and nothing else: not ambiguity resolution, account editing, subscription changes, pool resizing, the support endpoints, or any non-licensing route. It stays short-lived, in memory on the client, bound to the signed-in identity and the accounts it may manage, and useless on every Android route. The owner endpoints **also keep** accepting the ordinary bearer token, for PowerShell and support use. The path `/licence/activation-session` stays.
   - **For 3a:** keep authorisation in `release` in one small function, so 3b can add the second token type without restructuring the route. Do not change `F7`'s token or its verification.
-- Contract v1.1: the owner endpoints, written into the contract, with I7's release shape unchanged.
+- Contract v1.1: the owner endpoints, written into the contract, with I7's release shape, `request_id` rule and error codes unchanged. The codes 3a introduces — `not_authenticated`, `binding_access_denied` on release, and `ambiguity_not_found`, `ambiguity_already_resolved` and `ambiguity_candidate_invalid` on the admin resolve route — go into v1.1's §9.3 as built.
 - The owner reads, rename, account editing, pool resizing, the signals review list, and the test-clock endpoint.
 
 **I10. Tests use the in-process clock.** Spec tests 15–19 shift time with `licensing_time.set_clock_offset()` under `ALLOW_TEST_CLOCK` patched true, as Unit 1 made possible. The test-clock **endpoint** is Unit 3b, and `ALLOW_TEST_CLOCK` stays absent in production.
@@ -377,13 +396,13 @@ No capacity is touched, no binding is created, and `installation_id` does not ch
 **Unit 3a builds**, under §4.I and contract §9–§10:
 
 1. **`POST /licence/refresh`** — the I1 decision order, I2 machine verification, I3 issuing and the ratchet, and stale-serial flagging. Register it in `routes/licensing.py`.
-2. **One request history** for activation, restore, refresh and collection — brief §9 R1 and I4. Schema, both engines, idempotent as always.
+2. **One request history** for activation, restore, refresh, ambiguity collection, release and ambiguity resolution — brief §9 R1 and I4. Schema, both engines, idempotent as always.
 3. **Ambiguity resolution** — `POST /support/licensing/ambiguities/{id}/resolve` (I5).
 4. **Collecting a resolved ambiguity** on both `activate` and `refresh` (I6), replacing Unit 2's report-the-state-only behaviour.
 5. **Release** — `POST /institutions/seats/{binding_id}/release` (I7).
 6. **`GET /support/licensing/ambiguities`** (I8).
 7. **Brief §9 R2** — tighten the ambiguity race test so removing the `last_ambiguity_at` lock fails it every time.
-8. **`backend/CLAUDE.md`** — add the refresh path to the H3 lock-order note (it takes the binding lock, and only `create_or_get_ambiguity()` takes the pool lock, never both in one transaction), and a line that every state-changing licensing request records itself in the request history.
+8. **`backend/CLAUDE.md`** — add the refresh path to the H3 lock-order note (it takes the binding lock, and only `create_or_get_ambiguity()` takes the pool lock, never both in one transaction), and a line that every state-changing licensing request records itself in the request history, which fails closed with `503` and is never bypassed (I4).
 
 **Not in this unit** (Unit 3b, briefed next, still before 4 November):
 - the licence session token extension (I9);
@@ -422,7 +441,7 @@ Do not build any of these, even where the code would be convenient to write now.
   - `treat_as_new` on a full pool → `pool_full` to the admin, the ambiguity still `open`;
   - `treat_as_new` activation-raised → the PC collects `activated` and the pool has one more active binding;
   - `treat_as_new` refresh-raised → collection returns `machine_mismatch`, nothing claimed;
-  - `recognize_existing` on a candidate released before resolution → refused; released after resolution → collection returns `lease_revoked`;
+  - `recognize_existing` on a candidate released before resolution → `ambiguity_candidate_invalid`; released after resolution → collection returns `lease_revoked`;
   - collecting twice → one lease, then `ambiguity_consumed`;
   - an ambiguity older than 7 days → cannot be resolved, and collects as `ambiguity_expired`.
 - **Concurrency, on Postgres, barrier-synchronised as in test 4**, each with its guard removed by hand to show it fails:
@@ -431,7 +450,9 @@ Do not build any of these, even where the code would be convenient to write now.
   - two concurrent collections of one resolved ambiguity → one lease;
   - two concurrent `resolve` calls → one resolution, and at most one binding claimed;
   - a release concurrent with a refresh → the refresh either completes before the release or returns `lease_revoked`, never a lease issued after `revoked_at`.
-- **Release:** idempotent second call; the pool counts in the response are post-commit; capacity freed by release is immediately claimable (spec test 5 still passes).
+- **Release:** the same `request_id` retried → the original response byte-for-byte; a new `request_id` on a released binding → `already_released`; the same `request_id` with a different `revoke_reason` → `request_id_reused`; an activation's `request_id` reused for a release → `request_id_reused`; a missing `request_id` → `invalid_request`; the pool counts in the response are post-commit; capacity freed by release is immediately claimable (spec test 5 still passes).
+- **Resolution:** `recognize_existing` naming a binding that is not a candidate, or a candidate released before resolution → `ambiguity_candidate_invalid`, the ambiguity still `open`; the same `request_id` retried → the stored outcome, nothing changed; a second resolution under a new `request_id`, whether the same decision or a different one → `ambiguity_already_resolved` with the first resolution's fields; resolving a consumed one → `ambiguity_consumed`; a refresh's `request_id` reused for a resolution → `request_id_reused`.
+- **The history fails closed.** After startup has recorded licensing ready, drop or rename the request-history table, then call activate, refresh, collection on both endpoints, release and resolve. Each returns `503 licensing_unavailable` with the §9.3 body, and **nothing is written**: binding count, lease serials, log rows, ambiguity rows and `revoked_at` are all unchanged. In the same state, `/health` returns `200` and a non-licensing route (for example `/auth/login` or the content-version route) still works. Restore the table and every operation works again. On Postgres, and on SQLite if practical, as for test 31.
 - **Every response carries `server_time`**, and every new error body the §9.3 shape.
 - **Test 4 still passes, spec test 6 by hand still fails without the lock**, and the R2-tightened ambiguity race test fails every time without its lock.
 
@@ -467,7 +488,7 @@ Items listed here are not yours to act on; they may change the spec under you. *
 
 ## 9. Carried into Unit 3 — mandatory
 
-**Now part of Unit 3a** (§5, §4.I I4). R1's five tests and R2 stand unchanged; I4 extends R1 to refresh.
+**Now part of Unit 3a** (§5, §4.I I4). R1's five tests and R2 stand unchanged; I4 extends R1 to every Unit 3a state-changing licensing operation — activation, restore, refresh, ambiguity collection, release and ambiguity resolution — and makes the history fail closed.
 
 Recorded on 12 October 2026, when PR #38 (Unit 2) was approved for merge with this limitation known. **These are correctness requirements for Unit 3, not optional clean-up.**
 
@@ -477,7 +498,7 @@ Recorded on 12 October 2026, when PR #38 (Unit 2) was approved for merge with th
 
 Neither can consume a seat, issue a lease, alter an ambiguity, cross a school boundary or reveal another PC's state in Unit 2 — collection there only reports pending or expired. In Unit 3 it becomes correctness-critical, because collecting a **resolved** ambiguity restores or creates a binding and issues a lease.
 
-**Rule:** before any activation, refresh, or ambiguity collection performs or returns an idempotent outcome, the server must be able to tell whether that `request_id` has been used **anywhere** in the preceding 24 hours — including earlier activation and restore IDs that are no longer a binding's latest, and IDs used by ambiguities. The same logical request → replay its stored outcome. A different pool, body or operation → `409 request_id_reused`. Do **not** rely solely on `institution_seats.activation_request_id`. Propose the storage — for example a request log keyed by `request_id` — in the Unit 3 pre-code report. It is a sequential-misuse check: H4 still applies, and no global lock is to be added.
+**Rule:** before any activation, restore, refresh, ambiguity collection, release or ambiguity resolution performs or returns an idempotent outcome, the server must be able to tell whether that `request_id` has been used **anywhere** in the preceding 24 hours — including earlier activation and restore IDs that are no longer a binding's latest, and IDs used by ambiguities. The same logical request → replay its stored outcome. A different pool, body or operation → `409 request_id_reused`. Do **not** rely solely on `institution_seats.activation_request_id`. Propose the storage — for example a request log keyed by `request_id` — in the Unit 3 pre-code report. It is a sequential-misuse check: H4 still applies, and no global lock is to be added.
 
 **Required tests:**
 1. Ambiguity collection reusing a recent successful activation `request_id` from the **same** pool → `request_id_reused`.
