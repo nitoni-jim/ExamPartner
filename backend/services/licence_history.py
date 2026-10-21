@@ -3,7 +3,8 @@ services/licence_history.py — the one authoritative 24-hour request history
 (brief §9 R1, §4.I I4, §4.J; contract §9.2, §11).
 
 Every state-changing licensing request — activation, restore, refresh,
-ambiguity collection on either endpoint, release and ambiguity resolution —
+ambiguity collection on either endpoint, release and ambiguity resolution,
+and since Unit 3b rename, account editing and pool editing (brief §4.K K7) —
 records itself in licence_requests. A request_id belongs to the ONE logical
 request that first used it: the same operation with the same digest within
 24 hours is a replay and gets the stored outcome back; anything else is
@@ -50,7 +51,8 @@ logger = logging.getLogger(__name__)
 
 WINDOW = timedelta(hours=24)        # contract §9.2
 
-OPERATIONS = ("activate", "refresh", "release", "resolve")
+OPERATIONS = ("activate", "refresh", "release", "resolve",
+              "rename", "account_update", "pool_update")          # Unit 3b (K3, K5, K6)
 
 
 @dataclass(frozen=True)

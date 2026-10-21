@@ -827,7 +827,8 @@ LICENCE_AMBIGUITIES_COLUMNS = [
 # licence_requests — the ONE authoritative 24-hour request history (brief
 # §9 R1, §4.I I4, §4.J; contract §9.2, §11). Every state-changing licensing
 # request records itself here — activation, restore, refresh, ambiguity
-# collection on either endpoint, release and ambiguity resolution — in the
+# collection on either endpoint, release and ambiguity resolution, and since
+# Unit 3b rename, account editing and pool editing (brief §4.K K7) — in the
 # SAME transaction as its effect, while the lock that decided it is held
 # (J8). A request_id belongs to the one logical request that first used it.
 #
@@ -844,13 +845,13 @@ LICENCE_AMBIGUITIES_COLUMNS = [
 LICENCE_REQUESTS_COLUMNS = [
     ("id",            "TEXT PRIMARY KEY"),
     ("request_id",    "TEXT NOT NULL"),
-    ("operation",     "TEXT NOT NULL"),                 # activate | refresh | release | resolve
+    ("operation",     "TEXT NOT NULL"),                 # activate | refresh | release | resolve | rename | account_update | pool_update
     ("account_id",    "TEXT"),
     ("seat_pool_id",  "TEXT"),
     ("binding_id",    "TEXT"),                          # the binding it concerns or produced
     ("ambiguity_id",  "TEXT"),                          # the ambiguity it concerns or raised
     ("request_fp",    "TEXT NOT NULL"),                 # the operation's digest, stored, never recomputed
-    ("outcome",       "TEXT NOT NULL"),                 # activated | restored | ambiguity | refreshed | released | already_released | resolved | refused
+    ("outcome",       "TEXT NOT NULL"),                 # activated | restored | ambiguity | refreshed | released | already_released | resolved | renamed | unchanged | updated | refused
     ("status_code",   "INTEGER"),                       # what a replay answers with
     ("response_json", "TEXT"),                          # the body a replay returns, without server_time
     ("created_at",    "TEXT"),
