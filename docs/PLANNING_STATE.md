@@ -1,7 +1,7 @@
 # Planning state — ExamPartner Windows seat-pool licensing
 
 **Handover from the planning windows of 5–19 October 2026.** Read this first in a new planning window, then `docs/WORKING_MODEL.md`.
-**State as of:** 20 October 2026 (evening) · `main` at `d50ce94`, before this upload. This revision records the Unit 3a pre-code report's approval (brief §4.J); the Unit 3 plan and deadline are in §1, §2, §5 and §10, and the licence session token decision in §4.
+**State as of:** 21 October 2026 · `main` at `313ad4e` (Unit 3a merged as PR #39), before this upload. This revision records Unit 3a merged, the Unit 3b brief (brief §4.K, §5) and contract v1.1. The Unit 3 plan and deadline are in §1, §2, §5 and §10, and the licence session token decision in §4.
 
 ---
 
@@ -12,9 +12,9 @@
 | **Backend Unit 1** — time helpers, schema, owner check, `claim_capacity()` | Merged as PR #37 (`3a8e313`). Deployed. |
 | **Backend Unit 2** — fingerprint rules, activation session, activate and restore, lease signing, error envelope, pilot setup endpoints | Merged as PR #38 (`bdaff67`). 372 tests passing, 0 skipped. **Deployed to production** (confirmed by Nitoni, 17 October): signing key configured as kid 1, `/health` returns `"licensing": "ready"`. |
 | **Android smoke test after the Unit 2 deploy** | Passed: the live Android app loads questions from the production backend. Auth, payment and device registration were **not** re-tested as part of this. |
-| **Backend Unit 3a** — refresh, one fail-closed request history (brief §9 R1) covering every operation including release and resolution, ambiguity resolve and collect, release, admin ambiguity list, R2 race test | **Pre-code report approved** 20 October (brief §4.J); implementing, PR targeted for about 27 October. Briefed 19 October, revised 20 October after ChatGPT's cross-review: `docs/CLOUD_SESSION_BRIEF.md` §4.I and §5; contract amended additively (§13, 19 October). No change from survey finding S1 (§9.3). |
-| **Backend Unit 3b** — licence session token, owner reads and rename, account editing, pool resizing, signals review, test-clock endpoint, contract v1.1 | Not briefed. Planning writes it once 3a's PR is open. |
-| **API contract** | `docs/LICENCE_API_CONTRACT.md` v1, 8 October 2026; §7.3 clarified 10 October; additive amendments for Unit 3a on 19 and 20 October (§9.2, §9.3, §10, §11; change log §13). Signed-lease test vectors in §6.4. v1.1 comes with Unit 3b. |
+| **Backend Unit 3a** — refresh, one fail-closed request history (brief §9 R1) covering every operation including release and resolution, ambiguity resolve and collect, release, admin ambiguity list, R2 race test | **Merged** as PR #39 (`6172561`), 21 October, six days ahead of target. Planning verified it independently: 521 passed, 0 skipped; every lock and J8 guard removed by hand fails its tests; planning's own end-to-end run passed 38 of 38. Record in brief §4.K K0. **Deploy pending** (§2). No change from survey finding S1 (§9.3). |
+| **Backend Unit 3b** — licence session token, owner reads and rename, account editing, pool resizing, signals review, test-clock endpoint, contract v1.1 | **Briefed** 21 October: brief §4.K and §5, contract v1.1 §10A. Waiting for upload, then a fresh Cloud Session's pre-code report. PR targeted for about 30 October. |
+| **API contract** | `docs/LICENCE_API_CONTRACT.md` v1, 8 October 2026; §7.3 clarified 10 October; additive amendments for Unit 3a on 19 and 20 October (§9.2, §9.3, §10, §11). **v1.1** on 21 October for Unit 3b: the licence session token and the owner endpoints (§1, §3, §4, §10A, §11). All changes additive; change log §13. Signed-lease test vectors in §6.4. |
 | **WinUI client** | Not started. Brief: `docs/LOCAL_AGENT_BRIEF.md`, revision 3 (19 October) — L0 collector v2, L1 licence core, L2 activation UI, packaging decision. L0 and L1 must pass on the two guaranteed PCs; the other three are opportunistic. |
 | **Survey collector** | v1 in `tools/fingerprint-survey/`. Records the identity signals but not the continuity fields; v2 is local-agent work unit L0. |
 | **Hardware survey** | **Preliminary v1 run done** on five of Nitoni's own PCs, 15–16 October (§9). It is the spec §7.4 first pass, not the school survey. Thresholds stay provisional until the school survey (spec §13 step 12). |
@@ -22,11 +22,12 @@
 
 ## 2. Waiting on Nitoni right now
 
-1. **Upload this file, `docs/CLOUD_SESSION_BRIEF.md`, `docs/LICENCE_API_CONTRACT.md` and `docs/WORKING_MODEL.md`** in one commit, replacing the existing versions (upload over them; do not delete first). The Cloud Session has started and its Unit 3a pre-code report is approved (brief §4.J); **give it the go-ahead only after this upload**, because it builds from `main`.
-2. **Create the internal test school** for client development (§6 has the commands). The local agent's L1 needs it.
-3. **Decide the 10 November trial's scope** beyond activation and offline licence checking.
-4. **Start the local agent** on `docs/LOCAL_AGENT_BRIEF.md`.
-5. **Keep the five v1 survey files** privately, outside the repository. L0 compares v2 output against them machine by machine — on the two guaranteed PCs, and on the others whenever you have access.
+1. **Deploy Unit 3a** manually on Render (PR #39 is merged); confirm `/health` shows `"licensing": "ready"`. The deploy adds one table, one column and one index.
+2. **Upload this file, `docs/CLOUD_SESSION_BRIEF.md` and `docs/LICENCE_API_CONTRACT.md`** in one commit, replacing the existing versions (upload over them; do not delete first). Then start a fresh Cloud Session on Unit 3b; it cuts its branch from a `main` that already holds 3a.
+3. **Create the internal test school** for client development (§6 has the commands). The local agent's L1 needs it.
+4. **Decide the 10 November trial's scope** beyond activation and offline licence checking.
+5. **Start the local agent** on `docs/LOCAL_AGENT_BRIEF.md`.
+6. **Keep the five v1 survey files** privately, outside the repository. L0 compares v2 output against them machine by machine — on the two guaranteed PCs, and on the others whenever you have access.
 
 ## 3. Documents and what each is for
 
@@ -34,7 +35,7 @@
 |---|---|
 | `docs/WORKING_MODEL.md` | Who does what across planning, the Cloud Session and the local agent; settled versus open decisions (§6). |
 | `docs/LICENCE_API_CONTRACT.md` | The only place client and server shapes meet. **Wins on any wire detail.** |
-| `docs/CLOUD_SESSION_BRIEF.md` | Backend brief. §4.A–J rulings, §5 current unit (**Unit 3a**), §9 carried into Unit 3a. |
+| `docs/CLOUD_SESSION_BRIEF.md` | Backend brief. §4.A–K rulings, §5 current unit (**Unit 3b**). |
 | `docs/LOCAL_AGENT_BRIEF.md` | WinUI client brief. |
 | `docs/ExamPartner_Windows_SeatPool_PilotV1_Implementation_Spec.md` | The business rules, kept consistent with the brief rulings (amended through 11 October). |
 | `docs/ExamPartner_Windows_SeatPool_Architecture_Handoff.md` | Product decisions of record, including the fingerprint correction. |
@@ -48,7 +49,7 @@ The project attached to the planning chat holds copies of the main docs, kept in
 - **Capacity** is a count of active bindings, enforced in one function (`claim_capacity()`) under a pool-row lock. No slot numbers. Over-capacity after a shrink is a state, never an eviction.
 - **A licensing failure closes licensing, never the backend.** The Android app on the same backend must keep starting. The licensing index is checked live at every binding write. `/health` reports licensing readiness without a database query.
 - **Activation:**
-  - It runs under a **15-minute activation-only token**, obtained with owner or admin credentials — not `/auth/login`. It registers no device. Owner and admin status are re-checked at activation.
+  - It runs under a **15-minute licence session token**, obtained with owner or admin credentials — not `/auth/login`. It registers no device. Owner and admin status are re-checked at activation.
   - The **lease** is Ed25519 over the ASCII payload segment, with `kid` 0 reserved for the published TEST key. A missing, malformed or TEST signing key → licensing unavailable.
   - Matching is **signal by signal**, never by hash. Identity *quality* (of a reading) and match *strength* (against a binding) are separate concepts (brief F1).
   - Signals are compared by **exact equality after normalisation** — no prefix or similarity matching. An identifier carried by two or more active bindings in a pool is unusable in that pool (F1).
@@ -62,12 +63,11 @@ The project attached to the planning chat holds copies of the main docs, kept in
 - **Deployment:**
   - Render deploys **manually**. The trial is the **native WinUI client**.
   - Development uses **production Render with an internal test school**; the base URL stays configurable.
-- **The licence session token** (Nitoni, 19 October; built in Unit 3b, brief §4.I I9). The 15-minute token from `/licence/activation-session` becomes a **licensing-only management** token: activate, the owner's machine list and history, rename and release — nothing else, and useless on every Android route. It stays short-lived, memory-only, registers no device, and is bound to the signed-in identity's accounts. The WinUI client never uses `/auth/login`. Owner endpoints also keep accepting the ordinary bearer token, for PowerShell and support. The endpoint path stays `/licence/activation-session`; the contract's wording changes from "activation-only token" in v1.1.
+- **The licence session token** (Nitoni, 19 October; built in Unit 3b, brief §4.K K1; contract v1.1 §1, §10A). The 15-minute token from `/licence/activation-session` becomes a **licensing-only management** token: activate, the owner's machine list and history, rename and release — nothing else, and useless on every Android route. It stays short-lived, memory-only, registers no device, and is bound to the signed-in identity's accounts. The WinUI client never uses `/auth/login`. Owner endpoints also keep accepting the ordinary bearer token, for PowerShell and support. The endpoint path stays `/licence/activation-session`; the contract's wording changes from "activation-only token" in v1.1.
 
 ## 5. Open
 
 - **The 10 November trial's scope** beyond activation and offline licence checking (Nitoni).
-- **Unit 3b brief** — planning's next backend task, once 3a's PR is open. It carries the licence session token (§4), contract v1.1 with contract-grade shapes for the four owner endpoints (machine list, history, rename, release as built in 3a), whether or not the trial UI uses them, and the rest of §1's 3b row.
 - **Whether the trial's WinUI client gets an owner screen** (machine list, release, rename) — decided with the trial scope, not in Unit 3. School self-service needs those screens; ambiguity resolution stays with ExamPartner either way.
 - **Collector v2 → rerun on the two guaranteed PCs (others when available) → school survey → freeze thresholds**, before licensing is called complete. The freeze must also answer survey question S1 (§9.3).
 - **A live activation on Windows 10 1903 must happen before any school install.** OFFICE-PC-02 is no longer guaranteed, so this is not part of L1's "done". If PC-02 is not reached during L1, test on PC-02 or another 1903-or-older PC before the 10 November trial. If none is available, the pilot school's own PCs are the first test, and the OS-floor finding in the L1 report becomes the only evidence.
@@ -181,8 +181,8 @@ Both machines also have a **distinct baseboard serial**, so neither rests on a s
 
 | When | What |
 |---|---|
-| Now | Unit 3a brief reviewed and uploaded; Cloud Session pre-code report; planning's rulings |
-| About a week | Unit 3a PR. Planning briefs 3b as soon as it is open. |
+| 21 October | Unit 3a merged (done, six days early). Unit 3b briefed. |
+| About 30 October | Unit 3b PR, then planning's verification |
 | By 4 November | Unit 3b PR. Both PRs implemented and reviewed enough to leave the Cloud Session. |
 | 5–9 November | Merge, manual Render deploy, production end-to-end tests, Windows integration, trial preparation |
 | 10 November | School trial |

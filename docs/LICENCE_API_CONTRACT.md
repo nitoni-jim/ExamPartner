@@ -1,6 +1,8 @@
 # ExamPartner Windows — Licence API Contract
 
-**Version:** 1 · **Date:** 8 October 2026 · **Amended:** 10, 19 and 20 October 2026 (additive; §13) · **Owner:** Planning
+**Version:** 1.1 · **Date:** 8 October 2026 · **Amended:** 10, 19, 20 and 21 October 2026 (all additive; §13) · **Owner:** Planning
+
+**v1.1 (21 October 2026)** adds the school-owner endpoints (§10A) and widens the 15-minute session token from activation only to licence management (§1, §4, §11). Every v1 request and response is unchanged; a v1 client keeps working.
 **Both implementers build against this document.** The backend (Cloud Session) and the WinUI client (local agent) cannot see each other; this is the only place their shapes meet. If something you need is not here, **stop and report it** — do not invent a field, a code or a behaviour, because the other side is building against the same page and a guess silently diverges.
 
 This contract governs the wire format and the client–server behaviour. The *business rules* behind it — capacity, matching, ambiguity, release — remain in `docs/ExamPartner_Windows_SeatPool_PilotV1_Implementation_Spec.md` and `docs/CLOUD_SESSION_BRIEF.md`. Where this document and the spec disagree about a field name, a format or an error code, **this document wins** and the spec is updated to match.
@@ -11,7 +13,8 @@ This contract governs the wire format and the client–server behaviour. The *bu
 
 | Decision | Source |
 |---|---|
-| A technician activates a PC with a **15-minute, activation-only session**, obtained with the institution owner's (or an ExamPartner admin's) credentials. It is not `/auth/login`, registers no device against the owner's Android device allowance, and authorises activation only. After activation the PC holds the **signed lease**, never an account token. It is the precursor of the later 24-hour Deployment Session. | Nitoni, 8 Oct 2026 |
+| A technician activates a PC with a **15-minute session**, obtained with the institution owner's (or an ExamPartner admin's) credentials. It is not `/auth/login`, registers no device against the owner's Android device allowance, and is useless on every non-licensing route. After activation the PC holds the **signed lease**, never an account token. It is the precursor of the later 24-hour Deployment Session. | Nitoni, 8 Oct 2026 |
+| That session is a **licence session**: it authorises activation **and** the school owner's licence management in §10A — listing the school's pools and computers, its history, renaming a computer and releasing one — and nothing else. Never ambiguity resolution, account or subscription changes, pool resizing, support endpoints, or any non-licensing route. The Windows client never uses `/auth/login`. | Nitoni, 19 Oct 2026 |
 | A PC's clock may run up to **24 hours behind** the highest time previously accepted. Further back requires an **online refresh**. A rollback never revokes the activation or consumes a seat. | Nitoni, 8 Oct 2026 |
 | The client sends **raw** hardware values. All normalisation, hashing and matching happen **on the server**, so a matching fix is a server deploy, not an update to every lab PC. | Planning |
 | Every request carries the client's version, so a broken client can be stopped with `426`. | Planning |
@@ -29,7 +32,7 @@ This contract governs the wire format and the client–server behaviour. The *bu
 - **Timestamps on the wire.** RFC 3339, UTC, whole seconds, literal `Z`: `2026-10-08T09:00:00Z`. Always exactly this shape. (The backend's internal `now_iso()` produces `+00:00` with microseconds; that format never appears on the wire.)
 - **`server_time`.** Every response body — success and error — carries `server_time`, the server's clock at the time of the response. The client uses it for its clock rule (§8).
 - **IDs.** Server-generated IDs (`binding_id`, `installation_id`, `account_id`, `seat_pool_id`, `ambiguity_id`) are opaque 32-character lowercase hex strings. Never parse them. `request_id` is a client-generated UUID v4 string.
-- **`client` object.** Every request body includes:
+- **`client` object.** The request bodies of `activation-session`, `activate` and `refresh` include it:
 
 ```json
 "client": {
@@ -41,17 +44,27 @@ This contract governs the wire format and the client–server behaviour. The *bu
 
 `app_version` is semantic `MAJOR.MINOR.PATCH`. `os_version` is `Environment.OSVersion.Version` as a string; it is informational only.
 
+The §10A owner routes carry **no** `client` object — two of them have no body — and are not version-gated: a licence session token is only issued after `activation-session` has passed the version check (§9.3 `client_upgrade_required`).
+
 ---
 
 ## 3. Endpoints
 
 | Method and path | Authorised by | Purpose |
 |---|---|---|
-| `POST /licence/activation-session` | Owner or admin **credentials** in the body | Exchange credentials for a 15-minute activation token and the list of pools the caller may activate into |
-| `POST /licence/activate` | `Authorization: Bearer <activation_token>` | Activate this PC in a pool, or restore its activation after a reinstall |
+| `POST /licence/activation-session` | Owner or admin **credentials** in the body | Exchange credentials for a 15-minute **licence session token** and the list of pools the caller manages |
+| `POST /licence/activate` | `Authorization: Bearer <licence session token>` | Activate this PC in a pool, or restore its activation after a reinstall |
 | `POST /licence/refresh` | The **signed lease** in the body | Renew this PC's lease; no account involved |
 
-No other endpoint is called by the Windows client in Pilot V1. Owner and admin endpoints (release, machine lists, ambiguity resolution) are not part of this contract.
+| `GET /institutions/accounts/{account_id}/seat_pools` | Licence session token | The school's pools and their capacity (§10A.1) |
+| `GET /institutions/accounts/{account_id}/machines` | Licence session token | The school's active computers (§10A.2) |
+| `GET /institutions/accounts/{account_id}/history` | Licence session token | The school's licence history, newest first (§10A.3) |
+| `PATCH /institutions/seats/{binding_id}` | Licence session token | Rename a computer (§10A.4) |
+| `POST /institutions/seats/{binding_id}/release` | Licence session token | Release a computer, freeing its seat at once (§10A.5) |
+
+The four §10A routes and release also accept an **ordinary ExamPartner bearer token**, for ExamPartner's own scripts and support. The Windows client never sends one. Ambiguity resolution, account and pool administration, and the support endpoints are **not** part of this contract.
+
+**Naming.** The path `/licence/activation-session` and the response field `activation_token` keep their v1 names for compatibility. What they issue is the licence session token.
 
 ---
 
@@ -73,7 +86,7 @@ The technician enters the institution owner's ExamPartner email and password on 
 
 ```json
 {
-  "activation_token": "opaque string",
+  "activation_token": "opaque string — the licence session token",
   "expires_at": "2026-10-08T09:15:00Z",
   "actor_role": "institution_owner",
   "pools": [
@@ -96,9 +109,10 @@ The technician enters the institution owner's ExamPartner email and password on 
 ```
 
 - `actor_role` is `institution_owner` or `exampartner_admin`.
+- The token authorises `/licence/activate` and the §10A routes, until `expires_at`, for the accounts the caller **currently** owns or manages. It carries only the caller's identity and role, not a list of accounts: ownership is re-checked on every call, so an owner removed from an account loses access at once. `pools` here is a snapshot taken at sign-in, for display.
 - `pools` lists every pool of every account the caller owns. For an ExamPartner admin it lists **all** pools, each with its `account_name`, so Nitoni can activate a pilot PC without holding the school's password.
 - Pools that are suspended, over capacity or on a lapsed subscription **are listed**, with their state, so the client can explain why activation will fail rather than hiding the pool.
-- `activation_token` is opaque to the client. Use `expires_at` from the response; never decode the token. The client holds it **in memory only** and drops it after activation completes, after `expires_at`, or when the app closes.
+- `activation_token` is opaque to the client. Use `expires_at` from the response; never decode the token. The client holds it **in memory only**, for the current licence-management session — activating this PC, or managing the school's computers (§10A) — and drops it when the technician finishes that session, at `expires_at`, or when the app closes.
 - When there is exactly one pool the client may preselect it, but shows which pool it is before activating.
 
 ### Errors
@@ -378,7 +392,7 @@ The server, in `services/fingerprint_service.py`, owns all of this; the client r
 
 - Store the lease string, `installation_id`, the highest `lease_serial` seen, `time_high_water` (§8.3) and any pending `ambiguity_id` together, encrypted with **DPAPI in `LocalMachine` scope**, in a file under `%ProgramData%\ExamPartner\`.
 - **Not `CurrentUser` scope.** School lab PCs have several Windows accounts; per-user storage would tie the licence to whichever student was signed in during activation.
-- Never store the owner's password or the activation token.
+- Never store the owner's password or the licence session token.
 
 ### 8.2 Offline validity
 
@@ -443,7 +457,7 @@ Replace the stored lease only after the new one passes §8.2 checks 1–3.
 - **Activate:** a repeat of the same `request_id` with the same `pool_id` and the same fingerprint returns the **same outcome** — the same binding, a lease for it, no second seat, no ambiguity — within 24 hours of the first attempt. The same `request_id` with a different body → `request_id_reused`.
 - **Refresh:** a repeat of a refresh `request_id` within 24 hours, for the same binding and the same fingerprint, returns the binding's **current lease unchanged** — byte-identical, no new `lease_serial` — and is not counted as a stale-serial signal. This holds for any refresh `request_id` in that window, not only the most recent one: a replay never issues a lease. Without it, every lost refresh response on a weak connection would look like a cloned lease.
 - Collecting an ambiguity (§10) uses a **new** `request_id`.
-- **One history, across every operation.** The server remembers every state-changing licensing request for 24 hours: activation, restore, refresh, ambiguity collection, and the owner and admin operations (release, ambiguity resolution). A `request_id` belongs to the **one** logical request that first used it. Reusing it within 24 hours for a different operation, endpoint, pool, binding or body → `409 request_id_reused`, even when the earlier use was on another endpoint or has since been overtaken by a later request. A client that generates a fresh UUID v4 per logical operation, as above, never sees this.
+- **One history, across every operation.** The server remembers every state-changing licensing request for 24 hours: activation, restore, refresh, ambiguity collection, rename and release (§10A), and ExamPartner's own state-changing admin operations (ambiguity resolution, account editing, pool editing). A `request_id` belongs to the **one** logical request that first used it. Reusing it within 24 hours for a different operation, endpoint, pool, binding or body → `409 request_id_reused`, even when the earlier use was on another endpoint or has since been overtaken by a later request. A client that generates a fresh UUID v4 per logical operation, as above, never sees this.
 
 ### 9.3 Error body and codes
 
@@ -468,9 +482,12 @@ Some codes add fields, listed below. This is the shape FastAPI produces from `HT
 | 400 | `fingerprint_unreadable` | activate, refresh | no | `classes` | "Windows could not report this PC's hardware. Restart the PC, check the *Windows Management Instrumentation* service, and try again." |
 | 401 | `invalid_credentials` | activation-session | no | — | "Email or password is incorrect." |
 | 401 | `activation_session_invalid` | activate | no | — | "Your sign-in has expired. Sign in again to activate." |
+| 401 | `not_authenticated` | §10A routes | no | — | "Sign in to continue." No token, or an expired or unrecognised one. Sign in again (§4). |
 | 402 | `subscription_inactive` | activate, refresh | no | `subscription_expires_at` | "This school's ExamPartner subscription has ended. Contact the school administrator." On refresh, the current lease stays usable until its own expiry. |
 | 403 | `no_licensing_access` | activation-session | no | — | "This account does not manage any ExamPartner computers." |
 | 403 | `pool_access_denied` | activate | no | — | "This account cannot activate computers in that lab." Returned identically for a pool that does not exist. |
+| 403 | `account_access_denied` | §10A.1–§10A.3 | no | — | "This account cannot manage that school's computers." **Account or pool scope:** an `account_id` in the path, or a `pool_id` filter, that the caller does not manage. Identical for one that does not exist. |
+| 403 | `binding_access_denied` | §10A.3–§10A.5 | no | — | "This account cannot manage that computer." **Computer scope:** a `binding_id` in the path, or a `binding_id` filter, that the caller does not manage. Identical for one that does not exist. |
 | 403 | `lease_invalid` | refresh | no | — | The lease is malformed, unsigned, or signed by an unknown key. Discard it and go to activation. |
 | 403 | `lease_revoked` | refresh; activate, when collecting an ambiguity or replaying a `request_id` whose activation has since been released | no | — | "This computer's licence was released by the school. An administrator must activate it again, which uses a seat." **Discard the lease.** |
 | 403 | `machine_mismatch` | refresh | no | — | "This licence belongs to a different computer." Discard the lease and go to activation. If this *is* the same PC after a motherboard replacement, the administrator releases the old activation first. Also returned when the lease belongs to an installation the activation has since moved away from (a newer installation was restored onto it), and when collecting a refresh-raised ambiguity that ExamPartner decided is a different machine (§10). The remedy is the same in every case. |
@@ -480,8 +497,9 @@ Some codes add fields, listed below. This is the shape FastAPI produces from `HT
 | 409 | `ambiguity_expired` | activate, refresh | no | — | The request went unresolved for 7 days. Clear `ambiguity_id` and start again without it. |
 | 409 | `ambiguity_consumed` | activate, refresh | no | — | Already collected. Clear `ambiguity_id`; if the PC has no valid lease, start again. |
 | 409 | `ambiguity_mismatch` | activate, refresh | no | — | The PC presenting the `ambiguity_id` is not the one that raised it. Clear it and start again. |
-| 409 | `request_id_reused` | activate, refresh | no | — | Client bug: a `request_id` was reused for a different request. Generate a new one. |
-| 426 | `client_upgrade_required` | all | no | `min_app_version` | "Update ExamPartner to continue." The current lease stays usable offline until its expiry. |
+| 409 | `binding_released` | rename | no | — | "This computer has been released. It can no longer be renamed." |
+| 409 | `request_id_reused` | activate, refresh, rename, release | no | — | Client bug: a `request_id` was reused for a different request. Generate a new one. |
+| 426 | `client_upgrade_required` | activation-session, activate, refresh | no | `min_app_version` | "Update ExamPartner to continue." The current lease stays usable offline until its expiry. |
 | 500 | `internal_error` | all | yes | — | Retry with backoff. |
 | 503 | `licensing_unavailable` | all | yes | — | "Licensing is temporarily unavailable. Try again later." The current lease stays usable offline. |
 
@@ -517,14 +535,146 @@ An ambiguity is single-use and expires after 7 days unresolved (brief §4.C).
 
 ---
 
+## 10A. Owner endpoints (v1.1)
+
+These let a school's owner manage its computers from the Windows client, signed in through §4. Each one:
+
+- takes `Authorization: Bearer <licence session token>` (or an ordinary bearer token, §3);
+- re-checks that the caller owns the account — or is an ExamPartner admin — on every call;
+- returns the §9.3 error body, and `server_time` on every response;
+- returns **the same** `403` for an account or computer that does not exist and for one that belongs to another school, so nothing leaks: `account_access_denied` for account or pool scope, `binding_access_denied` for computer scope (§9.3).
+
+The client reaches them only through a screen that shows what it is about to do. Ambiguity resolution is never here: a computer waiting on an identity check is shown, but only ExamPartner resolves it.
+
+Errors common to all five, in the order the server checks them: `not_authenticated` (401) → `invalid_request` (400) → `licensing_unavailable` (503) → `account_access_denied` or `binding_access_denied` (403).
+
+### 10A.1 `GET /institutions/accounts/{account_id}/seat_pools`
+
+```json
+{
+  "account_id": "0d9c8b7a6f5e4d3c2b1a09f8e7d6c5b4",
+  "account_name": "Example Secondary School",
+  "subscription_status": "active",
+  "subscription_expires_at": "2027-09-30T23:59:59Z",
+  "pools": [
+    {
+      "pool_id": "5e4d3c2b1a0f9e8d7c6b5a4938271605",
+      "label": "Computer Lab",
+      "pool_size": 20,
+      "active": 18,
+      "available": 2,
+      "over_capacity": false,
+      "pool_status": "active",
+      "pending_identity_checks": 1
+    }
+  ],
+  "server_time": "2026-10-21T09:00:00Z"
+}
+```
+
+`pending_identity_checks` counts this pool's ambiguities that are open and under 7 days old.
+
+### 10A.2 `GET /institutions/accounts/{account_id}/machines`
+
+Query: optional `pool_id`. Active computers only; released ones appear in history.
+
+```json
+{
+  "account_id": "0d9c8b7a6f5e4d3c2b1a09f8e7d6c5b4",
+  "machines": [
+    {
+      "binding_id": "6f1c2e0a9b8d4c7e5a3f2b1d0c9e8f7a",
+      "pool_id": "5e4d3c2b1a0f9e8d7c6b5a4938271605",
+      "pool_label": "Computer Lab",
+      "machine_label": "LAB-PC-07",
+      "activated_at": "2026-10-08T09:00:00Z",
+      "last_seen_at": "2026-10-20T07:41:12Z",
+      "lease_expires_at": "2026-11-19T07:41:12Z",
+      "fingerprint_confidence": "strong"
+    }
+  ],
+  "server_time": "2026-10-21T09:00:00Z"
+}
+```
+
+Sorted by `pool_label`, then `machine_label`. `last_seen_at` and `lease_expires_at` may be `null` (a computer activated but never refreshed has `last_seen_at: null`). A `pool_id` the account does not own → `account_access_denied`.
+
+### 10A.3 `GET /institutions/accounts/{account_id}/history`
+
+Query: optional `pool_id`, `binding_id`, `limit` (1–200, default 50) and `cursor` (opaque, from `next_cursor`). Newest first.
+
+```json
+{
+  "account_id": "0d9c8b7a6f5e4d3c2b1a09f8e7d6c5b4",
+  "events": [
+    {
+      "event_id": "b1c2d3e4f5a60718293a4b5c6d7e8f90",
+      "at": "2026-10-20T10:02:00Z",
+      "action": "release",
+      "binding_id": "6f1c2e0a9b8d4c7e5a3f2b1d0c9e8f7a",
+      "pool_id": "5e4d3c2b1a0f9e8d7c6b5a4938271605",
+      "machine_label": "LAB-PC-07",
+      "actor": "owner",
+      "actor_identifier": "owner@school.edu.ng",
+      "revoke_reason": "hardware_failure",
+      "reason": "Motherboard failed"
+    }
+  ],
+  "next_cursor": null,
+  "server_time": "2026-10-21T09:00:00Z"
+}
+```
+
+- `action` is one of `activate`, `restore`, `release`, `rename`, `refresh`, `refresh_denied`, `ambiguous_flagged`, `ambiguity_resolved`, `resize`, `renewal`. Other events — clone and stale-serial signals, account changes — are ExamPartner's, and never shown here. A client that sees an unknown `action` shows it plainly rather than failing.
+- `actor` is `owner`, `exampartner` or `computer`. `actor_identifier` is set only for `owner`; ExamPartner staff are never named.
+- `revoke_reason` and `reason` are set only on `release`; `machine_label` is the label at the time; `binding_id` is `null` for pool-level events.
+- No event carries hardware readings, hashes or installation IDs.
+- `next_cursor` is `null` on the last page. A `pool_id` the account does not own → `account_access_denied`; a `binding_id` it does not own → `binding_access_denied`. A malformed `cursor` or `limit` → `invalid_request`.
+
+### 10A.4 `PATCH /institutions/seats/{binding_id}` — rename
+
+Request: `{"request_id": "<UUID v4>", "machine_label": "LAB-PC-07"}`. `machine_label` is trimmed, 1–64 characters, as in §5; two computers may share a label.
+
+Response `200`: `{"result": "renamed" | "unchanged", "binding_id", "machine_label", "server_time"}`. `unchanged` when the label was already that.
+
+Errors after the common ones: `binding_released` (409) for a released computer, and `request_id_reused` (409). `request_id` follows §9.2: a retry replays the stored outcome with a fresh `server_time`.
+
+### 10A.5 `POST /institutions/seats/{binding_id}/release`
+
+Request: `{"request_id": "<UUID v4>", "revoke_reason": "manual" | "replacement" | "hardware_failure" | "retired" | "renewal_retire" | "support" | "other", "reason": "free text, at most 500 characters"}`. Only `request_id` is required; `revoke_reason` defaults to `manual`. Neither reason ever decides whether the release is allowed.
+
+Response `200`:
+
+```json
+{
+  "result": "released",
+  "binding_id": "6f1c2e0a9b8d4c7e5a3f2b1d0c9e8f7a",
+  "released_at": "2026-10-20T10:02:00Z",
+  "seat_pool_id": "5e4d3c2b1a0f9e8d7c6b5a4938271605",
+  "pool_size": 20,
+  "active": 17,
+  "available": 3,
+  "over_capacity": false,
+  "server_time": "2026-10-21T09:00:00Z"
+}
+```
+
+- `result` is `released`, or `already_released` (with the original `released_at`) for a computer released earlier under another `request_id`. Both are `200`.
+- The seat is free the moment the release commits. The pool counts are computed after the release takes effect, in the release's own transaction.
+- The released computer keeps working offline until its current lease expires, then its refresh returns `lease_revoked`. It can never be restored by recognition; activating it again uses a seat.
+- **A release works from any computer**, including when the released one is dead or missing. That is the case schools actually hit.
+- Errors after the common ones: `request_id_reused` (409). A retry with the same `request_id` replays the stored outcome with a fresh `server_time`.
+
+---
+
 ## 11. Server obligations not visible on the wire
 
 For the Cloud Session; listed here because breaking any of them breaks the client.
 
-- **The activation token is useless as an account token, and an account token is useless here.** Sign activation tokens with a key **derived for this purpose only** — e.g. HMAC-SHA256 keyed with `HMAC(JWT_SECRET, "exampartner-activation-v1")` — not with `make_token()`. `auth_utils.read_token()` checks only signature and expiry, not a type, so a token signed the ordinary way would be accepted by `get_current_user()` as a full login on every Android route. A test must prove `get_current_user()` returns `None` for an activation token, and that `/licence/activate` refuses an ordinary user token.
+- **The licence session token is useless as an account token, and an account token is useless at `/licence/activate`.** Sign licence session tokens with a key **derived for this purpose only** — e.g. HMAC-SHA256 keyed with `HMAC(JWT_SECRET, "exampartner-activation-v1")` — not with `make_token()`. `auth_utils.read_token()` checks only signature and expiry, not a type, so a token signed the ordinary way would be accepted by `get_current_user()` as a full login on every Android route. A test must prove `get_current_user()` returns `None` for a licence session token, and that `/licence/activate` refuses an ordinary user token.
 - **`/licence/activation-session` registers no device** and never calls `register_device()`. It verifies the password the way `/auth/login` does.
-- **Activation tokens expire 15 minutes after issue.** They carry the caller's identifier and role, and authorise only `/licence/activate`.
-- **Keep one authoritative 24-hour request history** so §9.2 holds: every state-changing licensing request — activation, restore, refresh, ambiguity collection, release and ambiguity resolution — with its operation, target, request digest and the outcome a replay must return. Read it before acting on any of them. The latest-request columns on a binding are not enough on their own: a later request overwrites them (brief §9 R1, §4.I I4).
+- **Licence session tokens expire 15 minutes after issue.** They carry the caller's identifier and role, and authorise only `/licence/activate` and the §10A routes. The role in the token is informational: ownership or admin status is re-checked against the account on every call. A §10A route accepts either a licence session token or an ordinary bearer token; every other non-licensing route refuses a licence session token, because `get_current_user()` returns `None` for it.
+- **Keep one authoritative 24-hour request history** so §9.2 holds: every state-changing licensing request — activation, restore, refresh, ambiguity collection, rename, release, and the admin operations ambiguity resolution, account editing and pool editing — with its operation, target, request digest and the outcome a replay must return. Read it before acting on any of them. The latest-request columns on a binding are not enough on their own: a later request overwrites them (brief §9 R1, §4.I I4).
 - **The request history fails closed.** If it cannot be read or written — its storage missing, or the licensing schema step failed — every operation that depends on it returns `503 licensing_unavailable` and writes nothing. It never falls back to the per-binding columns and never surfaces a raw database error. The rest of the backend keeps working (brief §4.E, §4.I I4).
 - **Licensing unavailable is a 503, never a crash**, including when the signing key is missing, malformed or equal to the TEST seed (§6.5), and when startup recorded licensing as unavailable — in addition to the live index check inside every binding write (brief §4.E).
 - **Error precedence** follows §5, so entitlement problems outrank capacity.
@@ -548,4 +698,5 @@ For the Cloud Session; listed here because breaking any of them breaks the clien
 | 8 October 2026 | Version 1. |
 | 10 October 2026 | §7.3 clarified: the current survey collector does not record the continuity fields, so survey files exercise identity matching only. No wire change. |
 | 19 October 2026 | Additive, for backend Unit 3a. §9.3: `pool_inactive` can also come from refresh; `machine_mismatch` also covers a superseded installation and a refresh-raised ambiguity resolved as a different machine. §10 step 4: the outcomes of collecting a refresh-raised ambiguity. No field, format or existing meaning changed. |
+| 21 October 2026 | **v1.1**, additive, for backend Unit 3b. §1 and §4: the 15-minute session is a licence session token, authorising activation and the owner endpoints only (Nitoni, 19 October); field and path names unchanged. §3: the owner endpoints. §10A: their shapes, including release as Unit 3a built it. §9.3: `not_authenticated`, `account_access_denied` (account or pool scope), `binding_access_denied` (computer scope), `binding_released`; `request_id_reused` on rename and release. §2 and §9.3: the `client` object and `client_upgrade_required` apply to activation-session, activate and refresh only. §9.2 and §11: rename and the admin account and pool edits join the request history. §11: token scope. No v1 field, format or meaning changed. |
 | 20 October 2026 | Additive, for backend Unit 3a, after cross-review. §9.2: one 24-hour request history across every operation; any refresh `request_id` in the window replays, not only the latest; cross-operation reuse is `request_id_reused`. §11: the history is authoritative and fails closed with `503`. §9.3: `lease_revoked` can also answer a replayed activation or collection whose binding has since been released — release beats a replay, so a released seat never receives a lease. No field or format changed; a client that follows §9.2's one-UUID-per-operation rule is unaffected. |
