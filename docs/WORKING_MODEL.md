@@ -86,7 +86,7 @@ When an implementer reports a problem, decide whether it is real before passing 
 
 **Owns `backend/` on a branch. Nothing else.**
 
-Scope, setup answers, current work unit and standing rules are in `docs/CLOUD_SESSION_BRIEF.md`. In summary: FastAPI licensing backend, branch `licensing/pilot-v1`, PR only, never `main`, local throwaway Postgres only, never Neon.
+Scope, setup answers, current work unit and standing rules are in `docs/CLOUD_SESSION_BRIEF.md`. In summary: FastAPI licensing backend, one branch per unit cut from current `main` (the brief names it), PR only, never `main`, local throwaway Postgres only, never Neon.
 
 Reports findings up to the planning surface. Does not change the spec itself.
 

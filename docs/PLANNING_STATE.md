@@ -1,7 +1,7 @@
 # Planning state — ExamPartner Windows seat-pool licensing
 
 **Handover from the planning windows of 5–19 October 2026.** Read this first in a new planning window, then `docs/WORKING_MODEL.md`.
-**State as of:** 20 October 2026 · `main` at `684f359`. This revision adds the Unit 3 plan and deadline (§1, §2, §5, §10) and the licence session token decision (§4).
+**State as of:** 20 October 2026 (evening) · `main` at `d50ce94`, before this upload. This revision records the Unit 3a pre-code report's approval (brief §4.J); the Unit 3 plan and deadline are in §1, §2, §5 and §10, and the licence session token decision in §4.
 
 ---
 
@@ -12,7 +12,7 @@
 | **Backend Unit 1** — time helpers, schema, owner check, `claim_capacity()` | Merged as PR #37 (`3a8e313`). Deployed. |
 | **Backend Unit 2** — fingerprint rules, activation session, activate and restore, lease signing, error envelope, pilot setup endpoints | Merged as PR #38 (`bdaff67`). 372 tests passing, 0 skipped. **Deployed to production** (confirmed by Nitoni, 17 October): signing key configured as kid 1, `/health` returns `"licensing": "ready"`. |
 | **Android smoke test after the Unit 2 deploy** | Passed: the live Android app loads questions from the production backend. Auth, payment and device registration were **not** re-tested as part of this. |
-| **Backend Unit 3a** — refresh, one fail-closed request history (brief §9 R1) covering every operation including release and resolution, ambiguity resolve and collect, release, admin ambiguity list, R2 race test | **Briefed** 19 October, revised 20 October after ChatGPT's cross-review: `docs/CLOUD_SESSION_BRIEF.md` §4.I and §5; contract amended additively (§13, 19 October). Waiting for upload, then the pre-code report. No change from survey finding S1 (§9.3). |
+| **Backend Unit 3a** — refresh, one fail-closed request history (brief §9 R1) covering every operation including release and resolution, ambiguity resolve and collect, release, admin ambiguity list, R2 race test | **Pre-code report approved** 20 October (brief §4.J); implementing, PR targeted for about 27 October. Briefed 19 October, revised 20 October after ChatGPT's cross-review: `docs/CLOUD_SESSION_BRIEF.md` §4.I and §5; contract amended additively (§13, 19 October). No change from survey finding S1 (§9.3). |
 | **Backend Unit 3b** — licence session token, owner reads and rename, account editing, pool resizing, signals review, test-clock endpoint, contract v1.1 | Not briefed. Planning writes it once 3a's PR is open. |
 | **API contract** | `docs/LICENCE_API_CONTRACT.md` v1, 8 October 2026; §7.3 clarified 10 October; additive amendments for Unit 3a on 19 and 20 October (§9.2, §9.3, §10, §11; change log §13). Signed-lease test vectors in §6.4. v1.1 comes with Unit 3b. |
 | **WinUI client** | Not started. Brief: `docs/LOCAL_AGENT_BRIEF.md`, revision 3 (19 October) — L0 collector v2, L1 licence core, L2 activation UI, packaging decision. L0 and L1 must pass on the two guaranteed PCs; the other three are opportunistic. |
@@ -22,7 +22,7 @@
 
 ## 2. Waiting on Nitoni right now
 
-1. **Upload this file, `docs/CLOUD_SESSION_BRIEF.md` and `docs/LICENCE_API_CONTRACT.md`** in one commit, replacing the existing versions (upload over them; do not delete first). Then start the Cloud Session on Unit 3a (§10).
+1. **Upload this file, `docs/CLOUD_SESSION_BRIEF.md`, `docs/LICENCE_API_CONTRACT.md` and `docs/WORKING_MODEL.md`** in one commit, replacing the existing versions (upload over them; do not delete first). The Cloud Session has started and its Unit 3a pre-code report is approved (brief §4.J); **give it the go-ahead only after this upload**, because it builds from `main`.
 2. **Create the internal test school** for client development (§6 has the commands). The local agent's L1 needs it.
 3. **Decide the 10 November trial's scope** beyond activation and offline licence checking.
 4. **Start the local agent** on `docs/LOCAL_AGENT_BRIEF.md`.
@@ -34,7 +34,7 @@
 |---|---|
 | `docs/WORKING_MODEL.md` | Who does what across planning, the Cloud Session and the local agent; settled versus open decisions (§6). |
 | `docs/LICENCE_API_CONTRACT.md` | The only place client and server shapes meet. **Wins on any wire detail.** |
-| `docs/CLOUD_SESSION_BRIEF.md` | Backend brief. §4.A–I rulings, §5 current unit (**Unit 3a**), §9 carried into Unit 3a. |
+| `docs/CLOUD_SESSION_BRIEF.md` | Backend brief. §4.A–J rulings, §5 current unit (**Unit 3a**), §9 carried into Unit 3a. |
 | `docs/LOCAL_AGENT_BRIEF.md` | WinUI client brief. |
 | `docs/ExamPartner_Windows_SeatPool_PilotV1_Implementation_Spec.md` | The business rules, kept consistent with the brief rulings (amended through 11 October). |
 | `docs/ExamPartner_Windows_SeatPool_Architecture_Handoff.md` | Product decisions of record, including the fingerprint correction. |
