@@ -496,7 +496,7 @@ Two corrections to the PR's notes. The schema delta was **one table** (`licence_
 6. **Pool editing — `PATCH /institutions/seat_pools/{pool_id}`** (K6).
 7. **`GET /support/licensing/signals`** (K8).
 8. **`POST /support/licensing/test-clock`** (K9).
-9. **`backend/CLAUDE.md`** — the caller helper and K1's scope rule ("the session token never reaches `get_current_user()`"), the two new log actions (`rename`, `account_update`), the three new history operations (`rename`, `account_update`, `pool_update`), and K5's account-row lock and K6's pool-lock note beside H3.
+9. **`backend/CLAUDE.md`** — the caller helper and K1's scope rule ("the session token never reaches `get_current_user()`"), the three new log actions (`rename`, `account_update`, `resize` — `resize` is in spec §3.5's list but nothing wrote it until now), the three new history operations (`rename`, `account_update`, `pool_update`), and K5's account-row lock and K6's pool-lock note beside H3.
 
 **Not in this unit:** nothing further of Unit 3 remains. Anything you find missing is a gap to report (§7), not scope to add.
 
@@ -535,7 +535,7 @@ Two corrections to the PR's notes. The schema delta was **one table** (`licence_
 
 Then wait for the go-ahead. **Stop at the end of this unit** and open the PR from your assigned branch, titled **"Licensing Unit 3b"**.
 
-**Deployment note for Nitoni, not for you:** Unit 3b adds no tables. It adds routes and two log actions, so the deploy is a code deploy. Keep `ALLOW_TEST_CLOCK` absent.
+**Deployment note for Nitoni, not for you:** Unit 3b adds no tables. It adds routes and three log actions, so the deploy is a code deploy. Keep `ALLOW_TEST_CLOCK` absent.
 
 ## 6. How to work
 

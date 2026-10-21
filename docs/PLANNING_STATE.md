@@ -55,7 +55,7 @@ The project attached to the planning chat holds copies of the main docs, kept in
   - Signals are compared by **exact equality after normalisation** — no prefix or similarity matching. An identifier carried by two or more active bindings in a pool is unusable in that pool (F1).
   - A PC is **restored** only on exactly one strong match (same usable UUID *and* a shared usable serial). Weak matches go to admin review as an ambiguity, never to an automatic restore.
   - A **degenerate or weak PC** goes to admin review only if its system disk or onboard network card matches an active binding (F2). `MachineGuid` is **not** an activation signal (H1).
-- **Retries.** Every state-changing request carries a client `request_id`. Replays return the identical result. Ambiguity creation is race-safe through its own pool-row lock (H2).
+- **Retries.** Every state-changing licensing operation covered by the request history carries a `request_id`; the explicit exceptions — F11's setup routes and the test clock — are in brief §4.K K7. Replays return the stored outcome, with a fresh `server_time`. Ambiguity creation is race-safe through its own pool-row lock (H2).
 - **Lock order** (H3): never hold a binding lock and then take a pool lock; if a path needs both, take the pool first.
 - **The client:**
   - It stores its lease with **DPAPI in `LocalMachine` scope**.

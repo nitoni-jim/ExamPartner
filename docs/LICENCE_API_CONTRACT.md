@@ -17,7 +17,7 @@ This contract governs the wire format and the client–server behaviour. The *bu
 | That session is a **licence session**: it authorises activation **and** the school owner's licence management in §10A — listing the school's pools and computers, its history, renaming a computer and releasing one — and nothing else. Never ambiguity resolution, account or subscription changes, pool resizing, support endpoints, or any non-licensing route. The Windows client never uses `/auth/login`. | Nitoni, 19 Oct 2026 |
 | A PC's clock may run up to **24 hours behind** the highest time previously accepted. Further back requires an **online refresh**. A rollback never revokes the activation or consumes a seat. | Nitoni, 8 Oct 2026 |
 | The client sends **raw** hardware values. All normalisation, hashing and matching happen **on the server**, so a matching fix is a server deploy, not an update to every lab PC. | Planning |
-| Every request carries the client's version, so a broken client can be stopped with `426`. | Planning |
+| The version-gated Windows requests — `activation-session`, `activate` and `refresh` — carry the client's version, so a broken client can be stopped with `426` (§2). | Planning |
 | Every state-changing request carries a client-generated `request_id`, so a retry after a lost response never consumes a second seat and never looks like a clone. | Planning |
 | The lease signature covers the exact bytes transmitted. The client verifies before it parses and never re-serialises. | Planning |
 
@@ -62,7 +62,7 @@ The §10A owner routes carry **no** `client` object — two of them have no body
 | `PATCH /institutions/seats/{binding_id}` | Licence session token | Rename a computer (§10A.4) |
 | `POST /institutions/seats/{binding_id}/release` | Licence session token | Release a computer, freeing its seat at once (§10A.5) |
 
-The four §10A routes and release also accept an **ordinary ExamPartner bearer token**, for ExamPartner's own scripts and support. The Windows client never sends one. Ambiguity resolution, account and pool administration, and the support endpoints are **not** part of this contract.
+All five §10A routes also accept an **ordinary ExamPartner bearer token**, for ExamPartner's own scripts and support. The Windows client never sends one. Ambiguity resolution, account and pool administration, and the support endpoints are **not** part of this contract.
 
 **Naming.** The path `/licence/activation-session` and the response field `activation_token` keep their v1 names for compatibility. What they issue is the licence session token.
 
