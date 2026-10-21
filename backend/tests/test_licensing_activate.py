@@ -235,6 +235,9 @@ def test_replay_with_no_lease_issues_it_then(lic, make_pool):
     request_id = str(uuid.uuid4())
     first = lic.activate(pool["pool_id"], request_id=request_id).json()
     _execute("UPDATE institution_seats SET current_lease = NULL, lease_serial = 0 WHERE id = ?", (first["binding_id"],))
+    # Unit 3a: the request history stores the response once the lease is
+    # issued, so a real crash at that point leaves it empty too.
+    _execute("UPDATE licence_requests SET response_json = NULL WHERE request_id = ?", (request_id,))
     again = lic.activate(pool["pool_id"], request_id=request_id)
     assert again.status_code == 200 and again.json()["binding_id"] == first["binding_id"]
     assert again.json()["lease"]
@@ -247,6 +250,9 @@ def test_replay_window_is_24_hours(lic, make_pool):
     first = lic.activate(pool["pool_id"], request_id=request_id).json()
     old = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
     _execute("UPDATE institution_seats SET activation_request_at = ? WHERE id = ?", (old, first["binding_id"]))
+    # Unit 3a: the request history is authoritative (brief §4.I I4), so it
+    # must be 25 hours old too for the request to count as new.
+    _execute("UPDATE licence_requests SET created_at = ? WHERE request_id = ?", (old, request_id))
     again = lic.activate(pool["pool_id"], request_id=request_id).json()
     assert again["result"] == "restored"          # treated as a new request: a strong match restores
     assert again["installation_id"] != first["installation_id"]
@@ -508,6 +514,7 @@ def test_a_batch_sharing_a_real_board_serial_raises_one_ambiguity_per_pool(lic, 
     Once an administrator admits it as new, two bindings carry the serial,
     it stops being usable, and the rest of the batch activates normally."""
     from services import fingerprint_service as fs
+    from services.licence_history import Entry
     from services.licensing_service import claim_capacity
 
     pool = make_pool(10)
@@ -523,7 +530,8 @@ def test_a_batch_sharing_a_real_board_serial_raises_one_ambiguity_per_pool(lic, 
     reading = fs.read(pc(2))
     claim_capacity(pool["pool_id"], machine_fingerprint_hash=fs.identity_hash(reading),
                    fingerprint_confidence="strong", performed_by=ADMIN, actor_role="exampartner_admin",
-                   request_id=str(uuid.uuid4()), request_fp="admitted", fingerprint_signals_json=json.dumps(pc(2)))
+                   request_id=str(uuid.uuid4()), request_fp="admitted", fingerprint_signals_json=json.dumps(pc(2)),
+                   history=Entry(str(uuid.uuid4()), "resolve", "admitted"))
 
     for n in (3, 4, 5):
         assert lic.activate(pool["pool_id"], pc(n)).json()["result"] == "activated"

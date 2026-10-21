@@ -14,7 +14,7 @@ helpers, used everywhere, so the shape cannot drift between routes:
   microseconds; that format must never reach the wire.
 """
 from datetime import datetime, timezone
-from typing import Any, NoReturn, Optional, Union
+from typing import Any, Dict, Mapping, NoReturn, Optional, Tuple, Union
 
 from fastapi import HTTPException
 
@@ -74,6 +74,19 @@ LICENCE_ERRORS = {
     "ambiguity_consumed": (409, "This identity check has already been collected.", False),
     "ambiguity_mismatch": (409, "This identity check belongs to a different computer. Start again.", False),
     "request_id_reused": (409, "This request ID was already used for a different request.", False),
+    # Unit 3a — refresh (contract §9.3).
+    "lease_invalid": (403, "This licence could not be verified. Activate this computer again.", False),
+    "lease_revoked": (403, "This computer's licence was released by the school. An administrator must activate it again, which uses a seat.", False),
+    "machine_mismatch": (403, "This licence belongs to a different computer.", False),
+    # Unit 3a — release and the admin resolve route (brief §4.I I5, I7,
+    # §4.J J4). Not yet in the contract: Unit 3b writes them into v1.1's
+    # §9.3 exactly as they are here.
+    "not_authenticated": (401, "Sign in to continue.", False),
+    "admin_required": (403, "ExamPartner admin access required.", False),
+    "binding_access_denied": (403, "This account cannot manage that computer.", False),
+    "ambiguity_not_found": (404, "No such identity check.", False),
+    "ambiguity_already_resolved": (409, "This identity check has already been resolved.", False),
+    "ambiguity_candidate_invalid": (409, "That activation is not an active candidate for this identity check.", False),
     "client_upgrade_required": (426, "Update ExamPartner to continue.", False),
     "internal_error": (500, "Something went wrong. Try again.", True),
     "licensing_unavailable": (503, "Licensing is temporarily unavailable. Try again later.", True),
@@ -84,3 +97,23 @@ def licence_fail(code: str, message: Optional[str] = None, **extra: Any) -> NoRe
     """licence_error() with the status, message and retry flag from LICENCE_ERRORS."""
     status, default_message, retryable = LICENCE_ERRORS[code]
     licence_error(status, code, message or default_message, retryable, **extra)
+
+
+def licence_detail(code: str, message: Optional[str] = None, **extra: Any) -> Tuple[int, Dict[str, Any]]:
+    """
+    The (status, detail) licence_fail() would raise, WITHOUT server_time and
+    without raising — for an outcome the request history stores so a replay
+    can return it (brief §4.J J5, J8). raise_stored() raises it later.
+    """
+    status, default_message, retryable = LICENCE_ERRORS[code]
+    detail = {"code": code, "message": message or default_message, "retryable": retryable}
+    detail.update(extra)
+    return status, detail
+
+
+def raise_stored(status: int, detail: Mapping[str, Any]) -> NoReturn:
+    """Raise a stored error detail as it was, with the server_time of THIS response (J5)."""
+    detail = dict(detail)
+    detail.pop("server_time", None)
+    detail["server_time"] = wire_time()
+    raise HTTPException(status_code=status, detail=detail)

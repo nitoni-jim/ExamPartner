@@ -160,10 +160,21 @@ def test_two_identical_ambiguous_activations_create_one_ambiguity(owner, make_po
     assert first.status_code == 200, first.text
 
     arrivals = _barrier_around(monkeypatch, licensing_service, "create_or_get_ambiguity")
+    # Brief §9 R2. The barrier above alone sits BEFORE the function, so one
+    # request could finish its lookup and insert before the other looked,
+    # and the test passed without the last_ambiguity_at lock 1 time in 3.
+    # This second seam holds each request after its last locked lookup until
+    # the other has either looked too (no lock: both insert, every run) or is
+    # blocked on the pool lock (lock present: one row). See pause_after().
+    from licensing_harness import pause_after
+    from services import licence_history
+
+    looked = pause_after(monkeypatch, licence_history, "lookup_locked")
     reinstalled = make_degenerate_signals(disk=f"WD-{iteration}", guid=str(uuid.uuid4()))
     one, two = _twice_at_once(_body(pool["pool_id"], reinstalled, str(uuid.uuid4())), token)
 
     assert len(arrivals) == 2
+    assert len(looked) == 2
     assert one.status_code == two.status_code == 409, (one.text, two.text)
     assert one.json()["detail"]["code"] == two.json()["detail"]["code"] == "ambiguity_pending"
     assert one.json()["detail"]["ambiguity_id"] == two.json()["detail"]["ambiguity_id"]

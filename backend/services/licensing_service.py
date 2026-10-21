@@ -4,10 +4,12 @@ services/licensing_service.py — Windows seat-pool licensing (Pilot V1).
 Unit 1 built claim_capacity(), the single place capacity is granted. Unit 2
 adds activation on top of it: the activation session, the decision between
 restore, ambiguity and a new seat (brief §4.F F3), restore itself, lease
-issue, and create_or_get_ambiguity(). Release, refresh and ambiguity
-resolution are Unit 3. See
+issue, and create_or_get_ambiguity(). Unit 3a adds refresh, release,
+ambiguity resolution and collection, the admin ambiguity list, and the one
+request history every state-changing request records itself in
+(services/licence_history.py). See
 docs/ExamPartner_Windows_SeatPool_PilotV1_Implementation_Spec.md §5 and §8,
-docs/LICENCE_API_CONTRACT.md, and docs/CLOUD_SESSION_BRIEF.md §4.F–§4.H.
+docs/LICENCE_API_CONTRACT.md, and docs/CLOUD_SESSION_BRIEF.md §4.F–§4.J.
 
 Capacity is a COUNT of active bindings (institution_seats rows with
 revoked_at IS NULL) against seat_pools.pool_size. It is enforced here, in
@@ -35,9 +37,10 @@ from fastapi import HTTPException
 import config
 from config import db_conn
 from db import licensing_index_present, licensing_status
-from services import fingerprint_service, licence_lease, licence_session, licensing_time
+from services import fingerprint_service, licence_history, licence_lease, licence_session, licensing_time
 from services.access_control import is_admin_user, require_account_owner
-from services.licence_wire import licence_fail, truncate_seconds, wire_time, wire_time_or_none
+from services.licence_wire import (licence_detail, licence_fail, raise_stored, truncate_seconds, wire_time,
+                                   wire_time_or_none)
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +71,10 @@ def claim_capacity(
     actor_role: str,
     request_id: str,
     request_fp: str,
+    history: "licence_history.Entry",
     fingerprint_signals_json: Optional[str] = None,
     machine_label: Optional[str] = None,
+    resolves: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Grant one unit of capacity in `pool_id` by creating an active binding,
@@ -89,7 +94,8 @@ def claim_capacity(
       402  subscription_inactive — not 'active', or expired
       409  pool_full — at or over pool_size; never evicts
       500  internal_error — capacity invariant violated after insert
-    Every refusal writes nothing.
+    Every refusal of an activation writes nothing. A resolve's refusal is
+    stored for replay — its history row only (J8; see `resolves` below).
 
     Idempotent per request (brief F4): request_id and request_fp are stored
     on the binding in the same insert. If an active binding in this pool
@@ -111,6 +117,23 @@ def claim_capacity(
     Authorisation (owner or admin of the pool's account) is the CALLER's
     job, before calling this. performed_by and actor_role are required and
     are recorded on the audit row.
+
+    The request history (brief §4.I I4). `history` is REQUIRED, so no
+    capacity-grant path can skip recording itself: it is checked under the
+    pool lock as the last thing before the insert, and the new binding's
+    outcome is recorded in the same transaction. A request already recorded
+    returns {"replayed": True, "history": row} and the caller replays it.
+
+    Resolving an ambiguity as treat_as_new (brief §4.I I5, §4.J). With
+    `resolves` = {"ambiguity_id", "admin"}, the resolution happens INSIDE
+    this transaction, so a binding exists if and only if its resolution
+    does: pool lock, then the ambiguity-row lock (pool → ambiguity, J6),
+    the ambiguity's state, entitlement, capacity, the binding, the
+    resolution and its history row, one commit. A refusal of a resolve is
+    STORED for replay, and committed while the pool lock is still held
+    (J8): only its history row, with last_claim_at put back as it was.
+    An activation's refusal is still not stored — it is decided afresh on
+    retry, and writes nothing.
     """
     if not machine_fingerprint_hash or not str(machine_fingerprint_hash).strip():
         licence_fail("invalid_request", "machine_fingerprint_hash is required", field="machine_fingerprint_hash")
@@ -126,6 +149,8 @@ def claim_capacity(
         licence_fail("invalid_request", "request_id is required", field="request_id")
     if not isinstance(request_fp, str) or not request_fp.strip():
         licence_fail("invalid_request", "request_fp is required", field="request_fp")
+    if not isinstance(history, licence_history.Entry):
+        licence_fail("invalid_request", "history is required", field="history")
 
     # Closing without committing is the only rollback _PGConn offers, so
     # every refusal below simply raises: the finally closes the connection,
@@ -191,13 +216,26 @@ def claim_capacity(
         if not licensing_index_present(cur):
             licence_fail("licensing_unavailable")
 
+        # (2a) Resolving an ambiguity: take its row lock now, AFTER the pool
+        # lock (pool → ambiguity, brief §4.J J6), and read it under the lock.
+        ambiguity = _lock_ambiguity(cur, resolves["ambiguity_id"], stamp) if resolves is not None else None
+        if resolves is not None and ambiguity is None:
+            licence_fail("ambiguity_not_found")
+
         # (2b) The same activation already granted? (brief F4.) Under the
         # lock, so a concurrent retry of this request blocks above and then
         # sees the first one's committed binding here, instead of inserting
         # a second. Before entitlement and capacity on purpose: when the
         # first retry took the pool's last seat, the second must find that
         # binding, not be told the pool is full.
+        #
+        # The request history is that check now (brief §4.I I4), and the
+        # LAST read before any write; the binding's own request columns are
+        # still read beside it, for requests made before Unit 3a deployed.
         existing = _active_binding_for_request(cur, request_id, pool_id=pool_id)
+        owner = licence_history.lookup_locked(cur, history)
+        if owner is not None:
+            return {"ok": True, "replayed": True, "history": owner}
         if existing is not None:
             if existing["activation_request_fp"] != request_fp:
                 licence_fail("request_id_reused")
@@ -210,6 +248,22 @@ def claim_capacity(
                 "seat_pool_id": pool_id,
             }
 
+        def refuse(code: str, **extra: Any):
+            # An activation's refusal is not stored: it writes nothing, and a
+            # retry decides afresh. A resolve's IS stored (I5), and per J8 it
+            # is committed here, under the pool lock that decided it — never
+            # after the lock is released, or a concurrent retry could decide
+            # the same request_id a second, different way. It commits only
+            # its history row: last_claim_at is put back to its previous
+            # value, so the refusal leaves no business trace.
+            if resolves is None:
+                licence_fail(code, **extra)
+            status, detail = licence_detail(code, **extra)
+            _restore_last_claim_at(cur, pool_id)
+            licence_history.record(cur, history, outcome="refused", status_code=status, response=detail)
+            db.commit()
+            raise_stored(status, detail)
+
         cur.execute(
             "SELECT account_id, pool_size, status FROM seat_pools WHERE id = ?",
             (pool_id,),
@@ -221,6 +275,17 @@ def claim_capacity(
         pool_size = int(pool["pool_size"])
         account_id = pool["account_id"]
 
+        # (2c) The ambiguity being resolved must still be open, and young
+        # enough (I5). Under both locks, and before capacity, so a second,
+        # concurrent treat_as_new is told it lost (already_resolved), not
+        # that the pool is full.
+        if ambiguity is not None:
+            if ambiguity.get("seat_pool_id") != pool_id:
+                licence_fail("internal_error", "The ambiguity does not belong to this pool")
+            state_refusal = _resolution_state_refusal(ambiguity)
+            if state_refusal is not None:
+                refuse(state_refusal[0], **state_refusal[1])
+
         # (3) Entitlement, re-checked in this transaction (brief §4.D) and
         # BEFORE capacity (brief §4.E), so a suspended or lapsed school is
         # told its entitlement is the problem rather than to free a seat.
@@ -231,7 +296,7 @@ def claim_capacity(
         # concurrent subscription change: the subscription lives on the
         # accounts row, which the pool-row lock above does not serialise.
         if pool.get("status") != "active":
-            licence_fail("pool_inactive")
+            refuse("pool_inactive")
         cur.execute(
             "SELECT subscription_status, subscription_expires_at FROM accounts WHERE id = ?",
             (account_id,),
@@ -241,7 +306,7 @@ def claim_capacity(
         if account.get("subscription_status") != "active" or licensing_time.is_expired(
             account.get("subscription_expires_at")
         ):
-            licence_fail(
+            refuse(
                 "subscription_inactive",
                 subscription_expires_at=wire_time_or_none(account.get("subscription_expires_at")),
             )
@@ -252,7 +317,7 @@ def claim_capacity(
         # many. Over-capacity after a shrink (active > pool_size) is refused
         # by the same comparison; no machine is ever evicted here.
         if active >= pool_size:
-            licence_fail("pool_full", pool_size=pool_size, active=active)
+            refuse("pool_full", pool_size=pool_size, active=active)
 
         # (5) Insert the binding and its audit row.
         binding_id = secrets.token_hex(16)
@@ -279,8 +344,30 @@ def claim_capacity(
             (secrets.token_hex(16), account_id, pool_id, binding_id,
              "activate", installation_id, machine_fingerprint_hash, label,
              fingerprint_signals_json, str(performed_by).strip(), actor_role,
-             json.dumps({"fingerprint_confidence": fingerprint_confidence}), stamp),
+             json.dumps({"fingerprint_confidence": fingerprint_confidence,
+                         **({"ambiguity_id": resolves["ambiguity_id"]} if resolves is not None else {})},
+                        sort_keys=True), stamp),
         )
+
+        # (5b) The resolution, in the same transaction as its binding (I5):
+        # a binding never exists without its resolution, nor the reverse.
+        # "AND status = 'open'" is a second guard behind the ambiguity lock.
+        response = None
+        if ambiguity is not None:
+            cur.execute(
+                "UPDATE licence_ambiguities SET status = 'resolved', resolution = 'treat_as_new', "
+                "resolved_binding_id = ?, resolved_by = ?, resolved_at = ? WHERE id = ? AND status = 'open'",
+                (binding_id, resolves["admin"], stamp, ambiguity["id"]),
+            )
+            _log_resolution(cur, ambiguity, decision="treat_as_new", binding_id=binding_id,
+                            admin=resolves["admin"], stamp=stamp)
+            response = _resolution_body(ambiguity["id"], "treat_as_new", binding_id, stamp)
+            history_row = licence_history.record(cur, history, outcome="resolved", response=response,
+                                                 binding_id=binding_id)
+        else:
+            # The activation's outcome is owned now, under the pool lock; its
+            # response is filled in once the lease is issued (F5).
+            history_row = licence_history.record(cur, history, outcome="activated", binding_id=binding_id)
 
         # (6) Invariant re-check, same transaction. Cheap insurance against a
         # logic error above: abort rather than oversubscribe. Raising leaves
@@ -309,7 +396,35 @@ def claim_capacity(
         "seat_pool_id": pool_id,
         "active_count": recount,
         "pool_size": pool_size,
+        "history_row_id": history_row,
+        "response": response,
     }
+
+
+def _restore_last_claim_at(cur, pool_id: str) -> None:
+    """
+    Put seat_pools.last_claim_at back to what it was before this transaction's
+    lock write, for a refusal that is committed (brief §4.J J8). The lock write
+    is the load-bearing statement at the top of claim_capacity() and stays as
+    it is; this undoes its VALUE, under the same lock, so a stored refusal
+    leaves no business trace.
+
+    The previous value is not read before the lock — another claim could
+    commit between that read and the lock, and this would then erase its
+    timestamp. It is recomputed under the lock instead: claim_capacity() is
+    the only writer of last_claim_at, and it always writes the same stamp
+    as the new binding's activated_at. So the previous value is exactly the
+    latest activated_at in the pool, revoked bindings included, or NULL for
+    a pool that never granted a seat. The raw stored value is written back,
+    so it is identical on both engines.
+    """
+    cur.execute("SELECT activated_at FROM institution_seats WHERE seat_pool_id = ?", (pool_id,))
+    latest, latest_raw = None, None
+    for row in (_row_to_dict(r) for r in cur.fetchall()):
+        when = licensing_time.to_datetime(row.get("activated_at"))
+        if when is not None and (latest is None or when > latest):
+            latest, latest_raw = when, row.get("activated_at")
+    cur.execute("UPDATE seat_pools SET last_claim_at = ? WHERE id = ?", (latest_raw, pool_id))
 
 
 def _count_active(cur, pool_id: str) -> int:
@@ -325,14 +440,25 @@ def _count_active(cur, pool_id: str) -> int:
 # Unit 2 — activation (contract §4–§5, brief §4.F–§4.H)
 # ===========================================================================
 #
-# Lock discipline (brief §4.H H3). Two row locks exist in this file:
-#   - the POOL row: claim_capacity() (last_claim_at) and
-#     create_or_get_ambiguity() (last_ambiguity_at);
-#   - a BINDING row: _restore() and _ensure_lease().
-# No transaction here holds both. If a future path ever needs both — Unit 3's
-# refresh that turns into an ambiguity is the first candidate — it takes the
-# POOL lock first. Taking them in opposite orders in two transactions can
-# deadlock.
+# Lock discipline (brief §4.H H3, extended by §4.J J6). Three row locks
+# exist in this file, and a transaction that takes more than one takes them
+# in THIS order, never another — opposite orders in two transactions can
+# deadlock:
+#
+#   1. the POOL row: claim_capacity() (last_claim_at) and
+#      create_or_get_ambiguity() (last_ambiguity_at);
+#   2. an AMBIGUITY row: _lock_ambiguity() (last_locked_at) — resolve and
+#      collection;
+#   3. a BINDING row: _restore(), _issue_lease_if_absent(), _lock_binding()
+#      — restore, lease issue, refresh, collection, release.
+#
+# Who holds more than one: an activation-raised treat_as_new resolve
+# (pool → ambiguity, inside claim_capacity()); a collection (ambiguity →
+# binding). Refresh holds only the binding; a refresh that turns into an
+# ambiguity creates it through create_or_get_ambiguity() in a transaction of
+# its own, holding no binding lock. Pool and binding are never held together.
+# The request history (licence_requests) is insert-only, with a non-unique
+# index, so writing it waits on no other row.
 
 REPLAY_WINDOW = timedelta(hours=24)       # contract §9.2
 AMBIGUITY_TTL = timedelta(days=7)         # brief §4.C
@@ -625,24 +751,9 @@ def _ensure_lease(binding_id: str) -> Dict[str, Any]:
     db = db_conn()
     try:
         cur = db.cursor()
-        cur.execute("SELECT * FROM institution_seats WHERE id = ?", (binding_id,))
-        row = cur.fetchone()
-        if not row or _row_to_dict(row).get("revoked_at") is not None:
+        binding = _issue_lease_if_absent(cur, binding_id)
+        if binding is None:
             licence_fail("internal_error", "The activation changed while it was being issued. Try again.")
-        binding = _row_to_dict(row)
-        if binding.get("current_lease"):
-            return binding
-        issued = _sign_for_binding(
-            binding, _subscription_expires_at(cur, binding["account_id"]),
-            int(binding.get("lease_serial") or 0) + 1, licensing_time.now(),
-        )
-        cur.execute(
-            "UPDATE institution_seats SET current_lease = ?, lease_serial = ?, lease_issued_at = ?, "
-            "lease_expires_at = ?, updated_at = ? "
-            "WHERE id = ? AND revoked_at IS NULL AND current_lease IS NULL",
-            (issued["lease"], issued["serial"], issued["issued"], issued["expires"],
-             licensing_time.now_iso(), binding_id),
-        )
         db.commit()
         cur.execute("SELECT * FROM institution_seats WHERE id = ?", (binding_id,))
         binding = _row_to_dict(cur.fetchone())
@@ -653,7 +764,39 @@ def _ensure_lease(binding_id: str) -> Dict[str, Any]:
     return binding
 
 
-def _activate_response(binding: Mapping[str, Any], account_name: Any, pool_label: Any) -> Dict[str, Any]:
+def _issue_lease_if_absent(cur, binding_id: str) -> Optional[Dict[str, Any]]:
+    """
+    _ensure_lease()'s issue-if-absent, in the CALLER's transaction, so a
+    collection can issue the lease and mark its ambiguity consumed in one
+    commit (brief §4.I I6). Returns the binding row as it now stands in this
+    transaction, or None if the binding is gone or revoked. Locks the
+    binding row (its UPDATE), and only when it actually issues.
+    """
+    cur.execute("SELECT * FROM institution_seats WHERE id = ?", (binding_id,))
+    row = cur.fetchone()
+    if not row or _row_to_dict(row).get("revoked_at") is not None:
+        return None
+    binding = _row_to_dict(row)
+    if binding.get("current_lease"):
+        return binding
+    issued = _sign_for_binding(
+        binding, _subscription_expires_at(cur, binding["account_id"]),
+        int(binding.get("lease_serial") or 0) + 1, licensing_time.now(),
+    )
+    cur.execute(
+        "UPDATE institution_seats SET current_lease = ?, lease_serial = ?, lease_issued_at = ?, "
+        "lease_expires_at = ?, updated_at = ? "
+        "WHERE id = ? AND revoked_at IS NULL AND current_lease IS NULL",
+        (issued["lease"], issued["serial"], issued["issued"], issued["expires"],
+         licensing_time.now_iso(), binding_id),
+    )
+    cur.execute("SELECT * FROM institution_seats WHERE id = ?", (binding_id,))
+    binding = _row_to_dict(cur.fetchone())
+    return binding if binding.get("revoked_at") is None else None
+
+
+def _activate_body(binding: Mapping[str, Any], account_name: Any, pool_label: Any) -> Dict[str, Any]:
+    """The contract §5 response WITHOUT server_time — what the request history stores (J5)."""
     return {
         "result": binding.get("activation_result") or "activated",
         "lease": binding["current_lease"],
@@ -663,8 +806,65 @@ def _activate_response(binding: Mapping[str, Any], account_name: Any, pool_label
         "machine_label": binding.get("machine_label"),
         "account_name": account_name,
         "pool_label": pool_label,
-        "server_time": wire_time(),
     }
+
+
+def _activate_response(binding: Mapping[str, Any], account_name: Any, pool_label: Any) -> Dict[str, Any]:
+    return {**_activate_body(binding, account_name, pool_label), "server_time": wire_time()}
+
+
+def _early_lookup(entry: "licence_history.Entry") -> Optional[Dict[str, Any]]:
+    """
+    The FIRST of the two history checks (licence_history docstring): before
+    any lock and before any write, so a replay is fast and — because the
+    history fails closed — a missing history refuses the request before
+    anything at all is written.
+    """
+    db = db_conn()
+    try:
+        return licence_history.lookup(db.cursor(), entry)
+    finally:
+        db.close()
+
+
+def _replay_activation(owner: Mapping[str, Any], account_name: Any, pool_label: Any) -> Dict[str, Any]:
+    """
+    Replay a recorded activation request (brief §4.I I4, §4.J J2, J5, J10).
+
+    - A stored refusal — above all the 409 ambiguity_pending an activation
+      that raised an ambiguity got — is returned exactly as stored, with the
+      same ambiguity_id, whatever has happened to the ambiguity since (J10).
+    - A binding the request activated or restored that has since been
+      RELEASED → 403 lease_revoked: release beats a replay, so a released
+      seat never receives a lease (J2, contract §9.3).
+    - Otherwise the stored response, identical except server_time (J5). If
+      the lease was never issued — a crash between claim_capacity()'s commit
+      and _ensure_lease() (F5) — it is issued now and the response stored,
+      and every concurrent replay converges on that one stored body.
+    """
+    if int(owner.get("status_code") or 200) >= 400:
+        licence_history.replay(owner)
+    binding_id = owner.get("binding_id")
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute("SELECT revoked_at FROM institution_seats WHERE id = ?", (binding_id,))
+        row = cur.fetchone()
+    finally:
+        db.close()
+    if not row or _row_to_dict(row).get("revoked_at") is not None:
+        licence_fail("lease_revoked")
+    if licence_history.stored_response(owner) is None:
+        binding = _ensure_lease(binding_id)
+        db = db_conn()
+        try:
+            cur = db.cursor()
+            licence_history.fill_response(cur, owner["id"], _activate_body(binding, account_name, pool_label))
+            db.commit()
+            owner = licence_history.read_row(cur, owner["id"])
+        finally:
+            db.close()
+    return licence_history.replay(owner)
 
 
 # ---------------------------------------------------------------------------
@@ -725,10 +925,19 @@ def create_or_get_ambiguity(
     candidate_binding_ids: List[str],
     performed_by: str,
     actor_role: str,
-) -> str:
+    history: "licence_history.Entry",
+) -> Dict[str, Any]:
     """
-    The ONLY way a licence_ambiguities row is created — activation now, and
-    Unit 3's refresh-raised ambiguities too. Returns the ambiguity_id.
+    The ONLY way a licence_ambiguities row is created — activation-raised
+    and refresh-raised alike. Returns {"ambiguity_id", "replay"}: "replay"
+    is the request-history row when this request was already recorded
+    (under the lock), and the caller then replays it instead.
+
+    The request history (brief §4.I I4): checked under the pool lock as the
+    last read before the insert, and the outcome — 409 ambiguity_pending
+    with this ambiguity_id — recorded in the same transaction, so a replay
+    of the raising request returns exactly that, whatever later happens to
+    the ambiguity (J10).
 
     Invariant (F4, H2): two concurrent calls with the same request_id and
     the same body that both decide "ambiguity" create exactly ONE row and
@@ -771,21 +980,30 @@ def create_or_get_ambiguity(
             licence_fail("pool_access_denied")
         account_id = _row_to_dict(pool)["account_id"]
 
-        # (2) Under the lock: the same request already raised one?
+        # (2) Under the lock: the same request already raised one? The
+        # ambiguity's own request columns first (requests from before Unit 3a
+        # deployed have no history row), then the request history, LAST,
+        # immediately before the insert — that is where the race tests hold a
+        # request, so removing the lock above makes both insert every run
+        # (brief §9 R2).
         cur.execute(
             "SELECT id, request_fp, created_at FROM licence_ambiguities "
             "WHERE seat_pool_id = ? AND request_id = ? AND origin = ?",
             (pool_id, request_id, origin),
         )
         now = licensing_time.now()
-        for row in (_row_to_dict(r) for r in cur.fetchall()):
-            if not _within_window(row.get("created_at"), REPLAY_WINDOW, now):
-                continue
+        raised = [row for row in (_row_to_dict(r) for r in cur.fetchall())
+                  if _within_window(row.get("created_at"), REPLAY_WINDOW, now)]
+        owner = licence_history.lookup_locked(cur, history)
+        if owner is not None:
+            return {"ambiguity_id": owner.get("ambiguity_id"), "replay": owner}
+        for row in raised:
             if row.get("request_fp") != request_fp:
                 licence_fail("request_id_reused")
-            return row["id"]
+            return {"ambiguity_id": row["id"], "replay": None}
 
-        # (3) Exactly one row, and its audit row, in the same transaction.
+        # (3) Exactly one row, its audit row and its history row, in the same
+        # transaction.
         ambiguity_id = secrets.token_hex(16)
         cur.execute(
             "INSERT INTO licence_ambiguities (id, account_id, seat_pool_id, presented_signals_json, "
@@ -803,10 +1021,104 @@ def create_or_get_ambiguity(
              detail={"ambiguity_id": ambiguity_id, "origin": origin,
                      "candidate_binding_ids": sorted(candidate_binding_ids)},
              stamp=stamp)
+        status, detail = licence_detail("ambiguity_pending", ambiguity_id=ambiguity_id)
+        licence_history.record(cur, history, outcome="ambiguity", status_code=status, response=detail,
+                               ambiguity_id=ambiguity_id)
         db.commit()
-        return ambiguity_id
+        return {"ambiguity_id": ambiguity_id, "replay": None}
     finally:
         db.close()
+
+
+def _lock_ambiguity(cur, ambiguity_id: str, stamp: str) -> Optional[Dict[str, Any]]:
+    """
+    Take the AMBIGUITY-row lock and read the row under it (brief §4.J).
+
+    LOAD-BEARING — DO NOT REMOVE, REORDER OR "OPTIMISE AWAY". This looks like
+    a bookkeeping write. It is what makes exactly one resolution per
+    ambiguity and exactly one collection per resolution (I5, I6): a second,
+    concurrent resolve or collection blocks here, and under READ COMMITTED
+    then reads the row the first one committed — resolved, or consumed —
+    instead of acting on the state it saw before. Same shape and purpose as
+    claim_capacity()'s last_claim_at write. Without it, two barrier-
+    synchronised collections on Postgres both restore, and two resolves
+    both resolve (test_licensing_unit3a_pg.py). SQLite serialises writers
+    anyway, which is why only the Postgres tests can catch its removal.
+
+    last_locked_at is bookkeeping, not state ("when a resolve or collection
+    last held this row"), on purpose: a stored refusal commits this write
+    too, and J8 allows a refusal to leave no business trace.
+
+    Lock order: after the pool, before a binding (J6).
+    """
+    cur.execute("UPDATE licence_ambiguities SET last_locked_at = ? WHERE id = ?", (stamp, ambiguity_id))
+    cur.execute("SELECT * FROM licence_ambiguities WHERE id = ?", (ambiguity_id,))
+    row = cur.fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def _lock_binding(cur, binding_id: str, stamp: str) -> Optional[Dict[str, Any]]:
+    """
+    Take the BINDING-row lock and read the row under it: refresh issue (I3),
+    collection, release (I7). The write matches the row WHATEVER its
+    revoked_at (brief §4.J J9), so a release of an already released binding
+    still serialises, and two concurrent requests on one binding always
+    meet here. A refresh then re-checks revoked under it, so a release that
+    committed while the refresh was deciding wins.
+
+    LOAD-BEARING, like the pool and ambiguity locks: without it two
+    refreshes issue the same serial, and two releases of a released binding
+    under one request_id both answer already_released.
+    """
+    cur.execute("UPDATE institution_seats SET updated_at = ? WHERE id = ?", (stamp, binding_id))
+    cur.execute("SELECT * FROM institution_seats WHERE id = ?", (binding_id,))
+    row = cur.fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def _ambiguity_state(row: Mapping[str, Any]) -> str:
+    """open | expired | resolved | consumed. An open row 7 days old IS expired, whatever its column says."""
+    status = row.get("status")
+    if status == "open" and not _within_window(row.get("created_at"), AMBIGUITY_TTL):
+        return "expired"
+    return status
+
+
+def _resolution_fields(row: Mapping[str, Any]) -> Dict[str, Any]:
+    return {"resolution": row.get("resolution"), "resolved_binding_id": row.get("resolved_binding_id"),
+            "resolved_at": wire_time_or_none(row.get("resolved_at"))}
+
+
+def _resolution_state_refusal(row: Mapping[str, Any]) -> Optional[tuple]:
+    """
+    Why this ambiguity cannot be resolved now, as (code, extra), or None if
+    it can (brief §4.I I5): only an OPEN ambiguity younger than 7 days.
+    """
+    state = _ambiguity_state(row)
+    if state == "expired":
+        return "ambiguity_expired", {}
+    if state == "resolved":
+        return "ambiguity_already_resolved", _resolution_fields(row)
+    if state == "consumed":
+        return "ambiguity_consumed", _resolution_fields(row)
+    return None
+
+
+def _resolution_body(ambiguity_id: str, decision: str, binding_id: Optional[str], stamp: Any) -> Dict[str, Any]:
+    """The resolve response WITHOUT server_time — what the request history stores (J5)."""
+    return {"ok": True, "ambiguity_id": ambiguity_id, "status": "resolved", "resolution": decision,
+            "resolved_binding_id": binding_id, "resolved_at": wire_time(stamp)}
+
+
+def _log_resolution(cur, ambiguity: Mapping[str, Any], *, decision: str, binding_id: Optional[str],
+                    admin: str, stamp: str) -> None:
+    _log(cur, account_id=ambiguity["account_id"], seat_pool_id=ambiguity["seat_pool_id"], binding_id=binding_id,
+         action="ambiguity_resolved", installation_id=ambiguity.get("presented_installation_id"),
+         fingerprint_hash=ambiguity.get("presented_fingerprint_hash"), machine_label=ambiguity.get("machine_label"),
+         signals_json=ambiguity.get("presented_signals_json"), performed_by=admin, actor_role="exampartner_admin",
+         detail={"ambiguity_id": ambiguity["id"], "decision": decision, "binding_id": binding_id,
+                 "origin": ambiguity.get("origin")},
+         stamp=stamp)
 
 
 def _ambiguity_outcome(row: Mapping[str, Any]) -> None:
@@ -819,27 +1131,69 @@ def _ambiguity_outcome(row: Mapping[str, Any]) -> None:
     licence_fail("ambiguity_pending", ambiguity_id=row["id"])
 
 
-def _collect_ambiguity(ambiguity_id: str, pool_id: str, request_id: str, request_fp: str) -> None:
+def _check_collector(row: Optional[Mapping[str, Any]], *, origin: str, pool_id: str, request_id: str,
+                     request_fp: str) -> Dict[str, Any]:
     """
-    A request carrying ambiguity_id (contract §10). Resolving is Unit 3, so
-    here the outcome is only ever the row's state — pending or expired —
-    and ONLY for the PC that raised it. Checked in this order:
+    Unit 2's identity checks for a request carrying ambiguity_id (contract
+    §10), kept exactly and in their order (brief §4.I I6):
 
-    1. Not an activation-raised ambiguity of THIS pool → ambiguity_mismatch,
-       the same answer whether it belongs to another pool or does not exist.
+    1. Not an ambiguity of THIS pool raised by THIS kind of request →
+       ambiguity_mismatch, the same answer whether it belongs to another
+       pool or does not exist.
     2. The request reuses the ambiguity's ORIGINAL raising request_id →
        request_id_reused. Contract §10 requires collection under a NEW
        request_id; resending the raising one is a client bug, and must not
        be mistaken for a replay of the raising request.
-    3. The current request's digest differs from the one stored when the
-       ambiguity was raised → ambiguity_mismatch (contract §9.3: the PC
-       presenting the id is not the one that raised it). request_fp covers
-       the pool and the normalised reading, so this is the identity check.
-       The stored digest is compared, never recomputed (H5).
+    3. The current request's identity digest differs from the one stored
+       when the ambiguity was raised → ambiguity_mismatch (contract §9.3: the
+       PC presenting the id is not the one that raised it). The stored
+       digest is compared, never recomputed (H5).
 
     Identity is settled before the state is revealed, so a different PC
     holding someone else's ambiguity_id learns nothing about it.
     """
+    if not row or row.get("seat_pool_id") != pool_id or row.get("origin") != origin:
+        licence_fail("ambiguity_mismatch")
+    if row.get("request_id") == request_id:
+        licence_fail("request_id_reused")
+    if row.get("request_fp") != request_fp:
+        licence_fail("ambiguity_mismatch")
+    return dict(row)
+
+
+def _unresolved_outcome(row: Mapping[str, Any]) -> None:
+    """Raise the answer for an ambiguity that is not (or no longer) collectable: pending, expired or consumed."""
+    state = _ambiguity_state(row)
+    if state == "consumed":
+        licence_fail("ambiguity_consumed")
+    if state == "expired":
+        licence_fail("ambiguity_expired")
+    if state == "open":
+        licence_fail("ambiguity_pending", ambiguity_id=row["id"])
+
+
+def _collect_on_activate(ambiguity_id: str, *, pool: Mapping[str, Any], request_id: str, request_fp: str,
+                         history: "licence_history.Entry", reading: "fingerprint_service.Reading",
+                         signals_json: str, label: str, caller: str, actor_role: str) -> Dict[str, Any]:
+    """
+    POST /licence/activate with ambiguity_id: collecting an activation-raised
+    ambiguity (contract §10, brief §4.I I6). In order: Unit 2's identity
+    checks; the request history (a replay returns its original result — or
+    lease_revoked, J2); then the state:
+
+    | state                          | answer                                      |
+    |--------------------------------|---------------------------------------------|
+    | open, under 7 days             | 409 ambiguity_pending                       |
+    | open 7 days or more, expired   | 409 ambiguity_expired                       |
+    | consumed                       | 409 ambiguity_consumed                      |
+    | resolved, its binding revoked  | 403 lease_revoked                           |
+    | resolved recognize_existing    | restore onto it, 200 result "restored"      |
+    | resolved treat_as_new          | issue its lease, 200 result "activated"     |
+
+    Only the successes are recorded in the history. A request answered
+    pending owns nothing, so its retry after the admin resolves collects.
+    """
+    pool_id = pool["id"]
     db = db_conn()
     try:
         cur = db.cursor()
@@ -847,14 +1201,82 @@ def _collect_ambiguity(ambiguity_id: str, pool_id: str, request_id: str, request
         row = cur.fetchone()
     finally:
         db.close()
-    row = _row_to_dict(row) if row else None
-    if not row or row.get("seat_pool_id") != pool_id or row.get("origin") != "activate":
-        licence_fail("ambiguity_mismatch")
-    if row.get("request_id") == request_id:
-        licence_fail("request_id_reused")
-    if row.get("request_fp") != request_fp:
-        licence_fail("ambiguity_mismatch")
-    _ambiguity_outcome(row)
+    row = _check_collector(_row_to_dict(row) if row else None, origin="activate", pool_id=pool_id,
+                           request_id=request_id, request_fp=request_fp)
+
+    owner = _early_lookup(history)
+    if owner is not None:
+        return _replay_activation(owner, pool.get("account_name"), pool.get("label"))
+
+    if _ambiguity_state(row) != "resolved":
+        _unresolved_outcome(row)
+    target = row.get("resolved_binding_id")
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute("SELECT revoked_at FROM institution_seats WHERE id = ?", (target,))
+        bound = cur.fetchone()
+    finally:
+        db.close()
+    if not target or not bound or _row_to_dict(bound).get("revoked_at") is not None:
+        licence_fail("lease_revoked")
+    return _collect_resolved(row, target=target, pool=pool, reading=reading, signals_json=signals_json,
+                             request_id=request_id, request_fp=request_fp, history=history, label=label,
+                             caller=caller, actor_role=actor_role)
+
+
+def _collect_resolved(ambiguity: Mapping[str, Any], *, target: str, pool: Mapping[str, Any],
+                      reading: "fingerprint_service.Reading", signals_json: str, request_id: str,
+                      request_fp: str, history: "licence_history.Entry", label: str, caller: str,
+                      actor_role: str) -> Dict[str, Any]:
+    """
+    Apply a resolved activation-raised ambiguity, marking it consumed in the
+    SAME transaction that issues the lease (single use, I6). Both kinds lock
+    the ambiguity row first and then the binding (ambiguity → binding, J6);
+    neither touches the pool lock. Two concurrent collections serialise on
+    the ambiguity lock: the second finds it consumed — and replays if it is
+    the same logical request (I4), or gets ambiguity_consumed if not.
+    """
+    if ambiguity.get("resolution") == "recognize_existing":
+        body = _restore(target, reading=reading, signals_json=signals_json, request_id=request_id,
+                        request_fp=request_fp, machine_label=label, performed_by=caller, actor_role=actor_role,
+                        history=history, account_name=pool.get("account_name"), pool_label=pool.get("label"),
+                        consume_ambiguity_id=ambiguity["id"])
+        return {**body, "server_time": wire_time()}
+
+    # treat_as_new: claim_capacity() created the binding at resolution; its
+    # lease is issued now that the PC is back.
+    replay_owner, body = None, None
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        stamp = licensing_time.now_iso()
+        locked = _lock_ambiguity(cur, ambiguity["id"], stamp)
+        bound = _lock_binding(cur, target, stamp)
+        owner = licence_history.lookup_locked(cur, history)
+        if owner is not None:
+            replay_owner = owner
+        elif not locked or locked.get("status") != "resolved":
+            licence_fail("ambiguity_consumed")
+        elif not bound or bound.get("revoked_at") is not None:
+            licence_fail("lease_revoked")
+        else:
+            binding = _issue_lease_if_absent(cur, target)
+            if binding is None:
+                licence_fail("lease_revoked")
+            cur.execute(
+                "UPDATE licence_ambiguities SET status = 'consumed', consumed_at = ? "
+                "WHERE id = ? AND status = 'resolved'",
+                (stamp, ambiguity["id"]),
+            )
+            body = _activate_body(binding, pool.get("account_name"), pool.get("label"))
+            licence_history.record(cur, history, outcome="activated", response=body, binding_id=target)
+            db.commit()
+    finally:
+        db.close()
+    if replay_owner is not None:
+        return _replay_activation(replay_owner, pool.get("account_name"), pool.get("label"))
+    return {**body, "server_time": wire_time()}
 
 
 # ---------------------------------------------------------------------------
@@ -863,17 +1285,24 @@ def _collect_ambiguity(ambiguity_id: str, pool_id: str, request_id: str, request
 
 def _restore(binding_id: str, *, reading: "fingerprint_service.Reading", signals_json: str,
              request_id: str, request_fp: str, machine_label: str,
-             performed_by: str, actor_role: str) -> Dict[str, Any]:
+             performed_by: str, actor_role: str, history: "licence_history.Entry",
+             account_name: Any, pool_label: Any, consume_ambiguity_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Recognised reinstall (case D): the same activation, a new installation,
-    no capacity. One transaction, locking the BINDING row only (H3).
-    Returns the binding row as committed.
+    no capacity. One transaction, locking the BINDING row (H3) — and, when
+    collecting a resolved recognize_existing ambiguity (I6), the AMBIGUITY
+    row first (ambiguity → binding, J6), which is marked consumed in the
+    same commit. Returns the contract §5 response without server_time, as
+    the request history stores it (J5).
     """
+    replay_owner, body, revoked = None, None, False
     db = db_conn()
     try:
         cur = db.cursor()
         now = licensing_time.now()
         stamp = now.isoformat()
+
+        locked = _lock_ambiguity(cur, consume_ambiguity_id, stamp) if consume_ambiguity_id else None
 
         # Restore changes installation_id, so it is a binding write under the
         # §4.E standing rule: the index is checked live. Twice, for the same
@@ -897,60 +1326,88 @@ def _restore(binding_id: str, *, reading: "fingerprint_service.Reading", signals
         cur.execute("SELECT * FROM institution_seats WHERE id = ?", (binding_id,))
         row = cur.fetchone()
         binding = _row_to_dict(row) if row else None
-        if not binding or binding.get("revoked_at") is not None:
-            # Released between the decision and here. Retryable: the next
-            # attempt will not see it as a candidate (release beats recognition).
-            licence_fail("internal_error", "This computer's activation changed during the request. Try again.")
+        # The request history, the last read before the write (I4).
+        owner = licence_history.lookup_locked(cur, history)
 
-        if binding.get("activation_request_id") == request_id and _within_window(
+        if owner is not None:
+            replay_owner = owner
+        elif not binding or binding.get("revoked_at") is not None:
+            if consume_ambiguity_id:
+                revoked = True          # a collection: release beats the resolution (I6)
+            else:
+                # Released between the decision and here. Retryable: the next
+                # attempt will not see it as a candidate (release beats recognition).
+                licence_fail("internal_error", "This computer's activation changed during the request. Try again.")
+        elif consume_ambiguity_id and (not locked or locked.get("status") != "resolved"):
+            licence_fail("ambiguity_consumed")
+        elif binding.get("activation_request_id") == request_id and _within_window(
             binding.get("activation_request_at"), REPLAY_WINDOW, now
         ):
+            # A restore recorded on the binding but not in the history: one
+            # made before Unit 3a deployed. Unit 2's replay, unchanged.
             if binding.get("activation_request_fp") != request_fp:
                 licence_fail("request_id_reused")
-            return binding  # already applied; the close discards the lock write
+            body = _activate_body(binding, account_name, pool_label)  # the close discards the lock write
+        else:
+            previous = {"installation_id": binding["installation_id"],
+                        "machine_fingerprint_hash": binding["machine_fingerprint_hash"]}
+            installation_id = secrets.token_hex(16)
+            # H6: the binding's existing label stands — the owner may have renamed
+            # it. The technician's label is used only if the binding has none.
+            label = binding.get("machine_label") or machine_label
+            new_hash = fingerprint_service.identity_hash(reading)
+            # Ratchet the stored identity forward on the strong match (spec
+            # §8.6.1), so accumulated maintenance does not drift the binding away
+            # from its machine one recognised change at a time.
+            cur.execute(
+                "UPDATE institution_seats SET installation_id = ?, last_seen_at = ?, machine_label = ?, "
+                "machine_fingerprint_hash = ?, fingerprint_signals_json = ?, "
+                "activation_request_id = ?, activation_request_at = ?, activation_request_fp = ?, "
+                "activation_result = ?, updated_at = ? WHERE id = ?",
+                (installation_id, stamp, label, new_hash, signals_json,
+                 request_id, stamp, request_fp, "restored", stamp, binding_id),
+            )
+            binding.update(installation_id=installation_id, machine_label=label, machine_fingerprint_hash=new_hash)
 
-        previous = {"installation_id": binding["installation_id"],
-                    "machine_fingerprint_hash": binding["machine_fingerprint_hash"]}
-        installation_id = secrets.token_hex(16)
-        # H6: the binding's existing label stands — the owner may have renamed
-        # it. The technician's label is used only if the binding has none.
-        label = binding.get("machine_label") or machine_label
-        new_hash = fingerprint_service.identity_hash(reading)
-        # Ratchet the stored identity forward on the strong match (spec
-        # §8.6.1), so accumulated maintenance does not drift the binding away
-        # from its machine one recognised change at a time.
-        cur.execute(
-            "UPDATE institution_seats SET installation_id = ?, last_seen_at = ?, machine_label = ?, "
-            "machine_fingerprint_hash = ?, fingerprint_signals_json = ?, "
-            "activation_request_id = ?, activation_request_at = ?, activation_request_fp = ?, "
-            "activation_result = ?, updated_at = ? WHERE id = ?",
-            (installation_id, stamp, label, new_hash, signals_json,
-             request_id, stamp, request_fp, "restored", stamp, binding_id),
-        )
-        binding.update(installation_id=installation_id, machine_label=label, machine_fingerprint_hash=new_hash)
+            issued = _sign_for_binding(
+                binding, _subscription_expires_at(cur, binding["account_id"]),
+                int(binding.get("lease_serial") or 0) + 1, now,
+            )
+            cur.execute(
+                "UPDATE institution_seats SET current_lease = ?, lease_serial = ?, lease_issued_at = ?, "
+                "lease_expires_at = ? WHERE id = ?",
+                (issued["lease"], issued["serial"], issued["issued"], issued["expires"], binding_id),
+            )
+            detail = {"previous_installation_id": previous["installation_id"],
+                      "previous_fingerprint_hash": previous["machine_fingerprint_hash"],
+                      "lease_serial": issued["serial"]}
+            if consume_ambiguity_id:
+                cur.execute(
+                    "UPDATE licence_ambiguities SET status = 'consumed', consumed_at = ? "
+                    "WHERE id = ? AND status = 'resolved'",
+                    (stamp, consume_ambiguity_id),
+                )
+                detail["ambiguity_id"] = consume_ambiguity_id
+            _log(cur, account_id=binding["account_id"], seat_pool_id=binding["seat_pool_id"], binding_id=binding_id,
+                 action="restore", installation_id=installation_id, fingerprint_hash=new_hash,
+                 machine_label=label, signals_json=signals_json, performed_by=performed_by, actor_role=actor_role,
+                 detail=detail, stamp=stamp)
 
-        issued = _sign_for_binding(
-            binding, _subscription_expires_at(cur, binding["account_id"]),
-            int(binding.get("lease_serial") or 0) + 1, now,
-        )
-        cur.execute(
-            "UPDATE institution_seats SET current_lease = ?, lease_serial = ?, lease_issued_at = ?, "
-            "lease_expires_at = ? WHERE id = ?",
-            (issued["lease"], issued["serial"], issued["issued"], issued["expires"], binding_id),
-        )
-        _log(cur, account_id=binding["account_id"], seat_pool_id=binding["seat_pool_id"], binding_id=binding_id,
-             action="restore", installation_id=installation_id, fingerprint_hash=new_hash,
-             machine_label=label, signals_json=signals_json, performed_by=performed_by, actor_role=actor_role,
-             detail={"previous_installation_id": previous["installation_id"],
-                     "previous_fingerprint_hash": previous["machine_fingerprint_hash"],
-                     "lease_serial": issued["serial"]},
-             stamp=stamp)
-        db.commit()
-
-        cur.execute("SELECT * FROM institution_seats WHERE id = ?", (binding_id,))
-        return _row_to_dict(cur.fetchone())
+            cur.execute("SELECT * FROM institution_seats WHERE id = ?", (binding_id,))
+            body = _activate_body(_row_to_dict(cur.fetchone()), account_name, pool_label)
+            licence_history.record(cur, history, outcome="restored", response=body, binding_id=binding_id)
+            db.commit()
     finally:
         db.close()
+    if revoked:
+        licence_fail("lease_revoked")
+    if replay_owner is not None:
+        return _without_time(_replay_activation(replay_owner, account_name, pool_label))
+    return body
+
+
+def _without_time(body: Mapping[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in body.items() if k != "server_time"}
 
 
 # ---------------------------------------------------------------------------
@@ -1034,14 +1491,33 @@ def activate(caller: str, body: Mapping[str, Any]) -> Dict[str, Any]:
     signals_json = json.dumps(signals, sort_keys=True, separators=(",", ":"))
     fingerprint_hash = fingerprint_service.identity_hash(reading)
 
+    # The request history entry (brief §4.I I4). Its digest covers the pool,
+    # the normalised reading and the ambiguity_id, so a collection and a
+    # plain activation can never share a request_id.
+    history = licence_history.Entry(
+        request_id, "activate",
+        licence_history.digest("activate", request_fp=request_fp, ambiguity_id=ambiguity_id),
+        account_id=pool["account_id"], seat_pool_id=pool_id, ambiguity_id=ambiguity_id,
+    )
+    account_name, pool_label = pool.get("account_name"), pool.get("label")
+
     # Collecting an ambiguity (contract §10). After the digest exists,
     # because the collection must prove it comes from the PC that raised it.
     if ambiguity_id is not None:
-        _collect_ambiguity(ambiguity_id, pool_id, request_id, request_fp)
+        return _collect_on_activate(ambiguity_id, pool=pool, request_id=request_id, request_fp=request_fp,
+                                    history=history, reading=reading, signals_json=signals_json, label=label,
+                                    caller=caller, actor_role=actor_role)
 
-    # F3 step 1 — replay. Looked up across ALL pools, so a request_id reused
+    # F3 step 1 — replay. The request history first (I4): it remembers
+    # every activation, restore and collection for 24 hours, including ones
+    # a later request has overtaken (brief §9 R1). Then Unit 2's per-binding
+    # and per-ambiguity columns, which answer for requests made before Unit
+    # 3a deployed. Looked up across ALL pools, so a request_id reused
     # sequentially in a different pool is refused (H4): the digest includes
     # the pool id, so it can never match there.
+    owner = _early_lookup(history)
+    if owner is not None:
+        return _replay_activation(owner, account_name, pool_label)
     db = db_conn()
     try:
         cur = db.cursor()
@@ -1114,12 +1590,11 @@ def activate(caller: str, body: Mapping[str, Any]) -> Dict[str, Any]:
 
     candidates: List[str] = []
     if len(strong) == 1:                                   # step 3 — case D
-        binding = _restore(strong[0], reading=reading, signals_json=signals_json,
-                           request_id=request_id, request_fp=request_fp, machine_label=label,
-                           performed_by=caller, actor_role=actor_role)
-        if not binding.get("current_lease"):
-            binding = _ensure_lease(binding["id"])
-        return _activate_response(binding, pool.get("account_name"), pool.get("label"))
+        body = _restore(strong[0], reading=reading, signals_json=signals_json,
+                        request_id=request_id, request_fp=request_fp, machine_label=label,
+                        performed_by=caller, actor_role=actor_role, history=history,
+                        account_name=account_name, pool_label=pool_label)
+        return {**body, "server_time": wire_time()}
     if len(strong) > 1:                                    # step 3 — more than one
         candidates = strong
     elif weak:                                             # step 4
@@ -1129,13 +1604,16 @@ def activate(caller: str, body: Mapping[str, Any]) -> Dict[str, Any]:
                             if fingerprint_service.activation_continuity_match(reading, r))
 
     if candidates:
-        raised_id = create_or_get_ambiguity(
+        raised = create_or_get_ambiguity(
             pool_id, origin="activate", request_id=request_id, request_fp=request_fp,
             presented_signals_json=signals_json, presented_fingerprint_hash=fingerprint_hash,
             presented_installation_id=presented_installation_id, machine_label=label,
             candidate_binding_ids=candidates, performed_by=caller, actor_role=actor_role,
+            history=history,
         )
-        licence_fail("ambiguity_pending", ambiguity_id=raised_id)
+        if raised["replay"] is not None:
+            return _replay_activation(raised["replay"], account_name, pool_label)
+        licence_fail("ambiguity_pending", ambiguity_id=raised["ambiguity_id"])
 
     # Step 6 — a new machine: case G, or pool_full (case H) from inside the claim.
     claimed = claim_capacity(
@@ -1146,11 +1624,862 @@ def activate(caller: str, body: Mapping[str, Any]) -> Dict[str, Any]:
         actor_role=actor_role,
         request_id=request_id,
         request_fp=request_fp,
+        history=history,
         fingerprint_signals_json=signals_json,
         machine_label=label,
     )
+    if claimed.get("history") is not None:
+        return _replay_activation(claimed["history"], account_name, pool_label)
     binding = _ensure_lease(claimed["binding_id"])
-    return _activate_response(binding, pool.get("account_name"), pool.get("label"))
+    if claimed.get("replayed"):
+        # Found by the binding's own request columns, not the history: a
+        # request from before Unit 3a deployed. Unit 2's replay, unchanged.
+        return _activate_response(binding, account_name, pool_label)
+    # Store the response now that the lease exists (F5). If two fillers
+    # race, both return the body that was stored first — identical anyway.
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        licence_history.fill_response(cur, claimed["history_row_id"],
+                                      _activate_body(binding, account_name, pool_label))
+        db.commit()
+        row = licence_history.read_row(cur, claimed["history_row_id"])
+    finally:
+        db.close()
+    return licence_history.replay(row)
+
+
+# ===========================================================================
+# Unit 3a — POST /licence/refresh (contract §9, brief §4.I I1–I4, §4.J)
+# ===========================================================================
+#
+# No Authorization header: the signed lease is the authorisation, and the
+# presenting machine is verified against the binding on every refresh, so a
+# copied lease does not refresh on another PC (spec §8.6, §8.6.1). Never
+# calls get_current_user(). It claims no capacity, creates no binding and
+# never changes installation_id, so the §4.E live index check does not apply.
+
+REFRESH_LOG_GAP = timedelta(days=7)       # brief §4.I I3 step 5
+
+
+def _verify_presented_lease(lease: str) -> Dict[str, Any]:
+    """
+    I1 step 2: verify with the public key of the CONFIGURED kid only. Any
+    other kid — kid 0, the published TEST key, included — is lease_invalid.
+    Key rotation is deferred (spec §8.7).
+
+    A lease that fails is logged as an application WARNING only, never to
+    seat_activation_log (J3): it has no trustworthy account, and logging it
+    against the account its payload claims would let anyone write rows into
+    any school's owner-visible history. The warning names the claimed
+    binding_id and kid, and never the lease string.
+    """
+    key = licence_lease.signing_key()
+    if key is None:
+        licence_fail("licensing_unavailable")
+    private_key, kid = key
+    try:
+        return licence_lease.verify_lease(lease, {kid: private_key.public_key()})
+    except licence_lease.LeaseInvalid as exc:
+        claimed: Dict[str, Any] = {}
+        try:
+            segment = lease.split(".")[0]
+            decoded = json.loads(licence_lease._b64url_decode(segment).decode("utf-8"))
+            claimed = decoded if isinstance(decoded, dict) else {}
+        except Exception:
+            pass
+        logger.warning("lease_invalid on /licence/refresh (%s): claimed binding_id=%r kid=%r",
+                       exc, claimed.get("binding_id"), claimed.get("kid"))
+        licence_fail("lease_invalid")
+
+
+def _log_event(*, account_id: str, seat_pool_id: Optional[str], binding_id: Optional[str], action: str,
+               installation_id: Optional[str], fingerprint_hash: Optional[str], machine_label: Optional[str],
+               signals_json: Optional[str], detail: Mapping[str, Any], performed_by: str = "client",
+               actor_role: str = "client") -> None:
+    """One audit row in its own transaction: a denial or a flag that issues nothing."""
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        _log(cur, account_id=account_id, seat_pool_id=seat_pool_id, binding_id=binding_id, action=action,
+             installation_id=installation_id, fingerprint_hash=fingerprint_hash, machine_label=machine_label,
+             signals_json=signals_json, performed_by=performed_by, actor_role=actor_role, detail=detail,
+             stamp=licensing_time.now_iso())
+        db.commit()
+    finally:
+        db.close()
+
+
+def _deny_refresh(code: str, *, binding: Mapping[str, Any], payload: Mapping[str, Any], request_id: str,
+                  reason: Optional[str] = None, **extra: Any) -> None:
+    """Log refresh_denied against the binding's own account, then refuse (I1: every denial is logged)."""
+    _log_event(account_id=binding["account_id"], seat_pool_id=binding.get("seat_pool_id"),
+               binding_id=binding["id"], action="refresh_denied", installation_id=payload.get("installation_id"),
+               fingerprint_hash=None, machine_label=binding.get("machine_label"), signals_json=None,
+               detail={"code": code, "reason": reason or code, "request_id": request_id,
+                       "presented_serial": payload.get("lease_serial")})
+    licence_fail(code, **extra)
+
+
+def _resolve_lease_binding(payload: Mapping[str, Any], request_id: str) -> Dict[str, Any]:
+    """
+    I1 step 3. Release beats everything after this point.
+
+    - Not found → lease_revoked, logged against the lease's own account: the
+      lease is signed by us, so that account is trustworthy.
+    - A correctly signed lease whose account or pool disagrees with its
+      binding is a server defect: ERROR, refresh_denied against the
+      BINDING's account (J3), lease_invalid.
+    - Revoked → lease_revoked.
+    """
+    binding_id = payload.get("binding_id")
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute("SELECT * FROM institution_seats WHERE id = ?", (binding_id if isinstance(binding_id, str) else "",))
+        row = cur.fetchone()
+    finally:
+        db.close()
+    if not row:
+        if isinstance(payload.get("account_id"), str):
+            _log_event(account_id=payload["account_id"], seat_pool_id=payload.get("seat_pool_id"),
+                       binding_id=None, action="refresh_denied", installation_id=payload.get("installation_id"),
+                       fingerprint_hash=None, machine_label=None, signals_json=None,
+                       detail={"code": "lease_revoked", "reason": "binding_not_found",
+                               "claimed_binding_id": binding_id, "request_id": request_id})
+        licence_fail("lease_revoked")
+    binding = _row_to_dict(row)
+    if payload.get("account_id") != binding["account_id"] or payload.get("seat_pool_id") != binding["seat_pool_id"]:
+        logger.error(
+            "LICENSING DEFECT — a correctly signed lease disagrees with its binding %s: lease account/pool "
+            "%r/%r, binding %r/%r. Refused as lease_invalid.",
+            binding["id"], payload.get("account_id"), payload.get("seat_pool_id"),
+            binding["account_id"], binding["seat_pool_id"],
+        )
+        _deny_refresh("lease_invalid", binding=binding, payload=payload, request_id=request_id,
+                      reason="lease_disagrees_with_binding")
+    if binding.get("revoked_at") is not None:
+        _deny_refresh("lease_revoked", binding=binding, payload=payload, request_id=request_id)
+    return binding
+
+
+def _replay_refresh(owner: Mapping[str, Any]) -> Dict[str, Any]:
+    """
+    Replay a recorded refresh (I4, contract §9.2). A refresh that raised an
+    ambiguity returns its stored ambiguity_pending (J10's rule, the same for
+    refresh). A refresh that issued a lease returns the binding's CURRENT
+    lease unchanged — even when a later refresh under another request_id has
+    issued a newer one, because issuing again is the one thing a replay must
+    never do. A released binding is lease_revoked: release beats a replay.
+    """
+    if int(owner.get("status_code") or 200) >= 400:
+        licence_history.replay(owner)
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute("SELECT * FROM institution_seats WHERE id = ?", (owner.get("binding_id"),))
+        row = cur.fetchone()
+    finally:
+        db.close()
+    binding = _row_to_dict(row) if row else None
+    if not binding or binding.get("revoked_at") is not None or not binding.get("current_lease"):
+        licence_fail("lease_revoked")
+    return _refresh_response(binding["current_lease"], binding["lease_expires_at"])
+
+
+def _refresh_response(lease: str, expires: Any) -> Dict[str, Any]:
+    return {"result": "refreshed", "lease": lease, "lease_expires_at": wire_time(expires), "server_time": wire_time()}
+
+
+def refresh(body: Mapping[str, Any]) -> Dict[str, Any]:
+    """
+    POST /licence/refresh, in the order of brief §4.I I1, after FastAPI's 422:
+
+     1. client_upgrade_required → invalid_request → fingerprint_unreadable →
+        licensing_unavailable;
+     2. the lease verifies with the configured kid → else lease_invalid;
+     3. its binding exists and agrees with it → else lease_revoked /
+        lease_invalid; revoked → lease_revoked;
+     4. the lease's installation is the binding's current one → else
+        machine_mismatch (installation_superseded);
+     5. the request history: a replay returns the current lease;
+     6. pool active, subscription active → else pool_inactive /
+        subscription_inactive;
+     7. collection, if the body carries ambiguity_id;
+     8. machine verification (I2) → refresh, machine_mismatch, or ambiguity;
+     9. a stale presented serial is flagged, never denied;
+    10. issue (I3).
+
+    An EXPIRED presented lease is never a bar at any step (spec §8.6 step 5):
+    a PC offline for 40 days recovers by itself. Steps 1–4 do not consult the
+    request history (J6), so they keep their own codes when it is missing.
+    """
+    check_client(body.get("client") or {})
+    request_id = _canonical_request_id(body.get("request_id"))
+    lease = body.get("lease")
+    if not isinstance(lease, str) or not lease.strip():
+        licence_fail("invalid_request", "lease is required", field="lease")
+    ambiguity_id = _optional_id(body, "ambiguity_id")
+    signals = body.get("fingerprint_signals")
+    try:
+        fingerprint_service.validate_signals(signals)
+    except fingerprint_service.SignalsInvalid as exc:
+        licence_fail("invalid_request", str(exc), field=exc.field)
+    unreadable = fingerprint_service.unreadable_classes(signals)
+    if unreadable:
+        licence_fail("fingerprint_unreadable", classes=unreadable)
+    require_licensing_available()
+
+    payload = _verify_presented_lease(lease)                      # step 2
+    binding = _resolve_lease_binding(payload, request_id)         # step 3
+    if payload.get("installation_id") != binding.get("installation_id"):   # step 4
+        _deny_refresh("machine_mismatch", binding=binding, payload=payload, request_id=request_id,
+                      reason="installation_superseded")
+
+    reading = fingerprint_service.read(signals)
+    identity_fp = fingerprint_service.refresh_digest(binding["id"], reading)
+    signals_json = json.dumps(signals, sort_keys=True, separators=(",", ":"))
+    history = licence_history.Entry(
+        request_id, "refresh",
+        licence_history.digest("refresh", request_fp=identity_fp, ambiguity_id=ambiguity_id),
+        account_id=binding["account_id"], seat_pool_id=binding["seat_pool_id"], binding_id=binding["id"],
+        ambiguity_id=ambiguity_id,
+    )
+
+    owner = _early_lookup(history)                                # step 5
+    if owner is not None:
+        return _replay_refresh(owner)
+
+    db = db_conn()                                                # step 6
+    try:
+        cur = db.cursor()
+        cur.execute(
+            "SELECT p.status AS pool_status, a.subscription_status, a.subscription_expires_at "
+            "FROM seat_pools p JOIN accounts a ON a.id = p.account_id WHERE p.id = ?",
+            (binding["seat_pool_id"],),
+        )
+        entitlement = _row_to_dict(cur.fetchone() or {})
+    finally:
+        db.close()
+    if entitlement.get("pool_status") != "active":
+        _deny_refresh("pool_inactive", binding=binding, payload=payload, request_id=request_id)
+    if entitlement.get("subscription_status") != "active" or licensing_time.is_expired(
+        entitlement.get("subscription_expires_at")
+    ):
+        _deny_refresh("subscription_inactive", binding=binding, payload=payload, request_id=request_id,
+                      subscription_expires_at=wire_time_or_none(entitlement.get("subscription_expires_at")))
+
+    if ambiguity_id is not None:                                  # step 7
+        return _collect_on_refresh(ambiguity_id, binding=binding, payload=payload, request_id=request_id,
+                                   identity_fp=identity_fp, history=history, reading=reading,
+                                   signals_json=signals_json)
+
+    # Step 8 — machine verification against the binding's STORED snapshot,
+    # never the lease (spec §8.6.1): the binding is the mutable current
+    # truth, the lease a point-in-time copy that may predate maintenance.
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        pool_bindings = _active_pool_bindings(cur, binding["seat_pool_id"])
+    finally:
+        db.close()
+    snapshot = fingerprint_service.read_stored(binding.get("fingerprint_signals_json"))
+    index = fingerprint_service.PoolIndex(
+        fingerprint_service.read_stored(b.get("fingerprint_signals_json")) for b in pool_bindings)
+    match = fingerprint_service.match_strength(reading, snapshot, index)
+    fingerprint_hash = fingerprint_service.identity_hash(reading)
+
+    if match == "mismatch":
+        # A different physical machine. Deny THIS machine; the activation is
+        # left untouched, even if installation continuity also holds — a
+        # motherboard replacement is resolved by the school releasing the
+        # old activation (I2, contract §9.3).
+        _log_event(account_id=binding["account_id"], seat_pool_id=binding["seat_pool_id"],
+                   binding_id=binding["id"], action="clone_flagged", installation_id=payload.get("installation_id"),
+                   fingerprint_hash=fingerprint_hash, machine_label=binding.get("machine_label"),
+                   signals_json=signals_json,
+                   detail={"origin": "refresh", "match": match, "request_id": request_id,
+                           "presented_serial": payload.get("lease_serial")})
+        licence_fail("machine_mismatch")
+    if match != "strong" and not fingerprint_service.refresh_continuity(reading, snapshot):
+        # Weak or no identity evidence, and installation continuity broken
+        # (I2): a human decides. The ambiguity is created in a transaction of
+        # its own — this request holds no binding lock — so pool and binding
+        # locks are never held together (H3).
+        raised = create_or_get_ambiguity(
+            binding["seat_pool_id"], origin="refresh", request_id=request_id, request_fp=identity_fp,
+            presented_signals_json=signals_json, presented_fingerprint_hash=fingerprint_hash,
+            presented_installation_id=payload.get("installation_id"), machine_label=binding.get("machine_label"),
+            candidate_binding_ids=[binding["id"]], performed_by="client", actor_role="client", history=history,
+        )
+        if raised["replay"] is not None:
+            return _replay_refresh(raised["replay"])
+        licence_fail("ambiguity_pending", ambiguity_id=raised["ambiguity_id"])
+
+    return _issue_refresh(binding["id"], payload=payload, reading=reading, signals_json=signals_json,
+                          history=history, request_id=request_id)
+
+
+def _collect_on_refresh(ambiguity_id: str, *, binding: Mapping[str, Any], payload: Mapping[str, Any],
+                        request_id: str, identity_fp: str, history: "licence_history.Entry",
+                        reading: "fingerprint_service.Reading", signals_json: str) -> Dict[str, Any]:
+    """
+    POST /licence/refresh with ambiguity_id: collecting a refresh-raised
+    ambiguity (contract §10, brief §4.I I6). The lease has already verified
+    (I1 steps 2–4). Unit 2's identity checks — the binding's pool, origin
+    refresh, not the raising request_id, the same identity digest — and the
+    lease's binding must be the ambiguity's candidate; otherwise
+    ambiguity_mismatch. Then by state:
+
+    - open → ambiguity_pending; expired → ambiguity_expired; consumed →
+      ambiguity_consumed (a replay was already answered at step 5);
+    - resolved recognize_existing → refresh through I3, ratcheting the
+      presented reading in, consumed in the same transaction → "refreshed";
+    - resolved treat_as_new → machine_mismatch: ExamPartner decided this is
+      a different machine, so it activates as one. Never consumed (J6), and
+      a refresh can never hand a PC a new binding.
+    """
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute("SELECT * FROM licence_ambiguities WHERE id = ?", (ambiguity_id,))
+        row = cur.fetchone()
+    finally:
+        db.close()
+    row = _check_collector(_row_to_dict(row) if row else None, origin="refresh",
+                           pool_id=binding["seat_pool_id"], request_id=request_id, request_fp=identity_fp)
+    try:
+        candidates = json.loads(row.get("candidate_binding_ids_json") or "[]")
+    except ValueError:
+        candidates = []
+    if binding["id"] not in candidates:
+        licence_fail("ambiguity_mismatch")
+    if _ambiguity_state(row) != "resolved":
+        _unresolved_outcome(row)
+    if row.get("resolution") != "recognize_existing":
+        _deny_refresh("machine_mismatch", binding=binding, payload=payload, request_id=request_id,
+                      reason="ambiguity_treat_as_new")
+    return _issue_refresh(binding["id"], payload=payload, reading=reading, signals_json=signals_json,
+                          history=history, request_id=request_id, consume_ambiguity_id=row["id"])
+
+
+def _issue_refresh(binding_id: str, *, payload: Mapping[str, Any], reading: "fingerprint_service.Reading",
+                   signals_json: str, history: "licence_history.Entry", request_id: str,
+                   consume_ambiguity_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    I3 — issue a refreshed lease. One transaction, locking the BINDING row —
+    and, when collecting, the AMBIGUITY row first (ambiguity → binding, J6).
+    Never the pool.
+
+    Under the lock, the binding is re-read and re-checked, in I1's order:
+    revoked → lease_revoked; installation moved → machine_mismatch; the
+    request history → replay. A release or restore that committed while
+    this request was deciding wins. Then:
+
+    - the ratchet: if the NORMALISED reading differs from the stored
+      snapshot's (J6), the presented hash and raw signals are written onto
+      the binding — on a strong match (spec §8.6.1) and on a continuity
+      refresh (§4.A) alike. fingerprint_confidence is NOT changed: it records
+      quality at claim time (spec §3.4);
+    - a stale presented serial is logged and refreshes anyway (spec §8.6.1).
+      lease_serial is read under the lock, so the second of two concurrent
+      refreshes from one lease is flagged too (J6);
+    - lease_serial + 1, expires = min(now + 30 days, subscription end), sign;
+    - log `refresh` only when the presented lease had expired, when
+      last_seen_at was null or older than 7 days, or when the binding
+      ratcheted (spec §3.5). Otherwise last_seen_at moves silently.
+    """
+    replay_owner, response, denial = None, None, None
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        now = licensing_time.now()
+        stamp = now.isoformat()
+        locked = _lock_ambiguity(cur, consume_ambiguity_id, stamp) if consume_ambiguity_id else None
+        row = _lock_binding(cur, binding_id, stamp)
+        owner = licence_history.lookup_locked(cur, history)       # the last read before the write
+
+        if not row or row.get("revoked_at") is not None:
+            denial = ("lease_revoked", None)
+        elif row.get("installation_id") != payload.get("installation_id"):
+            denial = ("machine_mismatch", "installation_superseded")
+        elif owner is not None:
+            replay_owner = owner
+        elif consume_ambiguity_id and (not locked or locked.get("status") != "resolved"):
+            licence_fail("ambiguity_consumed")
+        else:
+            binding = dict(row)
+            snapshot = fingerprint_service.read_stored(binding.get("fingerprint_signals_json"))
+            ratchet = snapshot.normalised() != reading.normalised()
+            previous_hash = binding["machine_fingerprint_hash"]
+            if ratchet:
+                binding["machine_fingerprint_hash"] = fingerprint_service.identity_hash(reading)
+                binding["fingerprint_signals_json"] = signals_json
+
+            presented_serial = payload.get("lease_serial")
+            current_serial = int(binding.get("lease_serial") or 0)
+            if isinstance(presented_serial, int) and presented_serial < current_serial:
+                _log(cur, account_id=binding["account_id"], seat_pool_id=binding["seat_pool_id"],
+                     binding_id=binding_id, action="stale_serial_flagged",
+                     installation_id=binding["installation_id"],
+                     fingerprint_hash=fingerprint_service.identity_hash(reading),
+                     machine_label=binding.get("machine_label"), signals_json=signals_json,
+                     performed_by="client", actor_role="client",
+                     detail={"presented_serial": presented_serial, "current_serial": current_serial,
+                             "request_id": request_id},
+                     stamp=stamp)
+
+            issued = _sign_for_binding(binding, _subscription_expires_at(cur, binding["account_id"]),
+                                       current_serial + 1, now)
+            cur.execute(
+                "UPDATE institution_seats SET current_lease = ?, lease_serial = ?, lease_issued_at = ?, "
+                "lease_expires_at = ?, last_seen_at = ?, machine_fingerprint_hash = ?, "
+                "fingerprint_signals_json = ?, updated_at = ? WHERE id = ?",
+                (issued["lease"], issued["serial"], issued["issued"], issued["expires"], stamp,
+                 binding["machine_fingerprint_hash"], binding["fingerprint_signals_json"], stamp, binding_id),
+            )
+            if consume_ambiguity_id:
+                cur.execute(
+                    "UPDATE licence_ambiguities SET status = 'consumed', consumed_at = ? "
+                    "WHERE id = ? AND status = 'resolved'",
+                    (stamp, consume_ambiguity_id),
+                )
+
+            presented_expired = licensing_time.is_expired(payload.get("expires_at"), at=now)
+            last_seen = licensing_time.to_datetime(row.get("last_seen_at"))
+            gap = last_seen is None or last_seen <= now - REFRESH_LOG_GAP
+            if presented_expired or gap or ratchet or consume_ambiguity_id:
+                detail = {"lease_serial": issued["serial"], "presented_lease_expired": presented_expired,
+                          "ratcheted": ratchet, "request_id": request_id}
+                if ratchet:
+                    detail["previous_fingerprint_hash"] = previous_hash
+                if consume_ambiguity_id:
+                    detail["ambiguity_id"] = consume_ambiguity_id
+                _log(cur, account_id=binding["account_id"], seat_pool_id=binding["seat_pool_id"],
+                     binding_id=binding_id, action="refresh", installation_id=binding["installation_id"],
+                     fingerprint_hash=binding["machine_fingerprint_hash"],
+                     machine_label=binding.get("machine_label"),
+                     signals_json=signals_json if ratchet else None, performed_by="client", actor_role="client",
+                     detail=detail, stamp=stamp)
+
+            # The replay of a refresh returns the binding's CURRENT lease
+            # (contract §9.2), so the history records the outcome, not a body.
+            licence_history.record(cur, history, outcome="refreshed", binding_id=binding_id)
+            db.commit()
+            response = _refresh_response(issued["lease"], issued["expires"])
+    finally:
+        db.close()
+
+    if denial is not None:
+        # Logged after the lock is released: an audit row of a denial is not
+        # an outcome stored for replay, so J8 does not apply to it.
+        _deny_refresh(denial[0], binding=row or {"id": binding_id, "account_id": payload.get("account_id"),
+                                                 "seat_pool_id": payload.get("seat_pool_id")},
+                      payload=payload, request_id=request_id, reason=denial[1])
+    if replay_owner is not None:
+        return _replay_refresh(replay_owner)
+    return response
+
+
+# ===========================================================================
+# Unit 3a — ambiguity resolution (brief §4.I I5, §4.J)
+# ===========================================================================
+#
+# POST /support/licensing/ambiguities/{id}/resolve, ExamPartner admin only.
+# The route has already refused 401 not_authenticated and 403
+# admin_required (J4). A resolution is never changed once made; to undo
+# one, the school releases the binding.
+
+_DECISIONS = ("recognize_existing", "treat_as_new")
+
+
+def resolve_ambiguity(admin: str, ambiguity_id: str, body: Mapping[str, Any]) -> Dict[str, Any]:
+    """
+    Order (I5): 400 invalid_request → 503 licensing_unavailable → 404
+    ambiguity_not_found → the request history → the state checks.
+
+    - recognize_existing records the decision only; the restore or the
+      refresh happens when the PC collects (I6), so a PC that never comes
+      back changes nothing.
+    - treat_as_new, activation-raised, claims capacity NOW, through
+      claim_capacity() — the single chokepoint — so a full pool is reported
+      to the admin rather than discovered later by the technician. The claim
+      and the resolution are one transaction (claim_capacity(resolves=...)).
+    - treat_as_new, refresh-raised, claims nothing: the PC presenting the
+      lease is not the binding's machine, and collection answers
+      machine_mismatch, sending it through ordinary activation.
+
+    Every outcome, success or refusal, is stored for replay — committed under
+    the lock that decided it (J8).
+    """
+    request_id = _canonical_request_id(body.get("request_id"))
+    decision = body.get("decision")
+    if decision not in _DECISIONS:
+        licence_fail("invalid_request", "decision must be recognize_existing or treat_as_new", field="decision")
+    binding_id = body.get("binding_id")
+    if decision == "recognize_existing":
+        if not isinstance(binding_id, str) or not binding_id.strip():
+            licence_fail("invalid_request", "binding_id is required for recognize_existing", field="binding_id")
+        binding_id = binding_id.strip()
+    elif binding_id is not None:
+        licence_fail("invalid_request", "binding_id is only for recognize_existing", field="binding_id")
+    require_licensing_available()
+
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute("SELECT * FROM licence_ambiguities WHERE id = ?", (ambiguity_id,))
+        row = cur.fetchone()
+    finally:
+        db.close()
+    if not row:
+        licence_fail("ambiguity_not_found")
+    ambiguity = _row_to_dict(row)
+
+    history = licence_history.Entry(
+        request_id, "resolve",
+        licence_history.digest("resolve", ambiguity_id=ambiguity_id, decision=decision, binding_id=binding_id),
+        account_id=ambiguity["account_id"], seat_pool_id=ambiguity["seat_pool_id"], binding_id=binding_id,
+        ambiguity_id=ambiguity_id,
+    )
+    owner = _early_lookup(history)
+    if owner is not None:
+        return licence_history.replay(owner)
+
+    if decision == "treat_as_new" and ambiguity.get("origin") == "activate":
+        # The new binding's identity quality, from the presented reading
+        # against the pool as it is now (I5).
+        db = db_conn()
+        try:
+            cur = db.cursor()
+            pool_bindings = _active_pool_bindings(cur, ambiguity["seat_pool_id"])
+        finally:
+            db.close()
+        presented = fingerprint_service.read_stored(ambiguity.get("presented_signals_json"))
+        index = fingerprint_service.PoolIndex(
+            fingerprint_service.read_stored(b.get("fingerprint_signals_json")) for b in pool_bindings)
+        claimed = claim_capacity(
+            ambiguity["seat_pool_id"],
+            machine_fingerprint_hash=ambiguity.get("presented_fingerprint_hash")
+            or fingerprint_service.identity_hash(presented),
+            fingerprint_confidence=fingerprint_service.identity_quality(presented, index),
+            performed_by=admin,
+            actor_role="exampartner_admin",
+            request_id=request_id,
+            request_fp=history.request_fp,
+            history=history,
+            fingerprint_signals_json=ambiguity.get("presented_signals_json"),
+            machine_label=ambiguity.get("machine_label"),
+            resolves={"ambiguity_id": ambiguity_id, "admin": admin},
+        )
+        if claimed.get("history") is not None:
+            return licence_history.replay(claimed["history"])
+        if claimed.get("response") is None:
+            # claim_capacity() found a binding by its request columns but no
+            # history row — impossible for a resolve, whose binding and
+            # history row are written together.
+            licence_fail("internal_error", "The resolution could not be confirmed. Try again.")
+        return {**claimed["response"], "server_time": wire_time()}
+
+    return _resolve_without_claim(ambiguity_id, decision=decision, binding_id=binding_id, admin=admin,
+                                  history=history)
+
+
+def _resolve_without_claim(ambiguity_id: str, *, decision: str, binding_id: Optional[str], admin: str,
+                           history: "licence_history.Entry") -> Dict[str, Any]:
+    """
+    recognize_existing, and a refresh-raised treat_as_new: record the
+    decision only. One transaction on the AMBIGUITY-row lock; no pool lock,
+    no binding lock — recognize_existing reads its candidate without one
+    (J6), and a release that lands before the commit is caught at
+    collection as lease_revoked.
+    """
+    replay_owner, response = None, None
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        stamp = licensing_time.now_iso()
+        ambiguity = _lock_ambiguity(cur, ambiguity_id, stamp)
+        candidate = None
+        if binding_id is not None:
+            cur.execute("SELECT id, revoked_at FROM institution_seats WHERE id = ?", (binding_id,))
+            found = cur.fetchone()
+            candidate = _row_to_dict(found) if found else None
+        owner = licence_history.lookup_locked(cur, history)        # the last read before the write
+
+        def refuse(code: str, **extra: Any):
+            # Stored for replay, committed under the ambiguity lock (J8). The
+            # lock write is bookkeeping (last_locked_at), so the history row
+            # is the only business trace.
+            status, detail = licence_detail(code, **extra)
+            licence_history.record(cur, history, outcome="refused", status_code=status, response=detail)
+            db.commit()
+            raise_stored(status, detail)
+
+        if owner is not None:
+            replay_owner = owner
+        else:
+            if ambiguity is None:
+                licence_fail("ambiguity_not_found")
+            state_refusal = _resolution_state_refusal(ambiguity)
+            if state_refusal is not None:
+                refuse(state_refusal[0], **state_refusal[1])
+            if decision == "recognize_existing":
+                try:
+                    candidates = json.loads(ambiguity.get("candidate_binding_ids_json") or "[]")
+                except ValueError:
+                    candidates = []
+                # A released candidate can never be recognised (rule F).
+                if binding_id not in candidates or candidate is None or candidate.get("revoked_at") is not None:
+                    refuse("ambiguity_candidate_invalid", candidate_binding_ids=candidates)
+            resolved_binding = binding_id if decision == "recognize_existing" else None
+            cur.execute(
+                "UPDATE licence_ambiguities SET status = 'resolved', resolution = ?, resolved_binding_id = ?, "
+                "resolved_by = ?, resolved_at = ? WHERE id = ? AND status = 'open'",
+                (decision, resolved_binding, admin, stamp, ambiguity_id),
+            )
+            _log_resolution(cur, ambiguity, decision=decision, binding_id=resolved_binding, admin=admin,
+                            stamp=stamp)
+            response = _resolution_body(ambiguity_id, decision, resolved_binding, stamp)
+            licence_history.record(cur, history, outcome="resolved", response=response,
+                                   binding_id=resolved_binding)
+            db.commit()
+    finally:
+        db.close()
+    if replay_owner is not None:
+        return licence_history.replay(replay_owner)
+    return {**response, "server_time": wire_time()}
+
+
+# ===========================================================================
+# Unit 3a — release (brief §4.I I7, §4.J J9; spec §8.5)
+# ===========================================================================
+
+_REVOKE_REASONS = ("manual", "replacement", "hardware_failure", "retired", "renewal_retire", "support", "other")
+_REASON_MAX = 500
+
+
+def release_seat(user: Mapping[str, Any], binding_id: str, body: Mapping[str, Any]) -> Dict[str, Any]:
+    """
+    POST /institutions/seats/{binding_id}/release. The route has already
+    refused 401 not_authenticated. Then: 400 invalid_request → 503
+    licensing_unavailable → 403 binding_access_denied → the request history
+    → the effect.
+
+    Authorisation resolves the binding first and checks the caller owns ITS
+    account (spec §9). An unknown binding and another school's binding get
+    the same 403, so the code reveals nothing about which ids exist. It runs
+    before the replay check, so a replay never shows one owner another
+    school's response.
+
+    Neither reason field ever gates the release (spec §8.5). It must not
+    need the old installation to be reachable: the dead PC is the case
+    schools actually hit.
+
+    Kept in this one function, so Unit 3b can add the licence session token
+    as a second way to authorise without restructuring the route (I9).
+    """
+    request_id = _canonical_request_id(body.get("request_id"))
+    revoke_reason = body.get("revoke_reason")
+    if revoke_reason is None:
+        revoke_reason = "manual"
+    if revoke_reason not in _REVOKE_REASONS:
+        licence_fail("invalid_request", "Unknown revoke_reason", field="revoke_reason")
+    reason = body.get("reason")
+    if reason is not None:
+        if not isinstance(reason, str):
+            licence_fail("invalid_request", "reason must be a string", field="reason")
+        if len(reason) > _REASON_MAX:
+            licence_fail("invalid_request", f"reason is at most {_REASON_MAX} characters", field="reason")
+        reason = reason.strip() or None
+    require_licensing_available()
+
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute("SELECT * FROM institution_seats WHERE id = ?", (binding_id,))
+        row = cur.fetchone()
+    finally:
+        db.close()
+    if not row:
+        licence_fail("binding_access_denied")
+    binding = _row_to_dict(row)
+    try:
+        caller = require_account_owner(user, binding["account_id"])
+    except HTTPException:
+        licence_fail("binding_access_denied")
+    actor_role = "exampartner_admin" if is_admin_user({"sub": caller}) else "institution_owner"
+
+    history = licence_history.Entry(
+        request_id, "release",
+        licence_history.digest("release", binding_id=binding_id, revoke_reason=revoke_reason, reason=reason),
+        account_id=binding["account_id"], seat_pool_id=binding["seat_pool_id"], binding_id=binding_id,
+    )
+    owner = _early_lookup(history)
+    if owner is not None:
+        return licence_history.replay(owner)
+    return _release_locked(binding_id, caller=caller, actor_role=actor_role, revoke_reason=revoke_reason,
+                           reason=reason, history=history)
+
+
+def _release_locked(binding_id: str, *, caller: str, actor_role: str, revoke_reason: str,
+                    reason: Optional[str], history: "licence_history.Entry") -> Dict[str, Any]:
+    """
+    The effect, in one transaction locking the BINDING row only (I7) — and
+    taking that lock whether or not the binding is already released (J9).
+    Otherwise two concurrent releases of a released binding with one
+    request_id and two bodies could both find no history row, both record
+    one, and both answer already_released, where one must be
+    request_id_reused.
+
+    A new request_id on a released binding answers already_released with the
+    original released_at, records itself, and writes nothing else.
+
+    The pool counts are read in this transaction, after the revoke and
+    before the commit, so they include it — and are stored with the
+    response under the lock (J8). Reading them after the commit would mean
+    recording the outcome after the lock was released, which J8 forbids.
+    """
+    replay_owner, response = None, None
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        stamp = licensing_time.now_iso()
+        row = _lock_binding(cur, binding_id, stamp)
+        owner = licence_history.lookup_locked(cur, history)        # the last read before the write
+        if owner is not None:
+            replay_owner = owner
+        else:
+            if row is None:
+                licence_fail("binding_access_denied")
+            if row.get("revoked_at") is not None:
+                result, released_at = "already_released", row["revoked_at"]
+            else:
+                result, released_at = "released", stamp
+                cur.execute(
+                    "UPDATE institution_seats SET revoked_at = ?, revoke_reason = ?, revoked_by = ?, "
+                    "updated_at = ? WHERE id = ? AND revoked_at IS NULL",
+                    (stamp, revoke_reason, caller, stamp, binding_id),
+                )
+                cur.execute(
+                    "INSERT INTO seat_activation_log (id, account_id, seat_pool_id, binding_id, "
+                    "action, installation_id, machine_fingerprint_hash, machine_label, "
+                    "fingerprint_signals_json, performed_by, actor_role, reason, detail_json, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (secrets.token_hex(16), row["account_id"], row["seat_pool_id"], binding_id,
+                     "release", row.get("installation_id"), row.get("machine_fingerprint_hash"),
+                     row.get("machine_label"), row.get("fingerprint_signals_json"), caller, actor_role, reason,
+                     json.dumps({"revoke_reason": revoke_reason, "request_id": history.request_id},
+                                sort_keys=True),
+                     stamp),
+                )
+            cur.execute("SELECT pool_size FROM seat_pools WHERE id = ?", (row["seat_pool_id"],))
+            pool_size = int(_row_to_dict(cur.fetchone())["pool_size"])
+            active = _count_active(cur, row["seat_pool_id"])
+            response = {
+                "result": result,
+                "binding_id": binding_id,
+                "released_at": wire_time(released_at),
+                "seat_pool_id": row["seat_pool_id"],
+                "pool_size": pool_size,
+                "active": active,
+                "available": max(0, pool_size - active),
+                "over_capacity": active > pool_size,
+            }
+            licence_history.record(cur, history, outcome=result, response=response, binding_id=binding_id)
+            db.commit()
+    finally:
+        db.close()
+    if replay_owner is not None:
+        return licence_history.replay(replay_owner)
+    return {**response, "server_time": wire_time()}
+
+
+# ===========================================================================
+# Unit 3a — GET /support/licensing/ambiguities (brief §4.I I8)
+# ===========================================================================
+
+_AMBIGUITY_STATES = ("open", "resolved", "consumed", "expired")
+
+
+def list_ambiguities(status: Optional[str] = "open") -> Dict[str, Any]:
+    """
+    Everything Nitoni needs to decide an ambiguity by PowerShell: the school,
+    the pool, the presented reading NORMALISED, and each candidate with its
+    match strength against that reading. Filtered by the EFFECTIVE state, so
+    an open ambiguity 7 days old is listed as expired. Plain {"ok": true}
+    body, like the pilot setup endpoints (F11): not part of the client
+    contract.
+    """
+    status = (status or "open").strip().lower()
+    if status not in _AMBIGUITY_STATES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {', '.join(_AMBIGUITY_STATES)}")
+
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute(
+            "SELECT l.*, a.name AS account_name, p.label AS pool_label FROM licence_ambiguities l "
+            "LEFT JOIN accounts a ON a.id = l.account_id LEFT JOIN seat_pools p ON p.id = l.seat_pool_id"
+        )
+        rows = [r for r in (_row_to_dict(x) for x in cur.fetchall()) if _ambiguity_state(r) == status]
+        rows.sort(key=lambda r: licensing_time.to_datetime(r.get("created_at")) or licensing_time.now())
+        pools: Dict[str, List[Dict[str, Any]]] = {}
+        listed = []
+        for row in rows:
+            pool_id = row.get("seat_pool_id")
+            if pool_id not in pools:
+                pools[pool_id] = _active_pool_bindings(cur, pool_id)
+            index = fingerprint_service.PoolIndex(
+                fingerprint_service.read_stored(b.get("fingerprint_signals_json")) for b in pools[pool_id])
+            presented = fingerprint_service.read_stored(row.get("presented_signals_json"))
+            try:
+                candidate_ids = json.loads(row.get("candidate_binding_ids_json") or "[]")
+            except ValueError:
+                candidate_ids = []
+            candidates = []
+            for candidate_id in candidate_ids:
+                cur.execute("SELECT * FROM institution_seats WHERE id = ?", (candidate_id,))
+                found = cur.fetchone()
+                if not found:
+                    candidates.append({"binding_id": candidate_id, "active": False})
+                    continue
+                candidate = _row_to_dict(found)
+                candidates.append({
+                    "binding_id": candidate_id,
+                    "machine_label": candidate.get("machine_label"),
+                    "last_seen_at": wire_time_or_none(candidate.get("last_seen_at")),
+                    "fingerprint_confidence": candidate.get("fingerprint_confidence"),
+                    "active": candidate.get("revoked_at") is None,
+                    "match_strength": fingerprint_service.match_strength(
+                        presented, fingerprint_service.read_stored(candidate.get("fingerprint_signals_json")),
+                        index),
+                })
+            created = licensing_time.to_datetime(row.get("created_at"))
+            listed.append({
+                "ambiguity_id": row["id"],
+                "account_id": row.get("account_id"),
+                "account_name": row.get("account_name"),
+                "seat_pool_id": pool_id,
+                "pool_label": row.get("pool_label"),
+                "origin": row.get("origin"),
+                "machine_label": row.get("machine_label"),
+                "created_at": wire_time_or_none(created),
+                "expires_at": wire_time_or_none(created + AMBIGUITY_TTL) if created else None,
+                "status": status,
+                **_resolution_fields(row),
+                "presented": {
+                    "smbios_uuid": presented.uuid,
+                    "serials": sorted(presented.serials),
+                    "system_disk": presented.activation_disk,
+                    "onboard_addresses": sorted(presented.activation_nics),
+                    "machine_guid": presented.machine_guid,
+                },
+                "candidates": candidates,
+            })
+    finally:
+        db.close()
+    return {"ok": True, "status": status, "ambiguities": listed, "server_time": wire_time()}
 
 
 # ===========================================================================

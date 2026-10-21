@@ -55,6 +55,7 @@ def _active_count(pool_id):
 def _run_simultaneous_claims(pool_id, monkeypatch):
     from db import get_db
     from services import licensing_service
+    from services.licence_history import Entry
 
     local = threading.local()
     monkeypatch.setattr(licensing_service, "db_conn", lambda: local.conn)
@@ -82,6 +83,7 @@ def _run_simultaneous_claims(pool_id, monkeypatch):
                 # so the in-lock request check never short-circuits the race.
                 request_id=f"race-{n}-{pool_id}",
                 request_fp=f"digest-{n}",
+                history=Entry(f"race-{n}-{pool_id}", "activate", f"digest-{n}"),
                 machine_fingerprint_hash=f"fp-{n}",
                 fingerprint_confidence="strong",
                 fingerprint_signals_json=None,
