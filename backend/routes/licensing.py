@@ -4,13 +4,20 @@ routes/licensing.py — Windows seat-pool licensing endpoints.
 Client contract (docs/LICENCE_API_CONTRACT.md):
   POST /licence/activation-session   owner/admin credentials → 15-minute token
   POST /licence/activate             activation token → lease
-(POST /licence/refresh is Unit 3.)
+  POST /licence/refresh              the signed lease → a renewed lease (Unit 3a)
+
+School owner, ordinary bearer token (Unit 3a, brief §4.I I7):
+  POST  /institutions/seats/{binding_id}/release
 
 Pilot setup, ExamPartner admin only, NOT part of the client contract
 (brief §4.F F11):
   POST  /institutions/accounts
   POST  /institutions/accounts/{account_id}/seat_pools
   PATCH /institutions/accounts/{account_id}/subscription
+
+Support, ExamPartner admin only (Unit 3a, brief §4.I I5, I8):
+  GET   /support/licensing/ambiguities
+  POST  /support/licensing/ambiguities/{ambiguity_id}/resolve
 
 Request models declare TYPES only. Everything semantic — UUID v4, label
 length, the fingerprint shape — is checked in the service, so that the
@@ -30,7 +37,7 @@ from pydantic import BaseModel
 
 from routes.auth import _verify_password
 from services import licensing_service
-from services.access_control import require_admin
+from services.access_control import is_admin_user, require_admin
 from services.auth_utils import get_current_user
 from services.licence_session import verify_activation_token
 from services.licence_wire import licence_fail
@@ -62,6 +69,29 @@ class ActivateBody(BaseModel):
     ambiguity_id: Optional[str] = None
     fingerprint_signals: Dict[str, Any]
     client: ClientInfo
+
+
+class RefreshBody(BaseModel):
+    request_id: str
+    lease: str
+    ambiguity_id: Optional[str] = None
+    fingerprint_signals: Dict[str, Any]
+    client: ClientInfo
+
+
+# Release and resolve declare every field optional and untyped (brief §4.J
+# J6): a missing request_id must reach the service as 400 invalid_request
+# AFTER the 401/403 checks (I5, I7), not be pre-empted by FastAPI's 422.
+class ReleaseBody(BaseModel):
+    request_id: Optional[Any] = None
+    revoke_reason: Optional[Any] = None
+    reason: Optional[Any] = None
+
+
+class ResolveBody(BaseModel):
+    request_id: Optional[Any] = None
+    decision: Optional[Any] = None
+    binding_id: Optional[Any] = None
 
 
 class CreateAccountBody(BaseModel):
@@ -113,6 +143,26 @@ def activate(body: ActivateBody, authorization: Optional[str] = Header(default=N
     return licensing_service.activate(session["sub"], body.model_dump())
 
 
+@router.post("/licence/refresh")
+def refresh(body: RefreshBody):
+    # No Authorization header, and get_current_user() is never called: the
+    # signed lease in the body is the authorisation (contract §9, brief I1).
+    return licensing_service.refresh(body.model_dump())
+
+
+# ---------------------------------------------------------------------------
+# School owner (brief §4.I I7)
+# ---------------------------------------------------------------------------
+
+@router.post("/institutions/seats/{binding_id}/release")
+def release_seat(binding_id: str, body: ReleaseBody, user=Depends(get_current_user)):
+    # An ordinary ExamPartner bearer token. A lease is not one: read_token()
+    # refuses it, so it arrives here as no user at all (spec §12 test 28).
+    if user is None:
+        licence_fail("not_authenticated")
+    return licensing_service.release_seat(user, binding_id, body.model_dump())
+
+
 # ---------------------------------------------------------------------------
 # Pilot setup — ExamPartner admin (brief F11)
 # ---------------------------------------------------------------------------
@@ -139,3 +189,25 @@ def set_subscription(account_id: str, body: SubscriptionBody, user=Depends(get_c
         account_id, subscription_status=body.subscription_status,
         subscription_expires_at=body.subscription_expires_at, performed_by=admin,
     )
+
+
+# ---------------------------------------------------------------------------
+# Support — ExamPartner admin (brief §4.I I5, I8)
+# ---------------------------------------------------------------------------
+
+@router.get("/support/licensing/ambiguities")
+def list_ambiguities(status: Optional[str] = "open", user=Depends(get_current_user)):
+    # Plain require_admin(), like the pilot setup endpoints (brief §4.J J4).
+    require_admin(user)
+    return licensing_service.list_ambiguities(status)
+
+
+@router.post("/support/licensing/ambiguities/{ambiguity_id}/resolve")
+def resolve_ambiguity(ambiguity_id: str, body: ResolveBody, user=Depends(get_current_user)):
+    # The contract §9.3 body here, unlike the list (I5, J4).
+    if user is None:
+        licence_fail("not_authenticated")
+    if not is_admin_user(user):
+        licence_fail("admin_required")
+    admin = str(user.get("sub") or "").strip().lower()
+    return licensing_service.resolve_ambiguity(admin, ambiguity_id, body.model_dump())

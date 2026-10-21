@@ -813,6 +813,47 @@ LICENCE_AMBIGUITIES_COLUMNS = [
     ("request_id",                 "TEXT"),             # the raising request's request_id (F4)
     ("request_fp",                 "TEXT"),             # its digest, stored at creation, never recomputed (H5)
     ("consumed_at",                "TEXT"),
+    # Load-bearing, like seat_pools.last_claim_at (brief §4.J, Unit 3a).
+    # Every resolve and every collection writes it as the first statement
+    # touching this row, and that write is the ROW LOCK that makes one
+    # resolution per ambiguity and one collection per resolution. It is
+    # bookkeeping only — "when a resolve or collection last held this row"
+    # — and never business state, because a stored refusal commits it too
+    # (J8: a refusal may leave no business trace). See _lock_ambiguity() in
+    # services/licensing_service.py.
+    ("last_locked_at",             "TEXT"),
+]
+
+# licence_requests — the ONE authoritative 24-hour request history (brief
+# §9 R1, §4.I I4, §4.J; contract §9.2, §11). Every state-changing licensing
+# request records itself here — activation, restore, refresh, ambiguity
+# collection on either endpoint, release and ambiguity resolution — in the
+# SAME transaction as its effect, while the lock that decided it is held
+# (J8). A request_id belongs to the one logical request that first used it.
+#
+# Keyed by request_id but deliberately NOT unique: a request_id reused after
+# 24 hours is a new request (F4), and a unique index would be one more
+# correctness-critical index under §4.E. Correctness rests on the lookup
+# under each operation's own lock; the index is best-effort, like H5's.
+#
+# It is correctness-critical in itself, so it fails CLOSED: if it cannot be
+# read or written, the operation is a 503 and writes nothing
+# (services/licence_history.py). The per-binding request columns on
+# institution_seats and licence_ambiguities are still written, and read
+# after this, but never instead of it.
+LICENCE_REQUESTS_COLUMNS = [
+    ("id",            "TEXT PRIMARY KEY"),
+    ("request_id",    "TEXT NOT NULL"),
+    ("operation",     "TEXT NOT NULL"),                 # activate | refresh | release | resolve
+    ("account_id",    "TEXT"),
+    ("seat_pool_id",  "TEXT"),
+    ("binding_id",    "TEXT"),                          # the binding it concerns or produced
+    ("ambiguity_id",  "TEXT"),                          # the ambiguity it concerns or raised
+    ("request_fp",    "TEXT NOT NULL"),                 # the operation's digest, stored, never recomputed
+    ("outcome",       "TEXT NOT NULL"),                 # activated | restored | ambiguity | refreshed | released | already_released | resolved | refused
+    ("status_code",   "INTEGER"),                       # what a replay answers with
+    ("response_json", "TEXT"),                          # the body a replay returns, without server_time
+    ("created_at",    "TEXT"),
 ]
 
 # (table name, column list) — the SQLite branch uses these lists as written,
@@ -823,6 +864,7 @@ LICENSING_TABLES = [
     ("institution_seats",   INSTITUTION_SEATS_COLUMNS),
     ("seat_activation_log", SEAT_ACTIVATION_LOG_COLUMNS),
     ("licence_ambiguities", LICENCE_AMBIGUITIES_COLUMNS),
+    ("licence_requests",    LICENCE_REQUESTS_COLUMNS),
 ]
 
 # Ordinary licensing indexes — best-effort: a failure is logged and skipped,
@@ -843,6 +885,9 @@ LICENSING_INDEXES = [
     # are the pool-row locks, not these indexes — so they stay best-effort.
     "CREATE INDEX IF NOT EXISTS idx_seat_bindings_activation_request ON institution_seats(activation_request_id);",
     "CREATE INDEX IF NOT EXISTS idx_ambiguities_request ON licence_ambiguities(request_id);",
+    # The request history's lookup (brief §4.I I4). Best-effort for the same
+    # reason: the guard is each operation's lock, not this index.
+    "CREATE INDEX IF NOT EXISTS idx_licence_requests_request ON licence_requests(request_id);",
 ]
 
 # The licensing-critical constraint: one active binding per installation. It

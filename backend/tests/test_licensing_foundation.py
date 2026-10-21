@@ -31,6 +31,7 @@ def _clean_clock(monkeypatch):
 def _claim(pool_id, n=0, **overrides):
     import uuid
 
+    from services.licence_history import Entry
     from services.licensing_service import claim_capacity
 
     # Every claim is an activation with its own request (brief F4); a fresh
@@ -39,6 +40,7 @@ def _claim(pool_id, n=0, **overrides):
     kwargs = dict(
         request_id=request_id,
         request_fp=f"digest-{request_id}",
+        history=Entry(request_id, "activate", f"digest-{request_id}"),
         machine_fingerprint_hash=f"fp-{n}",
         fingerprint_confidence="strong",
         fingerprint_signals_json='{"system_uuid": "X"}',
@@ -162,7 +164,8 @@ def test_is_paid_user_ignores_the_licensing_test_clock(sqlite_database, monkeypa
 # Schema and assert_licensing_constraints()
 # ---------------------------------------------------------------------------
 
-LICENSING_TABLES = ["accounts", "seat_pools", "institution_seats", "seat_activation_log", "licence_ambiguities"]
+LICENSING_TABLES = ["accounts", "seat_pools", "institution_seats", "seat_activation_log", "licence_ambiguities",
+                    "licence_requests"]
 
 
 def test_sqlite_schema_and_required_index(sqlite_database):
@@ -261,7 +264,7 @@ def test_postgres_timestamp_columns_are_timestamptz(pg_database):
 
     rows = _query(
         "SELECT table_name, column_name, data_type FROM information_schema.columns "
-        "WHERE table_schema = current_schema() AND table_name IN (?, ?, ?, ?, ?)",
+        "WHERE table_schema = current_schema() AND table_name IN (" + ", ".join("?" for _ in LICENSING_TABLES) + ")",
         tuple(LICENSING_TABLES),
     )
     types = {(r["table_name"], r["column_name"]): r["data_type"] for r in rows}
@@ -343,12 +346,14 @@ def test_admin_passes_on_any_account(sqlite_database, make_pool, monkeypatch):
 
 def test_claim_signature_rulings():
     """Brief §4.D: no installation_id parameter; performed_by and actor_role
-    required with no defaults. Brief F4: request_id and request_fp likewise."""
+    required with no defaults. Brief F4: request_id and request_fp likewise.
+    Brief §4.I I4: the request-history entry too, so no capacity-grant path
+    can skip recording itself."""
     from services.licensing_service import claim_capacity
 
     params = inspect.signature(claim_capacity).parameters
     assert "installation_id" not in params
-    for name in ("performed_by", "actor_role", "request_id", "request_fp"):
+    for name in ("performed_by", "actor_role", "request_id", "request_fp", "history"):
         assert params[name].default is inspect.Parameter.empty
         assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
 

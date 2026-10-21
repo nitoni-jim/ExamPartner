@@ -83,11 +83,15 @@ Licensing is the exception to "fail at startup": this backend also serves the li
 
 Two licensing writes are guarded by a **pool-row lock taken in code**, not by any index, so each has exactly one chokepoint function in `services/licensing_service.py`, and nothing may write around it:
 - **Capacity:** `claim_capacity()` is the only path that creates an active binding (`last_claim_at` is its lock).
-- **Ambiguities:** `create_or_get_ambiguity()` is the only path that creates a `licence_ambiguities` row (`last_ambiguity_at` is its lock) — activation now, and refresh-raised ambiguities in Unit 3 too. It is what makes two concurrent identical requests produce one ambiguity, not two.
+- **Ambiguities:** `create_or_get_ambiguity()` is the only path that creates a `licence_ambiguities` row (`last_ambiguity_at` is its lock) — activation-raised and refresh-raised alike. It is what makes two concurrent identical requests produce one ambiguity, not two.
 
-Both lock statements look like bookkeeping writes and are the whole guarantee. Their tests run on Postgres; SQLite would pass without them.
+Two more row locks, taken the same way, guard Unit 3a's writes: the **ambiguity row** (`_lock_ambiguity()`, writing `last_locked_at`) makes one resolution per ambiguity and one collection per resolution; the **binding row** (`_lock_binding()`, writing `updated_at` whatever `revoked_at` is) serialises refresh, collection and release on one binding.
 
-**Lock order: pool before binding.** No transaction may hold a lock on a binding row and then take a lock on its pool row, or the reverse order in another transaction — the two can deadlock. Today they never meet: restore and lease issue lock only the binding; claims and ambiguity creation lock only the pool. If a path ever needs both (Unit 3's refresh that turns into an ambiguity is the first candidate), it takes the **pool first**.
+All of these lock statements look like bookkeeping writes and are the whole guarantee. Their tests run on Postgres; SQLite would pass without them.
+
+**Lock order: pool → ambiguity → binding.** A transaction that takes more than one of these locks takes them in that order, never another — two transactions taking them in opposite orders can deadlock. Who holds more than one: an activation-raised `treat_as_new` resolve (pool → ambiguity, inside `claim_capacity()`), and a collection (ambiguity → binding). **Refresh takes the binding lock only; a refresh that turns into an ambiguity creates it through `create_or_get_ambiguity()`, the only one of them that takes the pool lock, in a transaction of its own — so pool and binding are never held in one transaction.**
+
+**The request history.** Every state-changing licensing request — activation, restore, refresh, ambiguity collection, release and ambiguity resolution — records itself in `licence_requests` (`services/licence_history.py`), and reads it first: the same `request_id`, operation and digest within 24 hours replays the stored outcome; anything else is `request_id_reused`. It is checked again under the operation's own lock, as the last read before the write, and the outcome — a stored refusal too — is committed **while that lock is still held**, never after it is released. It is never bypassed (`claim_capacity()` and `create_or_get_ambiguity()` take the entry as a required argument), and it **fails closed**: if it cannot be read or written, the operation returns `503 licensing_unavailable` and writes nothing. It never falls back to the per-binding request columns, which are still written and read alongside it.
 
 ### NULLs are distinct in unique indexes
 

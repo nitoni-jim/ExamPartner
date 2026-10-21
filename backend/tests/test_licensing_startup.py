@@ -48,6 +48,7 @@ def _execute(sql, params=()):
 def _claim(pool_id):
     import uuid
 
+    from services.licence_history import Entry
     from services.licensing_service import claim_capacity
 
     request_id = str(uuid.uuid4())
@@ -55,6 +56,7 @@ def _claim(pool_id):
         pool_id,
         request_id=request_id,
         request_fp=f"digest-{request_id}",
+        history=Entry(request_id, "activate", f"digest-{request_id}"),
         machine_fingerprint_hash="fp-new",
         fingerprint_confidence="strong",
         performed_by="owner@school.example",

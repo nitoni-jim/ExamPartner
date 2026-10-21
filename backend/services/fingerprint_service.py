@@ -229,10 +229,23 @@ class Reading:
     identity: Dict[str, str] = field(hash=False)  # IDENTITY_HASH_FIELDS → normalised value or ""
     activation_disk: Optional[str] = None       # system disk serial (activation continuity, H1)
     activation_nics: FrozenSet[str] = frozenset()  # onboard NIC addresses (activation continuity, H1)
+    # Windows MachineGuid, normalised as a GUID (brief §4.J J6). A REFRESH
+    # continuity signal only (§4.A, I2) — never an activation one (H1).
+    machine_guid: Optional[str] = None
 
     @property
     def activation_continuity(self) -> bool:
         return self.activation_disk is not None or bool(self.activation_nics)
+
+    def normalised(self) -> tuple:
+        """
+        Everything matching and continuity look at, and nothing else. The
+        refresh ratchet compares THIS, never raw JSON (J6): a RAM change, a
+        BIOS version string or a random Wi-Fi address changes the raw
+        snapshot but none of these, so it neither ratchets nor logs.
+        """
+        return (tuple(sorted(self.identity.items())), self.activation_disk,
+                tuple(sorted(self.activation_nics)), self.machine_guid)
 
 
 def read(signals: Optional[Mapping[str, Any]]) -> Reading:
@@ -252,6 +265,7 @@ def read(signals: Optional[Mapping[str, Any]]) -> Reading:
         identity=identity,
         activation_disk=_system_disk_serial(signals.get("disk_serials") or []),
         activation_nics=_onboard_nic_addresses(signals.get("mac_addresses") or []),
+        machine_guid=normalise_uuid(signals.get("windows_machine_guid")),
     )
 
 
@@ -286,6 +300,29 @@ def request_digest(pool_id: str, reading: Reading) -> str:
         "identity": reading.identity,
         "activation_disk": reading.activation_disk or "",
         "activation_nics": sorted(reading.activation_nics),
+    }
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def refresh_digest(binding_id: str, reading: Reading) -> str:
+    """
+    The identity of a refresh request (brief §4.I I4): SHA-256 over the
+    binding ID and the normalised reading, MachineGuid included because it is
+    a refresh continuity signal. Not the lease bytes: a retry presents the
+    same old lease, but a client that lost its response may hold either.
+
+    Stored as request_fp on a refresh-raised ambiguity, so that collection
+    can prove it comes from the PC that raised it (I6). Like
+    request_digest(), computed once and never recomputed from stored signals
+    (H5). The activation digest above is deliberately unchanged (J6): open
+    ambiguities in production already carry digests computed by it.
+    """
+    canonical = {
+        "binding_id": binding_id,
+        "identity": reading.identity,
+        "activation_disk": reading.activation_disk or "",
+        "activation_nics": sorted(reading.activation_nics),
+        "machine_guid": reading.machine_guid or "",
     }
     return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -351,3 +388,29 @@ def activation_continuity_match(reading: Reading, binding: Reading) -> bool:
     if reading.activation_disk and reading.activation_disk == binding.activation_disk:
         return True
     return bool(reading.activation_nics & binding.activation_nics)
+
+
+def refresh_continuity(presented: Reading, snapshot: Reading) -> bool:
+    """
+    Brief §4.A as extended by §4.I I2: "is the same installation still
+    running?" Applies to ANY binding whose match on refresh is weak or none.
+    The caller has already established the first condition — the lease's
+    installation_id is the binding's current one (I1 step 4). Then:
+
+    - the presented MachineGuid equals the snapshot's, and is not absent; and
+    - IF the snapshot carries a system-disk serial or an onboard network
+      address, at least one of them is shared with the presented reading. A
+      snapshot with neither relies on the installation and MachineGuid alone.
+
+    "At least one of disk or NIC", not both, is what lets the ratchet survive
+    maintenance: a disk replaced by cloning the old one keeps the
+    installation and the MachineGuid, passes on the network card, and then
+    ratchets the new disk in. A copied lease on a cloned-image PC still
+    fails: the image carries the installation and MachineGuid, but not the
+    disk or the network card.
+    """
+    if presented.machine_guid is None or presented.machine_guid != snapshot.machine_guid:
+        return False
+    if snapshot.activation_disk is None and not snapshot.activation_nics:
+        return True
+    return activation_continuity_match(presented, snapshot)
