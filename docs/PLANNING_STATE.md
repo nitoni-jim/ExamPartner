@@ -1,7 +1,7 @@
 # Planning state — ExamPartner Windows seat-pool licensing
 
-**Handover from the planning windows of 5–19 October 2026.** Read this first in a new planning window, then `docs/WORKING_MODEL.md`.
-**State as of:** 21 October 2026 (afternoon) · `main` at `0fea83a`, before this upload. This revision records Unit 3a merged, the Unit 3b brief (brief §4.K, §5), its pre-code rulings (§4.L) and contract v1.1. The Unit 3 plan and deadline are in §1, §2, §5 and §10, and the licence session token decision in §4.
+**Handover from the planning windows of 5–21 October 2026.** Read this first in a new planning window, then `docs/WORKING_MODEL.md`.
+**State as of:** 21 October 2026 (evening) · `main` at `d3c15b4`, before this upload. **The backend for the trial is complete and deployed**: Units 1–3b are merged, and production runs `d3c15b4`. This revision records Unit 3 done, refreshes the local agent's brief to match (revision 4), records **Nitoni's trial-scope decision of 21 October** (§1, §5), and hands over to the next planning window (§2, §11).
 
 ---
 
@@ -12,22 +12,22 @@
 | **Backend Unit 1** — time helpers, schema, owner check, `claim_capacity()` | Merged as PR #37 (`3a8e313`). Deployed. |
 | **Backend Unit 2** — fingerprint rules, activation session, activate and restore, lease signing, error envelope, pilot setup endpoints | Merged as PR #38 (`bdaff67`). 372 tests passing, 0 skipped. **Deployed to production** (confirmed by Nitoni, 17 October): signing key configured as kid 1, `/health` returns `"licensing": "ready"`. |
 | **Android smoke test after the Unit 2 deploy** | Passed: the live Android app loads questions from the production backend. Auth, payment and device registration were **not** re-tested as part of this. |
-| **Backend Unit 3a** — refresh, one fail-closed request history (brief §9 R1) covering every operation including release and resolution, ambiguity resolve and collect, release, admin ambiguity list, R2 race test | **Merged** as PR #39 (`6172561`), 21 October, six days ahead of target. Planning verified it independently: 521 passed, 0 skipped; every lock and J8 guard removed by hand fails its tests; planning's own end-to-end run passed 38 of 38. Record in brief §4.K K0. **Deploy pending** (§2). No change from survey finding S1 (§9.3). |
-| **Backend Unit 3b** — licence session token, owner reads and rename, account editing, pool resizing, signals review, test-clock endpoint, contract v1.1 | **Pre-code report approved** 21 October (brief §4.L); ready to implement after this upload, aiming to finish 21 October. Briefed in brief §4.K and §5, contract v1.1 §10A. |
+| **Backend Unit 3a** — refresh, one fail-closed request history (brief §9 R1) covering every operation including release and resolution, ambiguity resolve and collect, release, admin ambiguity list, R2 race test | **Merged** as PR #39 (`6172561`), 21 October. Planning verified it independently: 521 passed, 0 skipped; every lock and J8 guard removed by hand fails its tests; planning's own end-to-end run passed 38 of 38. Record in brief §4.K K0. **Deployed** with Unit 3b. No change from survey finding S1 (§9.3). |
+| **Backend Unit 3b** — licence session token, owner reads and rename, account editing, pool resizing, signals review, test-clock endpoint, contract v1.1 | **Merged** as PR #40 (`ef689cb`; merge `d3c15b4`), 21 October. Planning verified it independently: 599 passed, 0 skipped; the rename, account and pool-edit locks each fail their tests when removed by hand, and the shrink test fails only when the claim lock goes (L3); planning's own end-to-end run passed 38 of 38. Record in brief §4.M. **Deployed** 21 October: Render live on `d3c15b4`, startup clean, `/health` ready. |
 | **API contract** | `docs/LICENCE_API_CONTRACT.md` v1, 8 October 2026; §7.3 clarified 10 October; additive amendments for Unit 3a on 19 and 20 October (§9.2, §9.3, §10, §11). **v1.1** on 21 October for Unit 3b: the licence session token and the owner endpoints (§1, §3, §4, §10A, §11). All changes additive; change log §13. Signed-lease test vectors in §6.4. |
-| **WinUI client** | Not started. Brief: `docs/LOCAL_AGENT_BRIEF.md`, revision 3 (19 October) — L0 collector v2, L1 licence core, L2 activation UI, packaging decision. L0 and L1 must pass on the two guaranteed PCs; the other three are opportunistic. |
+| **WinUI client** | Not started. Brief: `docs/LOCAL_AGENT_BRIEF.md`, **revision 4** (21 October) — the whole of contract v1.1 is live; L0 collector v2, L1 licence core (refresh and ambiguity collection now testable against production), L2 activation UI, packaging decision. L0 and L1 must pass on the two guaranteed PCs; the other three are opportunistic. |
 | **Survey collector** | v1 in `tools/fingerprint-survey/`. Records the identity signals but not the continuity fields; v2 is local-agent work unit L0. |
 | **Hardware survey** | **Preliminary v1 run done** on five of Nitoni's own PCs, 15–16 October (§9). It is the spec §7.4 first pass, not the school survey. Thresholds stay provisional until the school survey (spec §13 step 12). |
 | **Internal test school** | Not created yet (§2). |
+| **10 November trial scope** | **Decided** by Nitoni, 21 October (§11). The full record, with its commercial and school context, is the private project document `claude/Agreed_Trial_Scope_2026-10-21.md` — **never commit it to this public repository**. Not yet planned in detail. |
 
 ## 2. Waiting on Nitoni right now
 
-1. **Deploy Unit 3a** manually on Render (PR #39 is merged); confirm `/health` shows `"licensing": "ready"`. The deploy adds one table, one column and one index.
-2. **Upload this file, `docs/CLOUD_SESSION_BRIEF.md` and `docs/LICENCE_API_CONTRACT.md`** in one commit, replacing the existing versions (upload over them; do not delete first). The Unit 3b Cloud Session has started and its pre-code report is approved (brief §4.L); **give it the go-ahead only after this upload**, because it builds from `main`.
-3. **Create the internal test school** for client development (§6 has the commands). The local agent's L1 needs it.
-4. **Decide the 10 November trial's scope** beyond activation and offline licence checking.
-5. **Start the local agent** on `docs/LOCAL_AGENT_BRIEF.md`.
-6. **Keep the five v1 survey files** privately, outside the repository. L0 compares v2 output against them machine by machine — on the two guaranteed PCs, and on the others whenever you have access.
+1. **Upload this file, `docs/LOCAL_AGENT_BRIEF.md`, `docs/CLOUD_SESSION_BRIEF.md` and `docs/WORKING_MODEL.md`** in one commit, replacing the existing versions (upload over them; do not delete first). Archive both Unit 3 Cloud Sessions; no backend unit is open.
+2. **Create the internal test school** for client development (§6 has the commands). The local agent's L1 needs it.
+3. **Start the local agent on A0 and L0** (§11.3), in two separate local sessions if you like: A0 only reads the Android project.
+4. **Run P1's coverage report** when planning sends it (§11.3).
+5. **Keep the five v1 survey files** privately, outside the repository. L0 compares v2 output against them machine by machine — on the two guaranteed PCs, and on the others whenever you have access.
 
 ## 3. Documents and what each is for
 
@@ -56,7 +56,7 @@ The project attached to the planning chat holds copies of the main docs, kept in
   - A PC is **restored** only on exactly one strong match (same usable UUID *and* a shared usable serial). Weak matches go to admin review as an ambiguity, never to an automatic restore.
   - A **degenerate or weak PC** goes to admin review only if its system disk or onboard network card matches an active binding (F2). `MachineGuid` is **not** an activation signal (H1).
 - **Retries.** Every state-changing licensing operation covered by the request history carries a `request_id`; the explicit exceptions — F11's setup routes and the test clock — are in brief §4.K K7. Replays return the stored outcome, with a fresh `server_time`. Ambiguity creation is race-safe through its own pool-row lock (H2).
-- **Lock order** (H3): never hold a binding lock and then take a pool lock; if a path needs both, take the pool first.
+- **Lock order:** account → pool → ambiguity → binding (H3, J6, L5). A path that takes more than one takes them in that order. Today only resolve (pool → ambiguity) and collection (ambiguity → binding) take two; the account lock is never taken with another.
 - **The client:**
   - It stores its lease with **DPAPI in `LocalMachine` scope**.
   - The **clock rule** allows 24 hours of rollback; beyond that it needs an online refresh. A rollback never revokes and never uses a seat.
@@ -67,8 +67,10 @@ The project attached to the planning chat holds copies of the main docs, kept in
 
 ## 5. Open
 
-- **The 10 November trial's scope** beyond activation and offline licence checking (Nitoni).
-- **Whether the trial's WinUI client gets an owner screen** (machine list, release, rename) — decided with the trial scope, not in Unit 3. School self-service needs those screens; ambiguity resolution stays with ExamPartner either way.
+- **The Windows plan for the trial (§11)** — units P0–R, with their dependencies and a cut line. The scope is decided; the risk is the schedule.
+- **The owner screen is out of the trial** unless Nitoni adds it (§11.1). Its backend is live (contract v1.1 §10A); adding it later is client work only.
+- **Backend Unit 4** (§11.3 B4) — school AI credits and content entitlement. Not yet designed; briefed after P1; due by 4 November.
+- **Spec drift to fold back into the spec** (brief J7, K0): spec test 28 expects `401`; §8.6 and §8.6.1 are behind I1–I2. Not urgent; the brief wins until then.
 - **Collector v2 → rerun on the two guaranteed PCs (others when available) → school survey → freeze thresholds**, before licensing is called complete. The freeze must also answer survey question S1 (§9.3).
 - **A live activation on Windows 10 1903 must happen before any school install.** OFFICE-PC-02 is no longer guaranteed, so this is not part of L1's "done". If PC-02 is not reached during L1, test on PC-02 or another 1903-or-older PC before the 10 November trial. If none is available, the pilot school's own PCs are the first test, and the OS-floor finding in the L1 report becomes the only evidence.
 
@@ -77,7 +79,7 @@ The project attached to the planning chat holds copies of the main docs, kept in
 The owner must be an existing ExamPartner user; register one for testing if needed. Run in PowerShell with the real base URL:
 
 ```powershell
-$Base = "https://<your-render-backend>"
+$Base = "https://exampartner-backend.onrender.com"
 $admin = Invoke-RestMethod -Method Post -Uri "$Base/auth/login" -ContentType "application/json" `
   -Body (@{ identifier = "<admin identifier>"; password = "<admin password>" } | ConvertTo-Json)
 $H = @{ Authorization = "Bearer $($admin.token)" }
@@ -175,19 +177,80 @@ Both machines also have a **distinct baseboard serial**, so neither rests on a s
    - **Out of scope for S1:** a serial shared by machines whose UUIDs are independent and different. Those machines cannot strong-match, because sharing a serial without the UUID is only a weak match and goes to admin review. Record such a case as survey evidence, not as this failure.
 4. When the spec is next amended, its §7.3 survey questions gain S1.
 
-## 10. Unit 3 plan and deadline (Nitoni, 19 October)
+## 10. Unit 3 — done; the road to 10 November
 
-**The Cloud Session is available until 4 November 2026.** All of Unit 3 is finished before then, and before the 10 November trial. It is split into two PRs **for review only** — nothing is deferred past the trial.
+**Unit 3 is finished, merged and deployed on 21 October**, 14 days before the 4 November Cloud Session deadline (Nitoni's plan of 19 October). It went in two PRs for review only; nothing was deferred.
 
-| When | What |
+The schedule from here to the trial is §11.4.
+
+The Cloud Session remains available until 4 November if a backend fix is needed. Any backend change still goes brief → pre-code report → rulings on `main` → PR → planning's verification (§7).
+
+## 11. The 10 November trial — decided scope, and the Windows plan
+
+### 11.1 The decision (Nitoni, 21 October)
+
+Full record, with its commercial and school context, in the **private** project document `claude/Agreed_Trial_Scope_2026-10-21.md`. Never commit it, or its commercial details, to this public repository.
+
+| In the trial | Boundary |
 |---|---|
-| 21 October | Unit 3a merged (done, six days early). Unit 3b briefed. |
-| About 30 October | Unit 3b PR, then planning's verification |
-| By 4 November | Unit 3b PR. Both PRs implemented and reviewed enough to leave the Cloud Session. |
-| 5–9 November | Merge, manual Render deploy, production end-to-end tests, Windows integration, trial preparation |
-| 10 November | School trial |
+| Native WinUI 3 client | Not a web wrapper |
+| Objective CBT | **Mandatory**: timed exam, navigation, submission, results, review |
+| Theory CBT | **Mandatory**: follows the real paper's section and sub-part rules |
+| AI Theory Grader | **Mandatory**: online; 10 free credits as **one shared school pool** |
+| Study | Included: Android's proven behaviour is the specification |
+| Game | Included: Android's game adapted; no multiplayer or leaderboards |
+| Content | WAEC, NECO and JAMB from **verified** content only — coverage audited before any breadth is promised |
+| Offline | Study, CBT and Game from installed content packs, within the lease rules |
+| **Not** in the trial | Student logins, a teacher dashboard, automated AI-credit purchasing, **and the owner-management screen** (contract §10A) unless Nitoni adds it — release, rename, signals and pool changes go through planning's admin scripts |
 
-Planning verifies each PR as §7 describes. If the 4 November date comes under pressure, planning says so as soon as it is visible, with what would not make it — never by quietly cutting scope.
+**AI credits:** one shared balance of 10 for the school, not per PC or per student. Android's per-user quotas are untouched. The server must hold the balance, identify the school authoritatively, debit under concurrency, make retries idempotent, refund or never charge a failed grading, and report the balance and an exhausted state. Android's `ai_grading_usage` is **not** assumed to fit. Automated top-ups are deferred; an auditable admin grant is enough for the trial.
 
-**Operating the trial before any owner screen exists.** Release and ambiguity resolution are HTTP endpoints only. Planning writes PowerShell scripts for them, as §6 does for the test school, once 3a is merged.
+Where the handoff is behind the repository (the repository wins): Unit 3 is merged and deployed (§1); the token is the licence session token (§4); the guaranteed office PC is **OFFICE-PC-01** (§9.1).
 
+### 11.2 What the code says today — read by planning at `d3c15b4`
+
+Believed by reading, not yet tested:
+
+- **G1 — Grading is per user.** `POST /theory/grade` and `GET /ai-grading/quota` authorise with `get_current_user()` and count in `ai_grading_usage`, one row per user per period. A lab PC has no user and must never hold an account token. **School grading needs a new route authorised by the PC's signed lease**, debiting the school's balance. It can reuse the grading engine (`services/theory_service.py`, `theory_rubric_grading.py`) unchanged. → backend Unit 4.
+- **G2 — Full content needs a paid user.** `/questions/objective`, `/questions/theory`, `/questions/study`, `/study/*` and `/cbt/*` pass `is_paid_user()` from a user token; a caller with no user gets the free tier. **A licensed lab PC cannot fetch full content as things stand.** How packs reach the lab is a decision (P1): a lease-authorised pack export, or packs built by an admin and shipped with the installer. Either is backend Unit 4 or an admin tool, not a client workaround.
+- **G3 — Paper rules exist.** `/paper-rules/resolve` and `/cbt/theory-questions` serve the theory paper. Whether sections, compulsory questions, choices and sub-parts are enforced end to end is **not verified**. → P1.
+- **G4 — Assets.** Attachments are stored in R2. How question images, passages, tables and formulae are stored and served — and so what a pack must carry — is **not verified**. → P1 and A0.
+- **G5 — Coverage is unknown here.** Content lives in Neon, which planning never touches. → P1, using a read-only report Nitoni runs.
+
+### 11.3 The bounded units
+
+| Unit | Who | What | Needs first |
+|---|---|---|---|
+| **P0** | Planning | Operating scripts: resolve an ambiguity, list signals, release or rename a PC, suspend or resize a pool, create the test school (§6) | — |
+| **P1** | Planning | Read-only reconciliation: G2–G5; the content and paper-rules APIs; a coverage report by exam, subject, year, objective and theory, and marking-scheme status, run by Nitoni; the pack-delivery decision | — |
+| **A0** | Local agent, read-only | Inspect the **Android project** (not in GitHub) and report the behaviour and contracts of Study, Objective CBT, Theory CBT, Game, the AI Grader, offline content and assets, and results. Rules and behaviour, never Kotlin or Compose code. Report delivered privately to planning. | — |
+| **L0** | Local agent | Collector v2 (brief L0) | — |
+| **L1** | Local agent | Licence core (brief L1) | L0, test school, P0's release script |
+| **B4** | Cloud Session | Backend Unit 4: lease-authorised school grading on a shared credit ledger, and content entitlement for licensed PCs, as P1 decides | P1 (G1, G2); brief → pre-code report → rulings → PR. **Done by 4 November.** |
+| **L2** | Local agent | App shell, activation and lease-status screens, and the **installer**, on the 1903 floor | L1 |
+| **L3** | Local agent | Content store and renderer: install a verified pack, render questions with passages, tables, images and formulae faithfully | L2; P1 and A0 (pack format, assets) |
+| **L4** | Local agent | Objective CBT | L3; A0 |
+| **L5** | Local agent | Theory CBT with sections and sub-parts, and AI grading through B4 | L4 (shared exam engine); B4 deployed for grading |
+| **L6** | Local agent | Study | L3; A0 |
+| **L7** | Local agent | Game | L3; A0 |
+| **L8** | Local agent | Hardening: offline, interrupted network, restart, clock, installer on real PCs | L4–L7 |
+| **R** | Nitoni, with planning | Full trial rehearsals on real PCs, the Windows 10 1903 check (§5), content-fidelity checks, go/no-go | L8 |
+
+**What runs in parallel:** P0, P1, A0 and L0 can all start now. B4 runs in the Cloud Session alongside L1–L3. L4–L7 share one client codebase, so by default they run one after another. L6 or L7 can run in a second local session **only** if planning splits folder ownership first.
+
+**What blocks what:** B4 waits on P1. L3 waits on P1, A0 and the pack decision. L5's grading waits on B4 being deployed (its paper UI can come first). R waits on everything.
+
+### 11.4 Schedule and the cut line
+
+There are 19 days to 10 November, for a solo developer working evenings and weekends. Targets, not promises:
+
+| By | Milestone |
+|---|---|
+| 24 October | P0, P1, A0 and L0 done; test school created; B4 briefed |
+| 28 October | L1 done on both guaranteed PCs; B4 pre-code report ruled |
+| 1 November | L2 and L3 done; B4 PR open. **Checkpoint**: Nitoni confirms or trims scope |
+| 4 November | B4 merged and deployed (Cloud Session deadline) |
+| 7 November | L4–L7 done |
+| 8–9 November | L8 and R: rehearsals and go/no-go |
+
+**The proposed cut line, if the 1 November checkpoint shows slippage** — Nitoni's decision, never a quiet cut: protect Objective CBT, Theory CBT and AI grading, which are mandatory. Then Study, which reuses L3's renderer. The Game goes first. Real-PC testing, offline behaviour, the installer, content fidelity and full rehearsals are **not** on the cut line.

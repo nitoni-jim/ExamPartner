@@ -2,7 +2,7 @@
 
 **For:** the implementation session working on `nitoni-jim/ExamPartner`
 **Owner:** Nitoni (solo developer; works on this in evenings and weekends)
-**Date:** 5 October 2026 · **Revised:** 6 October 2026 (§3 environment, §6 pyflakes) · 7 October 2026 (§4.D rulings on the pre-code report, §8) · 8 October 2026 (§4.E licensing never stops the backend starting, §8; §2 signing key per the API contract) · 10 October 2026 (Unit 1 merged; Unit 2 — §4.F, §4.G, §5 — reviewed and approved) · 11 October 2026 (§4.H rulings on the Unit 2 pre-code report; §4.F, §4.G, §5 edited to match) · 12 October 2026 (Unit 2 merged as PR #38; §9 carried into Unit 3) · 19 October 2026 (Unit 3 split into 3a and 3b for review, both before 4 November; §4.I rulings for Unit 3a; §5 is now Unit 3a; §3 branch and baseline) · 20 October 2026 (§4.I cross-review corrections; §4.J rulings on the Unit 3a pre-code report) · 21 October 2026 (Unit 3a merged as PR #39; §4.K rulings for Unit 3b; §5 is now Unit 3b; contract v1.1; §4.L rulings on the Unit 3b pre-code report)
+**Date:** 5 October 2026 · **Revised:** 6 October 2026 (§3 environment, §6 pyflakes) · 7 October 2026 (§4.D rulings on the pre-code report, §8) · 8 October 2026 (§4.E licensing never stops the backend starting, §8; §2 signing key per the API contract) · 10 October 2026 (Unit 1 merged; Unit 2 — §4.F, §4.G, §5 — reviewed and approved) · 11 October 2026 (§4.H rulings on the Unit 2 pre-code report; §4.F, §4.G, §5 edited to match) · 12 October 2026 (Unit 2 merged as PR #38; §9 carried into Unit 3) · 19 October 2026 (Unit 3 split into 3a and 3b for review, both before 4 November; §4.I rulings for Unit 3a; §5 is now Unit 3a; §3 branch and baseline) · 20 October 2026 (§4.I cross-review corrections; §4.J rulings on the Unit 3a pre-code report) · 21 October 2026 (Unit 3a merged as PR #39; §4.K rulings for Unit 3b; §5 is now Unit 3b; contract v1.1; §4.L rulings on the Unit 3b pre-code report; §4.M Unit 3b merged and deployed — Unit 3 complete)
 
 Read this first, then `backend/CLAUDE.md`, then the Pilot V1 implementation spec. This brief answers the setup questions and settles the open spec gaps. Where it disagrees with the spec, this brief wins and the spec gets updated to match.
 
@@ -511,7 +511,23 @@ The pre-code report is approved: the caller helper that keeps only `sub` and re-
 
 **Implementation approved once these rulings are on `main`.** Implement to §4.F–§4.L and contract v1.1, tests first. Nitoni aims to finish the backend **today, 21 October**; work to that, and if anything forces a later date, say so as soon as you see it rather than cutting a test.
 
-## 5. The current unit of work — Unit 3b: a school manages its own computers
+### M. Unit 3b closed (21 October 2026)
+
+PR #40, one commit (`ef689cb`) on `a3e13bd`, merged as `d3c15b4` and **deployed to production** on 21 October: Render live on `d3c15b4`, startup clean, `/health` ready. Planning verified it independently before the merge: 599 passed, 0 skipped; removing the rename, account-edit and pool-edit locks by hand fails their race tests every run; the shrink-against-24-claims test fails only when `claim_capacity()`'s lock is removed, as L3 said; and planning's own end-to-end run through the real routes passed 38 of 38. The merged tree is identical to the verified branch.
+
+Accepted from the PR:
+- **The "from" lock tests use two edits that share one field** (pool: size + label against size + status; account: name + contact against name + owner). Two edits with no field in common cannot log a wrong "from", because each writes only what it changes; L3's wording would have produced a test that passes either way. The shared field is where the lock matters; the unshared fields are checked to survive.
+- **A fail-closed test for rename, account editing and pool editing**, on both engines — required by I4 for every operation, though §5 did not list these.
+
+**Unit 3 is complete, and with it the licensing backend.** No unit is open. Any later backend change starts with a new brief from planning.
+
+**Next: Unit 4 — not briefed yet.** The trial scope Nitoni decided on 21 October (`docs/PLANNING_STATE.md` §11) needs two server capabilities that do not exist:
+- **School AI grading on a shared credit balance.** `POST /theory/grade` authorises a user and counts per user (`ai_grading_usage`); a lab PC has neither. Unit 4 adds grading **authorised by the PC's signed lease**, debiting one balance per school, with idempotent retries and no charge for a failed grading, and **reuses the grading engine unchanged**. Android's routes and quotas do not change.
+- **Content for licensed PCs.** The question and CBT routes serve full content to paid users only. How a licensed lab gets its content packs is planning's decision after its content review.
+
+**Unit 4 does not reopen licensing.** It builds on the lease, the request history and the lock order as they are. Planning briefs it after its read-only review (`PLANNING_STATE.md` §11.3, P1). It goes through the usual brief → pre-code report → rulings → PR, and is due by **4 November**, the Cloud Session's last day.
+
+## 5. The last unit of work — Unit 3b: a school manages its own computers (done, §4.M)
 
 **Unit 3a is done** (§4.K K0). Units 1–3a are merged and the licensing core is complete: activation, restore, refresh, release, ambiguity resolution and collection, on one fail-closed request history.
 

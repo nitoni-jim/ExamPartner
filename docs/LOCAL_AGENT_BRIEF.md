@@ -2,7 +2,7 @@
 
 **For:** the local agent working on Nitoni's own Windows machine (`docs/WORKING_MODEL.md` §0.5 and §3)
 **Owner:** Nitoni (solo developer; evenings and weekends)
-**Date:** 19 October 2026 · **Status:** revision 3 — only two test PCs are guaranteed (§4.1). L0 and L1 completion depends on those two; the other three are tested when available. Replaces the 17 October brief.
+**Date:** 21 October 2026 · **Status:** revision 4 — the whole backend is live (contract v1.1), so refresh and ambiguity collection are built and tested against production in L1. The trial scope is decided, so §5 now runs from A0 and L0 to the full trial app (L2–L8). Two test PCs are guaranteed (§4.1). Replaces the 19 October brief.
 
 Read this first, then `docs/WORKING_MODEL.md`, then `docs/LICENCE_API_CONTRACT.md` in full. The contract is the only description of the server you may build against. Where this brief and the contract disagree on a wire detail, the contract wins; report the disagreement.
 
@@ -15,6 +15,7 @@ ExamPartner is a Nigerian WAEC/NECO/JAMB exam-preparation platform. Its Android 
 ## 2. What you own
 
 - **`windows/`** in the repository — the WinUI 3 client and everything that builds, tests and packages it. Create it; it does not exist yet.
+- **Reading the Android project, for A0 only** (§5) — read-only, nothing copied out of it into anything public.
 - **`tools/fingerprint-survey/`**, for **work unit L0 only** (§5). Nitoni assigns it to you because revising the collector needs a real Windows machine to test on. After L0 it returns to planning.
 - **All real-machine testing:** running the survey collector, activating real PCs, and checking DPAPI, the clock rule and offline behaviour.
 
@@ -29,13 +30,22 @@ ExamPartner is a Nigerian WAEC/NECO/JAMB exam-preparation platform. Its Android 
 
 ## 4. Facts you can rely on
 
-- **Server.** During development the client talks to the **production** backend on Render, against one clearly named internal test school with a five-seat pool, which Nitoni creates with the admin endpoints. There is no staging server. **The API base URL must be configuration, never a constant in code**, so staging can be added later without a code change. Nitoni gives you the URL and the test owner's credentials.
-- **What the server implements today** (backend Unit 2, merged 12 October 2026 and **deployed to production**):
-  - `POST /licence/activation-session` (contract §4);
+- **Server.** During development the client talks to the **production** backend on Render, against one clearly named internal test school with a five-seat pool, which Nitoni creates with the admin endpoints. There is no staging server. **The API base URL must be configuration, never a constant in code**, so staging can be added later without a code change. Today that URL is `https://exampartner-backend.onrender.com`. Nitoni gives you the test owner's credentials and the test pool's ID.
+- **What the server implements today: all of contract v1.1**, deployed to production on 21 October 2026 (backend Units 1–3b, `main` at `d3c15b4`):
+  - `POST /licence/activation-session` (contract §4), which issues the **licence session token**;
   - `POST /licence/activate` (contract §5);
-  - signed leases (contract §6);
-  - the error envelope (contract §9.3).
-- **Not built yet** (backend Unit 3): `POST /licence/refresh`, collecting a *resolved* ambiguity, release. Build the client side of refresh to the contract now — it is fully specified in §9 — but expect any refresh call to return 404 until Unit 3 is deployed. Treat that 404 as "refresh not available"; keep using the current lease while it is valid, and never discard it.
+  - `POST /licence/refresh` (contract §9), including expired-lease self-recovery and machine verification;
+  - collecting a resolved ambiguity on both endpoints (contract §10);
+  - the owner endpoints (contract §10A): the school's pools, computers and history, rename and release;
+  - signed leases (contract §6) and the error envelope (contract §9.3).
+
+  Nothing in the contract returns `404` any more because it is unbuilt. Treat any unexpected status by contract §9.3's unknown-code rule and §9.4's transport rules.
+- **Contract v1.1 changes to note** (contract §13, 19–21 October):
+  - the `client` object, and `426 client_upgrade_required`, apply only to `activation-session`, `activate` and `refresh` (§2); the §10A routes carry none;
+  - the 15-minute token is the **licence session token** (§1, §4). The path `/licence/activation-session` and the field `activation_token` keep their names;
+  - one 24-hour request history covers every operation (§9.2): a `request_id` belongs to one logical request, and reusing it for anything else is `request_id_reused`, even across endpoints;
+  - `pool_inactive` can now come from refresh, `lease_revoked` from a replayed activation whose seat was since released, and `machine_mismatch` also covers a superseded installation (§9.3).
+- **The owner endpoints exist, but the screens are not yours yet.** Whether the trial's client has an owner screen is undecided (§7). Do not build §10A screens until planning briefs them. L1's API client covers the activation and refresh lifecycle only.
 - **Signing keys.**
   - **kid 1 — production.** Nitoni holds its public key in `%USERPROFILE%\ExamPartner-Secrets\LICENCE_SIGNING_PUBLIC_KEY_KID1.txt` (base64 of 32 raw bytes). The public key is **not** secret: compile it into the client.
   - **kid 0 — the published TEST key** (contract §6.4). Debug builds only; a release build must not trust it.
@@ -60,7 +70,38 @@ In every report, list which opportunistic PCs you tested and which you could not
 
 ## 5. Work units
 
-Do them in this order. For each unit, send a **pre-code report** first (§6), wait for go-ahead, then build, then report and stop.
+The trial on 10 November is a **full educational app**, not a licensing demo (`PLANNING_STATE.md` §11). The units, in order:
+
+| Unit | What | Starts after |
+|---|---|---|
+| **A0** | Read-only inspection of the Android project | — (can run alongside L0, in its own session) |
+| **L0** | Survey collector v2 | — |
+| **L1** | Licence core | L0 |
+| **L2** | App shell, activation and lease status, installer | L1 |
+| **L3** | Content store and renderer | L2, and planning's content decisions |
+| **L4** | Objective CBT | L3 |
+| **L5** | Theory CBT and AI grading | L4; backend Unit 4 for grading |
+| **L6** | Study | L3 |
+| **L7** | Game | L3 |
+| **L8** | Hardening on real PCs | L4–L7 |
+
+A0, L0 and L1 are briefed in full below. **L2–L8 are outlined**: planning briefs each in full before it starts, from A0's report and planning's own content and API review. For every unit, send a **pre-code report** first (§6), wait for go-ahead, then build, then report and stop.
+
+### A0 — Inspect the Android project (read-only)
+
+The Android app is on Nitoni's machine and **not in GitHub**. Its behaviour is the specification for the Windows trial app, but its Kotlin and Compose code cannot be carried over to WinUI, and must never be copied anywhere public.
+
+- **Read only.** Change nothing in the Android project, build nothing, commit nothing from it. Nitoni tells you where it is.
+- **Report, for each of Study, Objective CBT, Theory CBT, the Game, the AI Theory Grader, and results and review:**
+  - the user flow, screen by screen, and the rules: timers, navigation, submission, scoring, review, lives and question selection in the Game;
+  - every backend call it makes: path, parameters, request and response fields used, and how errors are shown;
+  - what it stores locally, and how it works offline;
+  - how theory papers present sections, compulsory and choice questions, and sub-parts, and what it sends for grading (the `sub_answers` shape);
+  - how it renders passages, tables, images, diagrams and formulae, and where those assets come from;
+  - how it decides what content a user may see, including any free-tier or year restrictions.
+- **Describe behaviour and contracts in prose and tables.** Quote at most a few lines of code where a rule cannot be stated otherwise. No source files, no screenshots of code.
+- **The report goes to planning directly**, not into this repository. It describes a private codebase.
+- **Separate what you verified by running the app from what you read in the code**, as every report does (§6).
 
 ### L0 — Survey collector v2 (`tools/fingerprint-survey/`)
 
@@ -118,11 +159,11 @@ A .NET class library inside `windows/`, plus a console harness. It contains:
    - the in-flight `request_id`.
 4. **Offline validity and the clock rule** — contract §8.2–§8.3 exactly, including the 24-hour rollback tolerance and "online overrides the clock".
 5. **API client:**
-   - the activation session, activate and refresh;
+   - the activation session, activate and refresh, and collecting a resolved ambiguity on both (contract §10), always under a **new** `request_id`;
    - `request_id` generated and **persisted before the first attempt**, and reused on retry (contract §9.2);
    - the error envelope mapped to the technician messages in §9.3;
    - the transport rules and timeouts in §9.4;
-   - the activation token held **in memory only**;
+   - the licence session token held **in memory only**, for the current session, and dropped when the technician finishes, at `expires_at`, or when the app closes (contract §4);
    - the owner's password never stored or logged.
 6. **Console harness** — for Nitoni to activate a real PC against the internal test school, print the result, and dump the stored state, never the token or password. It also has a **local-only** option to write the `fingerprint_signals` it would send to a file, for comparison with collector v2 on the same PC. That file is private, like survey output.
 
@@ -134,6 +175,8 @@ A .NET class library inside `windows/`, plus a console harness. It contains:
 - **PERSONAL-PC-01 and OFFICE-PC-01** are both activated against production, each gets its own seat, and each lease verifies with the kid 1 key;
 - **OFFICE-PC-01** activates with its USB dongle present in `mac_addresses`;
 - a second run on each gives `restored`, or a replay — not a second seat;
+- **refresh works against production:** a refresh issues a new lease that verifies with the kid 1 key, with `lease_serial` one higher; repeating that refresh's `request_id` returns the **identical** lease, with no new serial (contract §9.2);
+- **release reaches the client:** Nitoni releases one guaranteed PC with planning's script; that PC's next refresh gets `lease_revoked`, and the client **discards** its lease and shows the §9.3 message. Re-activating it then claims a seat again (a release is never undone by recognition);
 - each PC's harness signals file matches its collector v2 output.
 
 **Opportunistic, when Nitoni has access — not required for done:**
@@ -142,24 +185,25 @@ A .NET class library inside `windows/`, plus a console harness. It contains:
 
 The test pool has five seats, which is room for all five PCs. Do not activate any machine outside §4.1 without asking Nitoni.
 
-### L2 — Activation UI and lease status (WinUI 3)
+### L2 — App shell, activation, lease status and the installer
 
-The technician's flow:
-1. Sign in (contract §4).
-2. Pick a pool.
-3. Name the PC.
-4. Activate.
-5. See the result: `activated`, or `restored` with the PC's existing name.
+The first WinUI 3 screens, and the installer that puts them on a lab PC.
+- **Activation:** the technician signs in (contract §4), picks a pool, names the PC, activates, and sees `activated` or `restored` with the PC's existing name.
+- **Lease status:** licensed until when, last refresh, and any clock fault or pending ambiguity, with "Check again" (contract §10), all using the exact §9.3 messages.
+- **The app shell** the educational units plug into: navigation, an offline indicator, and a licence check at start that blocks the educational features without a valid lease.
+- **The installer:** your L1 pre-code report recommends a packaging route — MSIX with a sideloading certificate, or unpackaged with an installer — with its trade-offs. It must suit per-machine installation by a school technician without the Microsoft Store; several Windows user accounts per PC (hence `LocalMachine` storage); offline labs; and **Windows 10 1903 (build 18362)**. A finished app that cannot be installed on twenty lab PCs is not a deliverable (`WORKING_MODEL.md` §3).
+- **No owner screen.** Contract §10A's owner routes are live, but they are **out of the trial** unless Nitoni adds them (§7). Release, rename and pool changes go through planning's admin scripts.
 
-Plus a status view — licensed until when, last refresh, and any clock fault or pending ambiguity, with the exact §9.3 messages. **Scope beyond this is not decided** (§7). Do not build exam-content features until planning briefs them.
+### L3–L8 — outlined; each briefed in full before it starts
 
-### Packaging — decide early, build alongside L2
+- **L3 — Content store and renderer.** Install a verified content pack, store it locally, and render every question faithfully: wording, options, passages, tables, images, diagrams, and mathematical and scientific notation, with explanations. **Never generate or substitute a question.** How packs are built and delivered is planning's decision, pending its content review: a licensed PC cannot fetch full content from the current routes, which serve paid users only (`PLANNING_STATE.md` §11.2 G2).
+- **L4 — Objective CBT.** A timed exam from an installed paper: navigation, flagging, submission, scoring, results and review, to A0's behaviour.
+- **L5 — Theory CBT and AI grading.** The real paper's sections, compulsory and choice questions, and sub-parts; answers written offline and kept locally; **grading online only**, through backend Unit 4's school-credit route, showing the remaining balance and a clear message when it is exhausted. No offline grading queue is promised.
+- **L6 — Study.** Browse by subject, year and topic, with explanations, to A0's behaviour.
+- **L7 — Game.** Android's game adapted: three lives a session, randomised questions, by subject, from licensed content. A0 confirms the exact rules. No multiplayer or leaderboards.
+- **L8 — Hardening on real PCs.** Offline use, a network dropping mid-exam, restarts, the clock rule, and the installer on both guaranteed PCs and, if reachable, OFFICE-PC-02 on Windows 10 1903.
 
-A finished app that cannot be installed on twenty lab PCs is not a deliverable (`WORKING_MODEL.md` §3). Your L1 pre-code report must recommend a packaging route, with its trade-offs. The candidates are MSIX with a sideloading certificate, or unpackaged with an installer. It must suit:
-- per-machine installation by a school technician without the Microsoft Store;
-- several Windows user accounts per PC, which is why storage is `LocalMachine` scope;
-- offline labs;
-- **Windows 10 1903 (build 18362)**, the oldest build in the test set. School labs may run builds as old.
+Then the **trial rehearsal** (Nitoni, with planning): full runs on real PCs, content-fidelity checks, and a go/no-go before 10 November.
 
 ## 6. How to work
 
@@ -178,5 +222,7 @@ A finished app that cannot be installed on twenty lab PCs is not a deliverable (
 
 ## 7. Open — not yours to decide
 
-- **The 10 November trial's scope beyond activation and offline licence checking:** which exam features, content packs and screens the trial needs. Nitoni decides; planning briefs it.
+- **The trial scope is decided** (`PLANNING_STATE.md` §11): Objective CBT, Theory CBT and AI grading (mandatory), Study and the Game, offline from verified content, no student logins and no teacher dashboard. **Changing it is Nitoni's decision.** If a unit runs late, report it; never trim a feature quietly.
+- **The owner screen** (contract §10A) is out of the trial unless Nitoni adds it.
+- **Content breadth:** which exams, subjects and years ship is decided from planning's coverage review, never assumed.
 - **When collector v2 goes to the pilot school's lab** — after L0 passes on the two guaranteed §4.1 PCs.
