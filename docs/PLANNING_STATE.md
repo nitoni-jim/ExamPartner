@@ -1,7 +1,7 @@
 # Planning state — ExamPartner Windows seat-pool licensing
 
 **Handover from the planning windows of 5–19 October 2026.** Read this first in a new planning window, then `docs/WORKING_MODEL.md`.
-**State as of:** 21 October 2026 · `main` at `313ad4e` (Unit 3a merged as PR #39), before this upload. This revision records Unit 3a merged, the Unit 3b brief (brief §4.K, §5) and contract v1.1. The Unit 3 plan and deadline are in §1, §2, §5 and §10, and the licence session token decision in §4.
+**State as of:** 21 October 2026 (afternoon) · `main` at `0fea83a`, before this upload. This revision records Unit 3a merged, the Unit 3b brief (brief §4.K, §5), its pre-code rulings (§4.L) and contract v1.1. The Unit 3 plan and deadline are in §1, §2, §5 and §10, and the licence session token decision in §4.
 
 ---
 
@@ -13,7 +13,7 @@
 | **Backend Unit 2** — fingerprint rules, activation session, activate and restore, lease signing, error envelope, pilot setup endpoints | Merged as PR #38 (`bdaff67`). 372 tests passing, 0 skipped. **Deployed to production** (confirmed by Nitoni, 17 October): signing key configured as kid 1, `/health` returns `"licensing": "ready"`. |
 | **Android smoke test after the Unit 2 deploy** | Passed: the live Android app loads questions from the production backend. Auth, payment and device registration were **not** re-tested as part of this. |
 | **Backend Unit 3a** — refresh, one fail-closed request history (brief §9 R1) covering every operation including release and resolution, ambiguity resolve and collect, release, admin ambiguity list, R2 race test | **Merged** as PR #39 (`6172561`), 21 October, six days ahead of target. Planning verified it independently: 521 passed, 0 skipped; every lock and J8 guard removed by hand fails its tests; planning's own end-to-end run passed 38 of 38. Record in brief §4.K K0. **Deploy pending** (§2). No change from survey finding S1 (§9.3). |
-| **Backend Unit 3b** — licence session token, owner reads and rename, account editing, pool resizing, signals review, test-clock endpoint, contract v1.1 | **Briefed** 21 October: brief §4.K and §5, contract v1.1 §10A. Waiting for upload, then a fresh Cloud Session's pre-code report. PR targeted for about 30 October. |
+| **Backend Unit 3b** — licence session token, owner reads and rename, account editing, pool resizing, signals review, test-clock endpoint, contract v1.1 | **Pre-code report approved** 21 October (brief §4.L); ready to implement after this upload, aiming to finish 21 October. Briefed in brief §4.K and §5, contract v1.1 §10A. |
 | **API contract** | `docs/LICENCE_API_CONTRACT.md` v1, 8 October 2026; §7.3 clarified 10 October; additive amendments for Unit 3a on 19 and 20 October (§9.2, §9.3, §10, §11). **v1.1** on 21 October for Unit 3b: the licence session token and the owner endpoints (§1, §3, §4, §10A, §11). All changes additive; change log §13. Signed-lease test vectors in §6.4. |
 | **WinUI client** | Not started. Brief: `docs/LOCAL_AGENT_BRIEF.md`, revision 3 (19 October) — L0 collector v2, L1 licence core, L2 activation UI, packaging decision. L0 and L1 must pass on the two guaranteed PCs; the other three are opportunistic. |
 | **Survey collector** | v1 in `tools/fingerprint-survey/`. Records the identity signals but not the continuity fields; v2 is local-agent work unit L0. |
@@ -23,7 +23,7 @@
 ## 2. Waiting on Nitoni right now
 
 1. **Deploy Unit 3a** manually on Render (PR #39 is merged); confirm `/health` shows `"licensing": "ready"`. The deploy adds one table, one column and one index.
-2. **Upload this file, `docs/CLOUD_SESSION_BRIEF.md` and `docs/LICENCE_API_CONTRACT.md`** in one commit, replacing the existing versions (upload over them; do not delete first). Then start a fresh Cloud Session on Unit 3b; it cuts its branch from a `main` that already holds 3a.
+2. **Upload this file, `docs/CLOUD_SESSION_BRIEF.md` and `docs/LICENCE_API_CONTRACT.md`** in one commit, replacing the existing versions (upload over them; do not delete first). The Unit 3b Cloud Session has started and its pre-code report is approved (brief §4.L); **give it the go-ahead only after this upload**, because it builds from `main`.
 3. **Create the internal test school** for client development (§6 has the commands). The local agent's L1 needs it.
 4. **Decide the 10 November trial's scope** beyond activation and offline licence checking.
 5. **Start the local agent** on `docs/LOCAL_AGENT_BRIEF.md`.

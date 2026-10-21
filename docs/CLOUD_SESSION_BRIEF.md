@@ -2,7 +2,7 @@
 
 **For:** the implementation session working on `nitoni-jim/ExamPartner`
 **Owner:** Nitoni (solo developer; works on this in evenings and weekends)
-**Date:** 5 October 2026 · **Revised:** 6 October 2026 (§3 environment, §6 pyflakes) · 7 October 2026 (§4.D rulings on the pre-code report, §8) · 8 October 2026 (§4.E licensing never stops the backend starting, §8; §2 signing key per the API contract) · 10 October 2026 (Unit 1 merged; Unit 2 — §4.F, §4.G, §5 — reviewed and approved) · 11 October 2026 (§4.H rulings on the Unit 2 pre-code report; §4.F, §4.G, §5 edited to match) · 12 October 2026 (Unit 2 merged as PR #38; §9 carried into Unit 3) · 19 October 2026 (Unit 3 split into 3a and 3b for review, both before 4 November; §4.I rulings for Unit 3a; §5 is now Unit 3a; §3 branch and baseline) · 20 October 2026 (§4.I cross-review corrections; §4.J rulings on the Unit 3a pre-code report) · 21 October 2026 (Unit 3a merged as PR #39; §4.K rulings for Unit 3b; §5 is now Unit 3b; contract v1.1)
+**Date:** 5 October 2026 · **Revised:** 6 October 2026 (§3 environment, §6 pyflakes) · 7 October 2026 (§4.D rulings on the pre-code report, §8) · 8 October 2026 (§4.E licensing never stops the backend starting, §8; §2 signing key per the API contract) · 10 October 2026 (Unit 1 merged; Unit 2 — §4.F, §4.G, §5 — reviewed and approved) · 11 October 2026 (§4.H rulings on the Unit 2 pre-code report; §4.F, §4.G, §5 edited to match) · 12 October 2026 (Unit 2 merged as PR #38; §9 carried into Unit 3) · 19 October 2026 (Unit 3 split into 3a and 3b for review, both before 4 November; §4.I rulings for Unit 3a; §5 is now Unit 3a; §3 branch and baseline) · 20 October 2026 (§4.I cross-review corrections; §4.J rulings on the Unit 3a pre-code report) · 21 October 2026 (Unit 3a merged as PR #39; §4.K rulings for Unit 3b; §5 is now Unit 3b; contract v1.1; §4.L rulings on the Unit 3b pre-code report)
 
 Read this first, then `backend/CLAUDE.md`, then the Pilot V1 implementation spec. This brief answers the setup questions and settles the open spec gaps. Where it disagrees with the spec, this brief wins and the spec gets updated to match.
 
@@ -452,7 +452,7 @@ Two corrections to the PR's notes. The schema delta was **one table** (`licence_
 **K2. Owner reads — contract §10A.1–§10A.3, exactly.** Read-only, so no request history and no locks.
 - **Pools (§10A.1):** counts computed as claims see them; `pending_identity_checks` counts ambiguities whose **effective** state is open (K0).
 - **Machines (§10A.2):** active bindings only, sorted as the contract says.
-- **History (§10A.3):** from `seat_activation_log`, filtered to the contract's ten actions. **Exclude** `clone_flagged` and `stale_serial_flagged` — H7 logs `clone_flagged` against the activating account, and its `detail_json` names another school's binding — and `account_update` (K5). Map `actor_role` to `actor` (`institution_owner` → `owner`, `exampartner_admin` → `exampartner`, `client` → `computer`); set `actor_identifier` only for `owner`. Never return `fingerprint_signals_json`, hashes, installation IDs or `detail_json`; `revoke_reason` comes from the release row. **Keyset pagination** on (`created_at`, `id`), newest first, with an opaque cursor; never `OFFSET`, which skips rows while events arrive.
+- **History (§10A.3):** from `seat_activation_log`, filtered to the contract's allowlisted owner-visible actions. **Exclude** `clone_flagged` and `stale_serial_flagged` — H7 logs `clone_flagged` against the activating account, and its `detail_json` names another school's binding — and `account_update` (K5). Map `actor_role` to `actor` (`institution_owner` → `owner`, `exampartner_admin` → `exampartner`, `client` → `computer`); set `actor_identifier` only for `owner`. Never return `fingerprint_signals_json`, hashes, installation IDs or `detail_json`; `revoke_reason` comes from the release row. **Keyset pagination** on (`created_at`, `id`), newest first, with an opaque cursor; never `OFFSET`, which skips rows while events arrive.
 
 **K3. Rename — contract §10A.4.** A state change, so: `request_id` required, the request history (I4, J8) under operation `rename`, the **binding-row lock** (`_lock_binding()`, H3), and replay with a fresh `server_time` (J5). Released → `409 binding_released`. A real change logs a new action, **`rename`**, with the old and new labels in `detail_json` and `machine_label` set to the new label; `unchanged` records its history row and logs nothing. Duplicate labels are allowed.
 
@@ -465,7 +465,7 @@ Two corrections to the PR's notes. The schema delta was **one table** (`licence_
 - **The pool lock** comes first: a bookkeeping write, `UPDATE seat_pools SET updated_at = ? WHERE id = ?`, takes the same row lock `claim_capacity()` takes, so a resize and a claim serialise (H3: pool first). No other lock is taken. Under it: check the request history (operation `pool_update`, digest over the pool ID and the normalised fields), apply the change, count, log, record the outcome, commit (I4, J8). A replay returns the stored body with a fresh `server_time`; the same `request_id` with another body or operation → `409 request_id_reused`.
 - **Never evicts** (spec §5.4). Shrinking below `active` leaves the pool over capacity; new claims are refused until releases bring it below.
 - Counts computed in the same transaction after the write (K0). Response `{"ok": true, "pool_id", "pool_size", "label", "pool_status", "active", "available", "over_capacity"}`.
-- Log `resize` with each changed field's old and new value in `detail_json`. It is owner-visible.
+- Log `resize` for a `pool_size` or `label` change, and `pool_status` for a `status` change (L4), each with the old and new values in `detail_json`. A request that changes both writes both rows in the same transaction. Both are owner-visible.
 - `suspended` is the lever spec §10.4 otherwise lacks: activation and refresh then return `pool_inactive` (Unit 3a); leases already issued run to their expiry.
 
 **K7. Which routes take a `request_id`** (corrected after cross-review). Every state-changing route in Unit 3b takes one: rename (K3), release (K4), account editing (K5) and pool editing (K6). Setting an absolute value is **not** harmless on retry: if admin A's resize to 20 loses its response, admin B then sets 25, and A's retry runs again, A silently undoes B. A retry also writes a second audit row. With the history, A's retry replays its stored outcome and changes nothing.
@@ -480,11 +480,42 @@ Two corrections to the PR's notes. The schema delta was **one table** (`licence_
 
 **K11. Admin-route codes stay in this brief.** I9 said the admin resolve codes would go into contract §9.3. They do not: contract §3 keeps support and admin routes out of the client contract, so `admin_required`, `ambiguity_not_found`, `ambiguity_already_resolved`, `ambiguity_candidate_invalid` and `test_clock_disabled` are defined here (I5, J4, K9). The client-facing codes 3a introduced — `not_authenticated` and `binding_access_denied` — are in contract v1.1 §9.3.
 
+### L. Rulings on the Unit 3b pre-code report (21 October 2026)
+
+The pre-code report is approved: the caller helper that keeps only `sub` and re-derives the role; the allowlisted history query with a Python-side keyset cursor; and the lock table — rename on the binding row, account editing on the account row alone, pool editing on the pool row, each recording its outcome under its lock (J8). Its three questions and its smaller calls are ruled below. Where this section and §4.K differ, this section wins.
+
+**L1. Error shape for the admin routes (D1) — as proposed.** K5, K6, K8 and K9 return plain `{"ok": true, …, "server_time"}` success bodies and **coded** errors through `licence_error()` and the §9.3 shape, as the resolve route does (J4): `not_authenticated`, `admin_required`, `invalid_request` with `field`, `licensing_unavailable`, `request_id_reused`, `test_clock_disabled`. Two new admin-only codes, defined here like `ambiguity_not_found`: **`404 account_not_found`** and **`404 pool_not_found`**. They are safe on admin routes, where existence is not a secret; owner routes keep the identical-`403` rule. F11's three setup routes and the I8 list stay exactly as they are (K7).
+
+**L2. The K1 scope test (D2) — as proposed.** The point is that a licence session token grants nothing outside the five owner routes, not that every refusal has one status. Assert each route's **existing** refusal, and that nothing was changed: `401` on the resolve route, K5, K6, K8 and K9; `403` on F11, I8 and `routes/admin.py`, which use plain `require_admin()`. Use `/auth/me`, `/auth/devices` and the CBT routes as the representative non-licensing `401`s. Do not change F11, I8 or `routes/admin.py`.
+
+**L3. K6's guard-removal test (D3) — as proposed.** Your analysis is right: `claim_capacity()` reads `pool_size` under its own pool lock, so the claim lock, not the resize lock, carries "no claim beyond the size in force", and spec test 6 already covers removing it. Keep the shrink-against-24-claims test as a **capacity** test and say in it which lock carries it. The resize lock's guard-removal tests are the two you name — one `request_id` with two bodies → one applied, one `request_id_reused`; and two edits to different fields, the second paused between read and write → each `resize` row's `from` is the true previous value. Do the same for K5's account lock.
+
+**L4. Suspension is its own owner-visible action.** Logging a suspension as `resize` would tell a school "seats changed" when the pool was suspended. So:
+- a K6 request that changes `status` logs **`pool_status`**, with `{"from", "to"}`;
+- a change to `pool_size` or `label` logs `resize`, as K6 says;
+- a request that changes both logs both rows, in one transaction.
+
+`pool_status` joins contract §10A.3's owner-visible actions (contract §13, 21 October). It is the fourth new log action, alongside `rename`, `account_update` and `resize`.
+
+**L5. Your smaller calls are accepted:**
+- `server_time` on K6's response (J5, contract §2).
+- A no-op K5 or K6 edit records its history row, writes no log row, and returns the current state, like rename's `unchanged`.
+- Fields cannot be cleared to null in 3b, because contract §2 treats null as omitted. Acceptable for the pilot.
+- An owner route that passed its owner check before a K5 commit completes. "At once" means the next call.
+- Machines sort by `pool_label`, then `machine_label`, both case-insensitive, then `binding_id`.
+- K8 returns every log column, with `detail_json` and `fingerprint_signals_json` parsed, plus `account_name` and `pool_label`. It is admin-only.
+- K9's `offset_seconds` is limited to ±10 years; the test clock does not check licensing availability.
+- I9's "bound to the accounts it may manage" is superseded by K1 and contract §4: identity and role only, with ownership re-checked on every call.
+- No schema change; `licence_history.OPERATIONS` gains `rename`, `account_update` and `pool_update`, and the comment lists in `db.py` follow.
+- **Lock order, for `backend/CLAUDE.md`:** if a future path ever needs the account lock together with another, the account comes first — **account → pool → ambiguity → binding** — and that path is checked against the order. Today no path takes the account lock with another.
+
+**Implementation approved once these rulings are on `main`.** Implement to §4.F–§4.L and contract v1.1, tests first. Nitoni aims to finish the backend **today, 21 October**; work to that, and if anything forces a later date, say so as soon as you see it rather than cutting a test.
+
 ## 5. The current unit of work — Unit 3b: a school manages its own computers
 
 **Unit 3a is done** (§4.K K0). Units 1–3a are merged and the licensing core is complete: activation, restore, refresh, release, ambiguity resolution and collection, on one fail-closed request history.
 
-**Unit 3b finishes Unit 3.** Nitoni's deadline stands: **all of Unit 3 before 4 November 2026**, the last day this Cloud Session is available, and before the trial on 10 November. Aim to open the PR by about **30 October**, so planning can verify it before the 4th. If that slips, say so as soon as you see it.
+**Unit 3b finishes Unit 3.** Nitoni's deadline stands: **all of Unit 3 before 4 November 2026**, the last day this Cloud Session is available, and before the trial on 10 November. Aim to open the PR by about **30 October**, so planning can verify it before the 4th — Nitoni now aims to finish today, 21 October (L5). If that slips, say so as soon as you see it.
 
 **Unit 3b builds**, under §4.K and contract v1.1:
 
@@ -496,7 +527,7 @@ Two corrections to the PR's notes. The schema delta was **one table** (`licence_
 6. **Pool editing — `PATCH /institutions/seat_pools/{pool_id}`** (K6).
 7. **`GET /support/licensing/signals`** (K8).
 8. **`POST /support/licensing/test-clock`** (K9).
-9. **`backend/CLAUDE.md`** — the caller helper and K1's scope rule ("the session token never reaches `get_current_user()`"), the three new log actions (`rename`, `account_update`, `resize` — `resize` is in spec §3.5's list but nothing wrote it until now), the three new history operations (`rename`, `account_update`, `pool_update`), and K5's account-row lock and K6's pool-lock note beside H3.
+9. **`backend/CLAUDE.md`** — the caller helper and K1's scope rule ("the session token never reaches `get_current_user()`"), the four new log actions (`rename`, `account_update`, `resize`, `pool_status` — `resize` is in spec §3.5's list but nothing wrote it until now; L4), the three new history operations (`rename`, `account_update`, `pool_update`), and K5's account-row lock and K6's pool-lock note beside H3.
 
 **Not in this unit:** nothing further of Unit 3 remains. Anything you find missing is a gap to report (§7), not scope to add.
 
@@ -504,7 +535,7 @@ Two corrections to the PR's notes. The schema delta was **one table** (`licence_
 
 - **Token scope (K1):**
   - a licence session token is accepted on all five owner routes, for an owner and for an admin;
-  - it is refused — `401` — on representative non-licensing routes that use `get_current_user()`, and on every admin and support route, the setup endpoints and the test clock;
+  - everywhere else it grants nothing, and each route keeps its existing refusal (L2): `401 not_authenticated` on ambiguity resolve and the new K5, K6, K8 and K9 routes; the plain `403 Admin access required` on F11's setup routes, the I8 ambiguity list and `routes/admin.py`; and the unauthenticated response on representative non-licensing routes that use `get_current_user()` (`/auth/me`, `/auth/devices`, the CBT routes). In every case, assert that no protected state changed;
   - an ordinary bearer token is still accepted on the five owner routes and still refused at `/licence/activate`;
   - an expired token → `not_authenticated`;
   - **the owner is changed through K5 while the old owner holds a valid session token → the old owner's next call is refused** (`account_access_denied` or `binding_access_denied`), and the new owner's succeeds.
@@ -512,13 +543,16 @@ Two corrections to the PR's notes. The schema delta was **one table** (`licence_
   - another school's account, pool or computer, and a non-existent one, give the identical `403`;
   - history shows none of `clone_flagged`, `stale_serial_flagged` or `account_update` — including a `clone_flagged` row whose `detail_json` names another school's binding;
   - no history event carries readings, hashes, installation IDs or `detail_json`; ExamPartner staff are never named;
-  - pagination returns every event exactly once while new events are written between pages;
+  - **keyset pagination**, with events written between pages. Once page 1 has returned a cursor, events committed later that sort **above** it belong to a later, fresh traversal and are never inserted into the middle of this one. Within the current traversal, every qualifying row at or below the cursor boundary appears **exactly once** — none duplicated, none skipped. That is the guarantee the test asserts;
   - `pending_identity_checks` counts an open ambiguity older than 7 days as **not** pending.
 - **Rename (K3):** renamed and logged; `unchanged` logs nothing; released → `binding_released`; the same `request_id` retried → the stored outcome with a fresh `server_time`; with a different label → `request_id_reused`; a release's `request_id` reused for a rename → `request_id_reused`; a missing `request_id` → `invalid_request`.
 - **Rename races, on Postgres, barrier-synchronised as in test 4:** a rename concurrent with a release → either renamed then released, or `binding_released`, never a renamed released computer; two renames with one `request_id` and two labels → one renamed, one `request_id_reused`. Remove the binding lock by hand and show they fail.
 - **Release (K4):** the Unit 3a tests still pass; the same release under a licence session token behaves identically.
 - **Spec §12 tests 29 and 30** through `PATCH /institutions/seat_pools/{pool_id}`, and **test 5** with the shrink done through it too.
-- **Pool editing races (K6), on Postgres:** a shrink from 20 to 15 concurrent with 24 barrier-synchronised claims → no claim ever commits beyond the size in force at its commit, and the pool never exceeds 20; removing the resize's lock write (doing the change after a read) must break it.
+- **Pool editing, on Postgres (K6, L3):**
+  - **capacity:** a shrink from 20 to 15 concurrent with 24 barrier-synchronised claims → no claim ever commits beyond the size in force at its commit, and the pool never exceeds 20. This invariant is carried by `claim_capacity()`'s own pool lock (spec test 6 covers removing that), so this is an integration test, not the resize lock's guard test;
+  - **the resize lock's guard tests:** two concurrent pool edits with one `request_id` and different bodies → one applied, one `request_id_reused`; and two concurrent edits to different fields, one paused between its read and its write → every `resize` and `pool_status` row's `from` equals the true immediately preceding value. Removing the resize lock by hand must make both fail, every run;
+  - **the account lock (K5), likewise:** two concurrent account edits with one `request_id` and different bodies → one applied, one `request_id_reused`; and two edits to different fields → every `account_update` row's `from` is true. Removing the account lock must make both fail.
 - **Suspension (K6):** suspend → activation and refresh both `pool_inactive`; reactivate → both work again; the issued lease is untouched.
 - **Account editing (K5):** an unregistered `owner_identifier` → refused, nothing recorded; `account_update` logged and absent from owner history; the same `request_id` retried after another admin's change → the stored outcome, and the other admin's value stands; the same `request_id` with another body → `request_id_reused`; a missing `request_id` → `invalid_request`.
 - **Pool editing replay (K6):** the same lost-response scenario — A resizes to 20, B to 25, A retries → 25 stands, A gets its stored outcome, one `resize` row for A.
@@ -526,16 +560,16 @@ Two corrections to the PR's notes. The schema delta was **one table** (`licence_
 - **Test clock (K9):** disabled → `test_clock_disabled`, even for an admin; enabled → an offset moves refresh expiry as spec tests 15–16 need; `reset` restores it.
 - **Every Unit 1–3a test still passes**, the lock guards still fail when removed, and every response carries `server_time`.
 
-**The pre-code report** comes first, as for every unit (§6, §7). It must include:
+**The pre-code report is done** (21 October 2026); its rulings are §4.L. For the record, it covered:
 - the baseline test count on current `main` (§3);
 - the caller helper's design (K1), and how it reads the header without pre-empting the `422`-first order;
 - the history query and cursor (K2);
 - how each new state-changing path follows H3 and J8, including where the account-row lock (K5) sits in the lock order;
 - any drift between this brief, contract v1.1 and the code.
 
-Then wait for the go-ahead. **Stop at the end of this unit** and open the PR from your assigned branch, titled **"Licensing Unit 3b"**.
+**The implementation go-ahead follows once this brief is on `main`** (§4.L). **Stop at the end of this unit** and open the PR from your assigned branch, titled **"Licensing Unit 3b"**.
 
-**Deployment note for Nitoni, not for you:** Unit 3b adds no tables. It adds routes and three log actions, so the deploy is a code deploy. Keep `ALLOW_TEST_CLOCK` absent.
+**Deployment note for Nitoni, not for you:** Unit 3b adds no tables. It adds routes and four log actions, so the deploy is a code deploy. Keep `ALLOW_TEST_CLOCK` absent.
 
 ## 6. How to work
 
