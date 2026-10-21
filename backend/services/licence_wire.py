@@ -79,14 +79,24 @@ LICENCE_ERRORS = {
     "lease_revoked": (403, "This computer's licence was released by the school. An administrator must activate it again, which uses a seat.", False),
     "machine_mismatch": (403, "This licence belongs to a different computer.", False),
     # Unit 3a — release and the admin resolve route (brief §4.I I5, I7,
-    # §4.J J4). Not yet in the contract: Unit 3b writes them into v1.1's
-    # §9.3 exactly as they are here.
+    # §4.J J4). not_authenticated and binding_access_denied are in contract
+    # v1.1's §9.3; the admin-route codes are defined in the brief instead,
+    # because contract §3 keeps admin routes out of the client contract (K11).
     "not_authenticated": (401, "Sign in to continue.", False),
     "admin_required": (403, "ExamPartner admin access required.", False),
     "binding_access_denied": (403, "This account cannot manage that computer.", False),
     "ambiguity_not_found": (404, "No such identity check.", False),
     "ambiguity_already_resolved": (409, "This identity check has already been resolved.", False),
     "ambiguity_candidate_invalid": (409, "That activation is not an active candidate for this identity check.", False),
+    # Unit 3b — the owner routes (contract v1.1 §9.3, §10A) ...
+    "account_access_denied": (403, "This account cannot manage that school's computers.", False),
+    "binding_released": (409, "This computer has been released. It can no longer be renamed.", False),
+    # ... and the admin routes, defined in the brief (§4.L L1, K9). A 404 is
+    # safe there, where existence is not a secret; the owner routes keep the
+    # identical-403 rule.
+    "account_not_found": (404, "No such account.", False),
+    "pool_not_found": (404, "No such pool.", False),
+    "test_clock_disabled": (403, "The test clock is disabled on this server.", False),
     "client_upgrade_required": (426, "Update ExamPartner to continue.", False),
     "internal_error": (500, "Something went wrong. Try again.", True),
     "licensing_unavailable": (503, "Licensing is temporarily unavailable. Try again later.", True),

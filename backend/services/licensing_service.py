@@ -7,7 +7,9 @@ restore, ambiguity and a new seat (brief §4.F F3), restore itself, lease
 issue, and create_or_get_ambiguity(). Unit 3a adds refresh, release,
 ambiguity resolution and collection, the admin ambiguity list, and the one
 request history every state-changing request records itself in
-(services/licence_history.py). See
+(services/licence_history.py). Unit 3b adds the school owner's reads and
+rename under the licence session token, account and pool editing, the
+signals review list and the test clock. See
 docs/ExamPartner_Windows_SeatPool_PilotV1_Implementation_Spec.md §5 and §8,
 docs/LICENCE_API_CONTRACT.md, and docs/CLOUD_SESSION_BRIEF.md §4.F–§4.J.
 
@@ -24,6 +26,8 @@ pool shrink itself, and over-capacity after a shrink is a supported state
    removes the capacity guarantee for every customer.
 2. The pool-row lock at the top of claim_capacity() survives future edits.
 """
+import base64
+import binascii
 import json
 import logging
 import re
@@ -440,17 +444,21 @@ def _count_active(cur, pool_id: str) -> int:
 # Unit 2 — activation (contract §4–§5, brief §4.F–§4.H)
 # ===========================================================================
 #
-# Lock discipline (brief §4.H H3, extended by §4.J J6). Three row locks
-# exist in this file, and a transaction that takes more than one takes them
-# in THIS order, never another — opposite orders in two transactions can
-# deadlock:
+# Lock discipline (brief §4.H H3, extended by §4.J J6 and §4.L L5). Four
+# row locks exist in this file, and a transaction that takes more than one
+# takes them in THIS order, never another — opposite orders in two
+# transactions can deadlock:
 #
-#   1. the POOL row: claim_capacity() (last_claim_at) and
-#      create_or_get_ambiguity() (last_ambiguity_at);
+#   0. the ACCOUNT row: _update_account_locked() (updated_at) — Unit 3b's
+#      account editing, which takes no other lock. Any future path that needs
+#      it with another takes it first;
+#   1. the POOL row: claim_capacity() (last_claim_at),
+#      create_or_get_ambiguity() (last_ambiguity_at) and, since Unit 3b,
+#      _update_pool_locked() (updated_at);
 #   2. an AMBIGUITY row: _lock_ambiguity() (last_locked_at) — resolve and
 #      collection;
 #   3. a BINDING row: _restore(), _issue_lease_if_absent(), _lock_binding()
-#      — restore, lease issue, refresh, collection, release.
+#      — restore, lease issue, refresh, collection, release, rename.
 #
 # Who holds more than one: an activation-raised treat_as_new resolve
 # (pool → ambiguity, inside claim_capacity()); a collection (ambiguity →
@@ -2606,3 +2614,796 @@ def set_subscription(account_id: str, *, subscription_status: Any, subscription_
         db.close()
     return {"ok": True, "account_id": account_id, "subscription_status": subscription_status,
             "subscription_expires_at": wire_time(expires)}
+
+
+# ===========================================================================
+# Unit 3b — a school manages its own computers (brief §4.K, §4.L; contract
+# v1.1 §10A)
+# ===========================================================================
+#
+# The five owner routes — pools, machines, history, rename, release — accept
+# the licence session token OR an ordinary bearer token. The route reduces
+# either one to {"sub": identifier} (routes/licensing.py, _licence_caller())
+# and drops the token's role, so nothing here can trust it: ownership and
+# admin status are re-derived on every call (K1, F7). A changed owner
+# therefore loses access on their next call (K5, L5).
+#
+# Locks (H3, J6, L5). Rename takes the BINDING row (_lock_binding()), like
+# release. Pool editing takes the POOL row — the same row lock claim_capacity()
+# takes, so a resize and a claim serialise. Account editing takes the ACCOUNT
+# row, alone. The full order is account → pool → ambiguity → binding; today no
+# path holds the account lock together with any other, and a future one that
+# does must be checked against that order.
+#
+# The admin routes here (account and pool editing, signals, the test clock)
+# return plain {"ok": true, ...} bodies, like F11, but CODED errors through
+# licence_error(), like the resolve route (L1).
+
+_OWNER_HISTORY_ACTIONS = (                 # contract §10A.3 — an ALLOWLIST (K2)
+    "activate", "restore", "release", "rename", "refresh", "refresh_denied",
+    "ambiguous_flagged", "ambiguity_resolved", "resize", "pool_status", "renewal",
+)
+_ACTORS = {"institution_owner": "owner", "exampartner_admin": "exampartner", "client": "computer"}
+_SIGNAL_ACTIONS = ("clone_flagged", "stale_serial_flagged", "refresh_denied")     # K8
+_PAGE_DEFAULT, _PAGE_MAX = 50, 200
+_LABEL_MAX = 64                            # contract §5 / §10A.4
+_POOL_SIZE_MAX = 10000                     # K6
+_TEST_CLOCK_MAX = timedelta(days=3660)     # ±10 years (L5)
+_CURSOR = re.compile(r"[A-Za-z0-9_-]+")
+_HEX_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def _owner_access(caller: Mapping[str, Any], account_id: Optional[str], code: str) -> tuple:
+    """
+    Resolve, then check (spec §9): the caller must own `account_id` — an
+    account RESOLVED from the object acted on, never one the request merely
+    names — or be an ExamPartner admin. Returns (identifier, actor_role).
+
+    Every refusal is the same 403 `code`, a missing account included, so
+    nothing leaks (contract §10A). The existence check comes first on
+    purpose: require_account_owner() lets an admin through for ANY id.
+    """
+    if not account_id:
+        licence_fail(code)
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute("SELECT id FROM accounts WHERE id = ?", (account_id,))
+        found = cur.fetchone()
+    finally:
+        db.close()
+    if not found:
+        licence_fail(code)
+    try:
+        identifier = require_account_owner(caller, account_id)
+    except HTTPException:
+        licence_fail(code)
+    return identifier, ("exampartner_admin" if is_admin_user({"sub": identifier}) else "institution_owner")
+
+
+def _query_id(value: Any, name: str) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        licence_fail("invalid_request", f"{name} must be a non-empty string", field=name)
+    return value.strip()
+
+
+def _parse_limit(value: Any) -> int:
+    if value is None:
+        return _PAGE_DEFAULT
+    if not isinstance(value, str) or not value.isdigit() or not (1 <= int(value) <= _PAGE_MAX):
+        licence_fail("invalid_request", f"limit must be an integer from 1 to {_PAGE_MAX}", field="limit")
+    return int(value)
+
+
+# ---------------------------------------------------------------------------
+# Keyset pagination (K2) — in Python
+# ---------------------------------------------------------------------------
+#
+# Newest first on (created_at, id), with an opaque cursor; never OFFSET,
+# which skips or repeats rows while events arrive. The ordering and the
+# cursor comparison are done HERE, not in SQL: created_at is TEXT on SQLite,
+# and timestamps are compared in Python through licensing_time
+# (backend/CLAUDE.md). SQL only narrows by equality. Each page therefore
+# reads every matching row of the account — hundreds to low thousands for a
+# school lab, since refreshes are logged only after a gap (spec §3.5). The
+# same thing list_ambiguities() does.
+#
+# A page is the first `limit` rows whose key is STRICTLY below the cursor.
+# Rows written after page 1 sort above the cursor and belong to a later,
+# fresh traversal; a row that commits late with an older time sorts below
+# it and appears once. No row can appear twice.
+#
+# The cursor is not signed: it only positions a read inside an account the
+# caller is already allowed to see, so tampering with it widens nothing.
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _event_key(row: Mapping[str, Any]) -> tuple:
+    return (licensing_time.to_datetime(row.get("created_at")) or _EPOCH, str(row.get("id") or ""))
+
+
+def _encode_cursor(key: tuple) -> str:
+    raw = json.dumps({"t": key[0].isoformat(), "id": key[1]}, separators=(",", ":"), sort_keys=True)
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).rstrip(b"=").decode("ascii")
+
+
+def _decode_cursor(value: Any) -> Optional[tuple]:
+    if value is None:
+        return None
+
+    def bad():
+        licence_fail("invalid_request", "cursor is not one this server issued", field="cursor")
+
+    if not isinstance(value, str) or not _CURSOR.fullmatch(value):
+        bad()
+    try:
+        data = json.loads(base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)).decode("utf-8"))
+        when = licensing_time.to_datetime(data["t"]) if isinstance(data, dict) and isinstance(data.get("t"), str) \
+            else None
+    except (binascii.Error, ValueError, UnicodeDecodeError, KeyError, TypeError):
+        bad()
+    if when is None or not isinstance(data.get("id"), str) or not _HEX_ID.fullmatch(data["id"]):
+        bad()
+    return when, data["id"]
+
+
+def _keyset_page(rows: List[Dict[str, Any]], limit: int, after: Optional[tuple]) -> tuple:
+    """(the page, newest first, and next_cursor or None)."""
+    ordered = sorted(rows, key=_event_key, reverse=True)
+    if after is not None:
+        ordered = [r for r in ordered if _event_key(r) < after]
+    page = ordered[:limit]
+    more = len(ordered) > limit
+    return page, (_encode_cursor(_event_key(page[-1])) if more and page else None)
+
+
+# ---------------------------------------------------------------------------
+# Owner reads — contract §10A.1–§10A.3 (K2). Read-only: no history, no locks.
+# ---------------------------------------------------------------------------
+
+def list_owner_pools(caller: Mapping[str, Any], account_id: str) -> Dict[str, Any]:
+    """GET /institutions/accounts/{account_id}/seat_pools (contract §10A.1)."""
+    require_licensing_available()
+    _owner_access(caller, account_id, "account_access_denied")
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute("SELECT * FROM accounts WHERE id = ?", (account_id,))
+        account = _row_to_dict(cur.fetchone())
+        cur.execute("SELECT * FROM seat_pools WHERE account_id = ?", (account_id,))
+        pools = [_row_to_dict(r) for r in cur.fetchall()]
+        # Counted exactly as claim_capacity() counts (_count_active).
+        cur.execute(
+            "SELECT seat_pool_id, COUNT(*) AS active FROM institution_seats "
+            "WHERE account_id = ? AND revoked_at IS NULL GROUP BY seat_pool_id",
+            (account_id,),
+        )
+        counts = {r["seat_pool_id"]: int(r["active"]) for r in (_row_to_dict(x) for x in cur.fetchall())}
+        cur.execute(
+            "SELECT seat_pool_id, status, created_at FROM licence_ambiguities WHERE account_id = ? AND status = 'open'",
+            (account_id,),
+        )
+        pending: Dict[str, int] = {}
+        for row in (_row_to_dict(x) for x in cur.fetchall()):
+            # The EFFECTIVE state (K0): open in the database but 7 days old is
+            # expired, and no longer pending.
+            if _ambiguity_state(row) == "open":
+                pending[row["seat_pool_id"]] = pending.get(row["seat_pool_id"], 0) + 1
+    finally:
+        db.close()
+    listed = []
+    for pool in sorted(pools, key=lambda p: (str(p.get("label") or "").casefold(), p["id"])):
+        size, active = int(pool["pool_size"]), counts.get(pool["id"], 0)
+        listed.append({
+            "pool_id": pool["id"],
+            "label": pool.get("label"),
+            "pool_size": size,
+            "active": active,
+            "available": max(0, size - active),
+            "over_capacity": active > size,
+            "pool_status": pool.get("status"),
+            "pending_identity_checks": pending.get(pool["id"], 0),
+        })
+    return {
+        "account_id": account_id,
+        "account_name": account.get("name"),
+        "subscription_status": account.get("subscription_status"),
+        "subscription_expires_at": wire_time_or_none(account.get("subscription_expires_at")),
+        "pools": listed,
+        "server_time": wire_time(),
+    }
+
+
+def _pool_in_account(pool_id: str, account_id: str) -> None:
+    """A pool_id filter must be a pool of THIS account; otherwise the same 403 as the account's (§10A.2–§10A.3)."""
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute("SELECT account_id FROM seat_pools WHERE id = ?", (pool_id,))
+        row = cur.fetchone()
+    finally:
+        db.close()
+    if not row or _row_to_dict(row)["account_id"] != account_id:
+        licence_fail("account_access_denied")
+
+
+def list_owner_machines(caller: Mapping[str, Any], account_id: str, *, pool_id: Any = None) -> Dict[str, Any]:
+    """GET /institutions/accounts/{account_id}/machines (contract §10A.2): active computers only."""
+    pool_id = _query_id(pool_id, "pool_id")
+    require_licensing_available()
+    _owner_access(caller, account_id, "account_access_denied")
+    if pool_id is not None:
+        _pool_in_account(pool_id, account_id)
+    sql = ("SELECT s.*, p.label AS pool_label FROM institution_seats s JOIN seat_pools p ON p.id = s.seat_pool_id "
+           "WHERE s.account_id = ? AND s.revoked_at IS NULL")
+    params: tuple = (account_id,)
+    if pool_id is not None:
+        sql += " AND s.seat_pool_id = ?"
+        params += (pool_id,)
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute(sql, params)
+        rows = [_row_to_dict(r) for r in cur.fetchall()]
+    finally:
+        db.close()
+    # pool_label, then machine_label, both case-insensitive, then binding_id
+    # — labels may repeat, and the order must not change between calls (L5).
+    rows.sort(key=lambda r: (str(r.get("pool_label") or "").casefold(),
+                             str(r.get("machine_label") or "").casefold(), r["id"]))
+    return {
+        "account_id": account_id,
+        "machines": [{
+            "binding_id": r["id"],
+            "pool_id": r["seat_pool_id"],
+            "pool_label": r.get("pool_label"),
+            "machine_label": r.get("machine_label"),
+            "activated_at": wire_time_or_none(r.get("activated_at")),
+            "last_seen_at": wire_time_or_none(r.get("last_seen_at")),
+            "lease_expires_at": wire_time_or_none(r.get("lease_expires_at")),
+            "fingerprint_confidence": r.get("fingerprint_confidence"),
+        } for r in rows],
+        "server_time": wire_time(),
+    }
+
+
+def _owner_event(row: Mapping[str, Any]) -> Dict[str, Any]:
+    """
+    One history event as the school sees it (contract §10A.3). Never the
+    readings, hashes, installation IDs or detail_json; ExamPartner staff are
+    never named. revoke_reason is read from the release row's detail_json,
+    where Unit 3a stores it, and only that field leaves it.
+    """
+    action = row.get("action")
+    actor = _ACTORS.get(row.get("actor_role"), "exampartner")
+    revoke_reason = None
+    if action == "release":
+        try:
+            revoke_reason = (json.loads(row.get("detail_json") or "{}") or {}).get("revoke_reason")
+        except (ValueError, AttributeError):
+            revoke_reason = None
+    return {
+        "event_id": row["id"],
+        "at": wire_time(row.get("created_at")),
+        "action": action,
+        "binding_id": row.get("binding_id"),
+        "pool_id": row.get("seat_pool_id"),
+        "machine_label": row.get("machine_label"),
+        "actor": actor,
+        "actor_identifier": row.get("performed_by") if actor == "owner" else None,
+        "revoke_reason": revoke_reason,
+        "reason": row.get("reason") if action == "release" else None,
+    }
+
+
+def list_owner_history(caller: Mapping[str, Any], account_id: str, *, pool_id: Any = None, binding_id: Any = None,
+                       limit: Any = None, cursor: Any = None) -> Dict[str, Any]:
+    """GET /institutions/accounts/{account_id}/history (contract §10A.3), newest first."""
+    pool_id = _query_id(pool_id, "pool_id")
+    binding_id = _query_id(binding_id, "binding_id")
+    page_size = _parse_limit(limit)
+    after = _decode_cursor(cursor)
+    require_licensing_available()
+    _owner_access(caller, account_id, "account_access_denied")
+    if pool_id is not None:
+        _pool_in_account(pool_id, account_id)
+    if binding_id is not None:
+        db = db_conn()
+        try:
+            cur = db.cursor()
+            cur.execute("SELECT account_id FROM institution_seats WHERE id = ?", (binding_id,))
+            row = cur.fetchone()
+        finally:
+            db.close()
+        if not row or _row_to_dict(row)["account_id"] != account_id:
+            licence_fail("binding_access_denied")
+
+    # The allowlist is the guarantee: clone_flagged (whose detail_json can
+    # name ANOTHER school's binding, H7), stale_serial_flagged,
+    # account_update, and any action added later never reach a school.
+    marks = ", ".join("?" for _ in _OWNER_HISTORY_ACTIONS)
+    sql = (f"SELECT id, seat_pool_id, binding_id, action, machine_label, performed_by, actor_role, reason, "
+           f"detail_json, created_at FROM seat_activation_log WHERE account_id = ? AND action IN ({marks})")
+    params: tuple = (account_id, *_OWNER_HISTORY_ACTIONS)
+    if pool_id is not None:
+        sql += " AND seat_pool_id = ?"
+        params += (pool_id,)
+    if binding_id is not None:
+        sql += " AND binding_id = ?"
+        params += (binding_id,)
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute(sql, params)
+        rows = [_row_to_dict(r) for r in cur.fetchall()]
+    finally:
+        db.close()
+    page, next_cursor = _keyset_page(rows, page_size, after)
+    return {"account_id": account_id, "events": [_owner_event(r) for r in page], "next_cursor": next_cursor,
+            "server_time": wire_time()}
+
+
+# ---------------------------------------------------------------------------
+# Rename — PATCH /institutions/seats/{binding_id} (K3, contract §10A.4)
+# ---------------------------------------------------------------------------
+
+def _clean_label(value: Any) -> str:
+    if not isinstance(value, str) or not (1 <= len(value.strip()) <= _LABEL_MAX):
+        licence_fail("invalid_request", f"machine_label must be 1–{_LABEL_MAX} characters", field="machine_label")
+    return value.strip()
+
+
+def rename_seat(caller: Mapping[str, Any], binding_id: str, body: Mapping[str, Any]) -> Dict[str, Any]:
+    """
+    The route has already refused 401 not_authenticated. Then: 400
+    invalid_request → 503 licensing_unavailable → 403 binding_access_denied
+    → the request history → the effect, as release does (I7).
+
+    Renaming changes only the label, never installation_id, so the §4.E live
+    index check is not needed. Duplicate labels are allowed.
+    """
+    request_id = _canonical_request_id(body.get("request_id"))
+    label = _clean_label(body.get("machine_label"))
+    require_licensing_available()
+
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute("SELECT * FROM institution_seats WHERE id = ?", (binding_id,))
+        row = cur.fetchone()
+    finally:
+        db.close()
+    if not row:
+        licence_fail("binding_access_denied")
+    seat = _row_to_dict(row)
+    caller_id, actor_role = _owner_access(caller, seat["account_id"], "binding_access_denied")
+
+    history = licence_history.Entry(
+        request_id, "rename", licence_history.digest("rename", binding_id=binding_id, machine_label=label),
+        account_id=seat["account_id"], seat_pool_id=seat["seat_pool_id"], binding_id=binding_id,
+    )
+    owner = _early_lookup(history)
+    if owner is not None:
+        return licence_history.replay(owner)
+    return _rename_locked(binding_id, label=label, caller=caller_id, actor_role=actor_role, history=history)
+
+
+def _rename_locked(binding_id: str, *, label: str, caller: str, actor_role: str,
+                   history: "licence_history.Entry") -> Dict[str, Any]:
+    """
+    The effect, in one transaction locking the BINDING row only (H3), the
+    same lock release takes — so a rename and a release of one computer
+    serialise: either renamed then released, or binding_released, never a
+    released computer renamed. Every outcome, the binding_released refusal
+    included, is recorded and committed while the lock is held (J8).
+    binding_released is stored because it is permanent: a released binding
+    never becomes active again, so storing it and recomputing it agree.
+    """
+    replay_owner, response, refusal = None, None, None
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        stamp = licensing_time.now_iso()
+        row = _lock_binding(cur, binding_id, stamp)
+        owner = licence_history.lookup_locked(cur, history)        # the last read before the write
+        if owner is not None:
+            replay_owner = owner
+        else:
+            if row is None:
+                licence_fail("binding_access_denied")
+            if row.get("revoked_at") is not None:
+                refusal = licence_detail("binding_released")
+                licence_history.record(cur, history, outcome="refused", status_code=refusal[0],
+                                       response=refusal[1], binding_id=binding_id)
+            else:
+                previous = row.get("machine_label")
+                result = "unchanged" if previous == label else "renamed"
+                if result == "renamed":
+                    cur.execute("UPDATE institution_seats SET machine_label = ?, updated_at = ? WHERE id = ?",
+                                (label, stamp, binding_id))
+                    _log(cur, account_id=row["account_id"], seat_pool_id=row["seat_pool_id"], binding_id=binding_id,
+                         action="rename", installation_id=row.get("installation_id"),
+                         fingerprint_hash=row.get("machine_fingerprint_hash"), machine_label=label,
+                         signals_json=row.get("fingerprint_signals_json"), performed_by=caller,
+                         actor_role=actor_role,
+                         detail={"from": previous, "to": label, "request_id": history.request_id}, stamp=stamp)
+                response = {"result": result, "binding_id": binding_id, "machine_label": label}
+                licence_history.record(cur, history, outcome=result, response=response, binding_id=binding_id)
+            db.commit()
+    finally:
+        db.close()
+    if replay_owner is not None:
+        return licence_history.replay(replay_owner)
+    if refusal is not None:
+        raise_stored(*refusal)
+    return {**response, "server_time": wire_time()}
+
+
+# ---------------------------------------------------------------------------
+# Account editing — PATCH /institutions/accounts/{account_id} (K5)
+# ---------------------------------------------------------------------------
+
+_ACCOUNT_FIELDS = ("name", "contact_email", "owner_identifier")
+
+
+def _edit_text(body: Mapping[str, Any], name: str, max_len: int) -> Optional[str]:
+    """An optional text field of an edit: absent or null leaves it as it is (contract §2), never clears it."""
+    value = body.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        licence_fail("invalid_request", f"{name} must be a non-empty string", field=name)
+    if len(value.strip()) > max_len:
+        licence_fail("invalid_request", f"{name} is at most {max_len} characters", field=name)
+    return value.strip()
+
+
+def _account_body(row: Mapping[str, Any]) -> Dict[str, Any]:
+    return {"id": row["id"], "name": row.get("name"), "account_type": row.get("account_type"),
+            "contact_email": row.get("contact_email"), "owner_identifier": row.get("owner_identifier"),
+            "subscription_status": row.get("subscription_status"),
+            "subscription_expires_at": wire_time_or_none(row.get("subscription_expires_at"))}
+
+
+def update_account(admin: str, account_id: str, body: Mapping[str, Any]) -> Dict[str, Any]:
+    """
+    ExamPartner admin only; the route has refused 401 and 403. Then: 400
+    invalid_request — including an owner_identifier that is not a registered
+    user, checked before the lock and NOT stored (K5) → 503 → 404
+    account_not_found → the request history → the effect.
+    """
+    request_id = _canonical_request_id(body.get("request_id"))
+    fields = {"name": _edit_text(body, "name", 200), "contact_email": _edit_text(body, "contact_email", 200),
+              "owner_identifier": _edit_text(body, "owner_identifier", 200)}
+    if fields["owner_identifier"] is not None:
+        fields["owner_identifier"] = fields["owner_identifier"].lower()       # as F11 and /auth/login do
+    fields = {k: v for k, v in fields.items() if v is not None}
+    if not fields:
+        licence_fail("invalid_request", "Give at least one of name, contact_email, owner_identifier", field="body")
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        if "owner_identifier" in fields:
+            # The owner signs in to the licence session with their ordinary
+            # ExamPartner password, so they must already be a registered user.
+            cur.execute("SELECT identifier FROM users WHERE identifier = ?", (fields["owner_identifier"],))
+            if not cur.fetchone():
+                licence_fail("invalid_request", "owner_identifier is not a registered user", field="owner_identifier")
+    finally:
+        db.close()
+    require_licensing_available()
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute("SELECT id FROM accounts WHERE id = ?", (account_id,))
+        found = cur.fetchone()
+    finally:
+        db.close()
+    if not found:
+        licence_fail("account_not_found")
+
+    history = licence_history.Entry(
+        request_id, "account_update",
+        licence_history.digest("account_update", account_id=account_id, **{k: fields.get(k) for k in _ACCOUNT_FIELDS}),
+        account_id=account_id,
+    )
+    owner = _early_lookup(history)
+    if owner is not None:
+        return licence_history.replay(owner)
+    return _update_account_locked(account_id, fields=fields, admin=admin, history=history)
+
+
+def _update_account_locked(account_id: str, *, fields: Mapping[str, str], admin: str,
+                           history: "licence_history.Entry") -> Dict[str, Any]:
+    """
+    One transaction, locking the ACCOUNT row and nothing else (K5, L5). The
+    account lock sits outside pool → ambiguity → binding and is never held
+    with another lock, so it cannot join a deadlock cycle; a future path that
+    needs it with another takes it FIRST (account → pool → …).
+
+    Every outcome is recorded while the lock is held (J8). There is no stored
+    refusal: everything that can refuse runs before the lock, or is
+    request_id_reused, which is decided afresh. A replay found under the
+    lock closes without committing, so its lock write leaves nothing.
+    """
+    replay_owner, response = None, None
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        stamp = licensing_time.now_iso()
+        # LOAD-BEARING — DO NOT REMOVE, REORDER OR "OPTIMISE AWAY". This looks
+        # like a bookkeeping write. It is the ROW LOCK that serialises two
+        # edits of one account: without it two edits each read the same
+        # "before", both log it as their `from`, and two retries of one
+        # request_id with different bodies both apply
+        # (test_licensing_unit3b_pg.py). SQLite serialises writers anyway,
+        # which is why only the Postgres tests can catch its removal.
+        cur.execute("UPDATE accounts SET updated_at = ? WHERE id = ?", (stamp, account_id))
+        cur.execute("SELECT * FROM accounts WHERE id = ?", (account_id,))
+        row = cur.fetchone()
+        row = _row_to_dict(row) if row else None
+        owner = licence_history.lookup_locked(cur, history)        # the last read before the write
+        if owner is not None:
+            replay_owner = owner
+        else:
+            if row is None:
+                licence_fail("account_not_found")
+            changed = {k: v for k, v in fields.items() if row.get(k) != v}
+            if changed:
+                cur.execute(
+                    f"UPDATE accounts SET {', '.join(f'{k} = ?' for k in changed)}, updated_at = ? WHERE id = ?",
+                    (*changed.values(), stamp, account_id),
+                )
+                _log(cur, account_id=account_id, seat_pool_id=None, binding_id=None, action="account_update",
+                     installation_id=None, fingerprint_hash=None, machine_label=None, signals_json=None,
+                     performed_by=admin, actor_role="exampartner_admin",
+                     detail={"from": {k: row.get(k) for k in changed}, "to": dict(changed),
+                             "request_id": history.request_id},
+                     stamp=stamp)
+                row.update(changed)
+            response = {"ok": True, "account": _account_body(row)}
+            licence_history.record(cur, history, outcome="updated" if changed else "unchanged", response=response)
+            db.commit()
+    finally:
+        db.close()
+    if replay_owner is not None:
+        return licence_history.replay(replay_owner)
+    return {**response, "server_time": wire_time()}
+
+
+# ---------------------------------------------------------------------------
+# Pool editing — PATCH /institutions/seat_pools/{pool_id} (K6, L4)
+# ---------------------------------------------------------------------------
+
+_POOL_STATUSES = ("active", "suspended")
+
+
+def update_pool(admin: str, pool_id: str, body: Mapping[str, Any]) -> Dict[str, Any]:
+    """
+    ExamPartner admin only; the route has refused 401 and 403. Then: 400
+    invalid_request → 503 → 404 pool_not_found → the request history → the
+    effect. Never evicts (spec §5.4): a shrink below the active count leaves
+    the pool over capacity, and claims are refused until releases bring it
+    below.
+    """
+    request_id = _canonical_request_id(body.get("request_id"))
+    fields: Dict[str, Any] = {}
+    size = body.get("pool_size")
+    if size is not None:
+        if not isinstance(size, int) or isinstance(size, bool) or not (1 <= size <= _POOL_SIZE_MAX):
+            licence_fail("invalid_request", f"pool_size must be an integer from 1 to {_POOL_SIZE_MAX}",
+                         field="pool_size")
+        fields["pool_size"] = size
+    label = body.get("label")
+    if label is not None:
+        if not isinstance(label, str) or not (1 <= len(label.strip()) <= _LABEL_MAX):
+            licence_fail("invalid_request", f"label must be 1–{_LABEL_MAX} characters", field="label")
+        fields["label"] = label.strip()
+    status = body.get("status")
+    if status is not None:
+        if status not in _POOL_STATUSES:
+            licence_fail("invalid_request", "status must be active or suspended", field="status")
+        fields["status"] = status
+    if not fields:
+        licence_fail("invalid_request", "Give at least one of pool_size, label, status", field="body")
+    require_licensing_available()
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        cur.execute("SELECT account_id FROM seat_pools WHERE id = ?", (pool_id,))
+        found = cur.fetchone()
+    finally:
+        db.close()
+    if not found:
+        licence_fail("pool_not_found")
+    account_id = _row_to_dict(found)["account_id"]
+
+    history = licence_history.Entry(
+        request_id, "pool_update",
+        licence_history.digest("pool_update", pool_id=pool_id, pool_size=fields.get("pool_size"),
+                               label=fields.get("label"), status=fields.get("status")),
+        account_id=account_id, seat_pool_id=pool_id,
+    )
+    owner = _early_lookup(history)
+    if owner is not None:
+        return licence_history.replay(owner)
+    return _update_pool_locked(pool_id, fields=fields, admin=admin, history=history)
+
+
+def _update_pool_locked(pool_id: str, *, fields: Mapping[str, Any], admin: str,
+                        history: "licence_history.Entry") -> Dict[str, Any]:
+    """
+    One transaction, locking the POOL row and nothing else (H3: pool first).
+    Recorded under the lock (J8); like account editing, no stored refusal.
+
+    A status change logs `pool_status`; a size or label change logs `resize`;
+    a request that changes both writes both rows, in this one transaction
+    (L4). The counts are taken after the write, in this transaction (K0).
+    """
+    replay_owner, response = None, None
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        stamp = licensing_time.now_iso()
+        # LOAD-BEARING — DO NOT REMOVE, REORDER OR "OPTIMISE AWAY". This looks
+        # like a bookkeeping write. It takes the same pool-row lock as
+        # claim_capacity()'s last_claim_at write, so a resize and a claim
+        # serialise (H3: pool first), and two edits of one pool serialise.
+        # Note what it does NOT carry: "no claim beyond the size in force"
+        # rests on claim_capacity() reading pool_size under ITS lock (L3). What
+        # this lock guards is the edit itself: without it two edits each read
+        # the same "before" and log it as their `from`, and two retries of one
+        # request_id with different bodies both apply
+        # (test_licensing_unit3b_pg.py). updated_at is bookkeeping, so the
+        # write leaves no business trace — last_claim_at is not touched.
+        cur.execute("UPDATE seat_pools SET updated_at = ? WHERE id = ?", (stamp, pool_id))
+        cur.execute("SELECT * FROM seat_pools WHERE id = ?", (pool_id,))
+        row = cur.fetchone()
+        row = _row_to_dict(row) if row else None
+        owner = licence_history.lookup_locked(cur, history)        # the last read before the write
+        if owner is not None:
+            replay_owner = owner
+        else:
+            if row is None:
+                licence_fail("pool_not_found")
+            changed = {k: v for k, v in fields.items() if row.get(k) != v}
+            if changed:
+                cur.execute(
+                    f"UPDATE seat_pools SET {', '.join(f'{k} = ?' for k in changed)}, updated_at = ? WHERE id = ?",
+                    (*changed.values(), stamp, pool_id),
+                )
+                resized = {k: changed[k] for k in ("pool_size", "label") if k in changed}
+                common = dict(account_id=row["account_id"], seat_pool_id=pool_id, binding_id=None,
+                              installation_id=None, fingerprint_hash=None, machine_label=None, signals_json=None,
+                              performed_by=admin, actor_role="exampartner_admin", stamp=stamp)
+                if resized:
+                    _log(cur, action="resize",
+                         detail={"from": {k: row.get(k) for k in resized}, "to": resized,
+                                 "request_id": history.request_id}, **common)
+                if "status" in changed:
+                    _log(cur, action="pool_status",
+                         detail={"from": row.get("status"), "to": changed["status"],
+                                 "request_id": history.request_id}, **common)
+                row.update(changed)
+            size = int(row["pool_size"])
+            active = _count_active(cur, pool_id)
+            response = {"ok": True, "pool_id": pool_id, "pool_size": size, "label": row.get("label"),
+                        "pool_status": row.get("status"), "active": active, "available": max(0, size - active),
+                        "over_capacity": active > size}
+            licence_history.record(cur, history, outcome="updated" if changed else "unchanged", response=response)
+            db.commit()
+    finally:
+        db.close()
+    if replay_owner is not None:
+        return licence_history.replay(replay_owner)
+    return {**response, "server_time": wire_time()}
+
+
+# ---------------------------------------------------------------------------
+# Signals review — GET /support/licensing/signals (K8)
+# ---------------------------------------------------------------------------
+
+def _parsed(text: Any) -> Any:
+    if text is None:
+        return None
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        return text
+
+
+def list_signals(*, action: Any = None, account_id: Any = None, since: Any = None, limit: Any = None,
+                 cursor: Any = None) -> Dict[str, Any]:
+    """
+    Where clones, stale serials and refresh denials become decisions for a
+    human (spec §10.4). Admin only — it shows every school, and H7's matched
+    binding from another school, which is exactly what support needs.
+    Every log column, with detail_json and fingerprint_signals_json parsed
+    (L5). Same keyset pager as the owner history.
+    """
+    if action is not None and action not in _SIGNAL_ACTIONS:
+        licence_fail("invalid_request", f"action must be one of {', '.join(_SIGNAL_ACTIONS)}", field="action")
+    account_id = _query_id(account_id, "account_id")
+    since_at = None
+    if since is not None:
+        try:
+            since_at = licensing_time.to_datetime(since) if isinstance(since, str) else None
+        except ValueError:
+            since_at = None
+        if since_at is None:
+            licence_fail("invalid_request", "since must be an RFC 3339 timestamp", field="since")
+    page_size = _parse_limit(limit)
+    after = _decode_cursor(cursor)
+    require_licensing_available()
+
+    actions = _SIGNAL_ACTIONS if action is None else (action,)
+    marks = ", ".join("?" for _ in actions)
+    sql = (f"SELECT l.*, a.name AS account_name, p.label AS pool_label FROM seat_activation_log l "
+           f"LEFT JOIN accounts a ON a.id = l.account_id LEFT JOIN seat_pools p ON p.id = l.seat_pool_id "
+           f"WHERE l.action IN ({marks})")
+    params: tuple = tuple(actions)
+    db = db_conn()
+    try:
+        cur = db.cursor()
+        if account_id is not None:
+            cur.execute("SELECT id FROM accounts WHERE id = ?", (account_id,))
+            if not cur.fetchone():
+                licence_fail("account_not_found")
+            sql += " AND l.account_id = ?"
+            params += (account_id,)
+        cur.execute(sql, params)
+        rows = [_row_to_dict(r) for r in cur.fetchall()]
+    finally:
+        db.close()
+    if since_at is not None:
+        rows = [r for r in rows if (licensing_time.to_datetime(r.get("created_at")) or _EPOCH) >= since_at]
+    page, next_cursor = _keyset_page(rows, page_size, after)
+    events = [{
+        "event_id": r["id"],
+        "at": wire_time_or_none(r.get("created_at")),
+        "action": r.get("action"),
+        "account_id": r.get("account_id"),
+        "account_name": r.get("account_name"),
+        "seat_pool_id": r.get("seat_pool_id"),
+        "pool_label": r.get("pool_label"),
+        "binding_id": r.get("binding_id"),
+        "installation_id": r.get("installation_id"),
+        "machine_fingerprint_hash": r.get("machine_fingerprint_hash"),
+        "machine_label": r.get("machine_label"),
+        "fingerprint_signals": _parsed(r.get("fingerprint_signals_json")),
+        "performed_by": r.get("performed_by"),
+        "actor_role": r.get("actor_role"),
+        "reason": r.get("reason"),
+        "detail": _parsed(r.get("detail_json")),
+    } for r in page]
+    return {"ok": True, "events": events, "next_cursor": next_cursor, "server_time": wire_time()}
+
+
+# ---------------------------------------------------------------------------
+# The test clock — POST /support/licensing/test-clock (K9, spec §6.3)
+# ---------------------------------------------------------------------------
+
+def set_test_clock(body: Mapping[str, Any]) -> Dict[str, Any]:
+    """
+    The route has refused 401, admin_required and test_clock_disabled. The
+    offset lives in PROCESS MEMORY (licensing_time), so it suits a single-
+    process development server and nothing else; ALLOW_TEST_CLOCK stays
+    absent on Render. It takes no request_id (K7) and does not check
+    licensing availability (L5): it touches neither the database nor a key.
+    """
+    offset, reset = body.get("offset_seconds"), body.get("reset")
+    if reset is not None:
+        if reset is not True or offset is not None:
+            licence_fail("invalid_request", 'Send {"reset": true} or {"offset_seconds": <integer>}', field="reset")
+        seconds = 0
+    else:
+        if not isinstance(offset, int) or isinstance(offset, bool) \
+                or abs(offset) > _TEST_CLOCK_MAX.total_seconds():
+            licence_fail("invalid_request", "offset_seconds must be an integer within ±10 years",
+                         field="offset_seconds")
+        seconds = offset
+    licensing_time.set_clock_offset(timedelta(seconds=seconds))
+    return {"ok": True, "offset_seconds": seconds, "server_time": wire_time()}

@@ -29,6 +29,13 @@ PC_B = dict(uuid="9E8D7C6B-5A49-3827-1605-F4E3D2C1B0A9", serial="ZZ9PLURAL", boa
             disk="WD-BBBBBBBBBB", nic="B44506BBBBBB", guid="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
 
 
+def pc(n):
+    """The strong reading of lab PC number n: every identifying and continuity signal its own."""
+    return make_signals(uuid=f"{n:08X}-1111-4222-8333-444455556666", serial=f"SN{n:06d}",
+                        board_serial=f"/SN{n:06d}/BOARD/", disk=f"DISK{n:06d}", nic=f"B44506{n:06X}",
+                        guid=f"{n:08x}-aaaa-4bbb-8ccc-dddddddddddd")
+
+
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
@@ -229,6 +236,53 @@ class Licensing:
         params = {} if status is None else {"status": status}
         return self.client.get("/support/licensing/ambiguities", params=params,
                                headers=bearer(as_user or self.admin))
+
+    # -- Unit 3b: the licence session token on the owner routes ---------
+
+    def session(self, identifier=None):
+        """Headers carrying a licence session token (contract §4, K1)."""
+        return {"Authorization": f"Bearer {self.token(identifier)}"}
+
+    def pools(self, account_id, *, headers=None):
+        return self.client.get(f"/institutions/accounts/{account_id}/seat_pools",
+                               headers=bearer(self.owner) if headers is None else headers)
+
+    def machines(self, account_id, *, headers=None, **params):
+        return self.client.get(f"/institutions/accounts/{account_id}/machines", params=params,
+                               headers=bearer(self.owner) if headers is None else headers)
+
+    def owner_history(self, account_id, *, headers=None, **params):
+        return self.client.get(f"/institutions/accounts/{account_id}/history", params=params,
+                               headers=bearer(self.owner) if headers is None else headers)
+
+    def rename(self, binding_id, label, *, request_id="__new__", headers=None, body=None):
+        if body is None:
+            body = {"request_id": str(uuid.uuid4()) if request_id == "__new__" else request_id,
+                    "machine_label": label}
+        return self.client.patch(f"/institutions/seats/{binding_id}", json=body,
+                                 headers=bearer(self.owner) if headers is None else headers)
+
+    # -- Unit 3b: ExamPartner admin --------------------------------------
+
+    def edit_account(self, account_id, *, request_id="__new__", headers=None, body=None, as_user=None, **fields):
+        if body is None:
+            body = {"request_id": str(uuid.uuid4()) if request_id == "__new__" else request_id, **fields}
+        return self.client.patch(f"/institutions/accounts/{account_id}", json=body,
+                                 headers=bearer(as_user or self.admin) if headers is None else headers)
+
+    def edit_pool(self, pool_id, *, request_id="__new__", headers=None, body=None, as_user=None, **fields):
+        if body is None:
+            body = {"request_id": str(uuid.uuid4()) if request_id == "__new__" else request_id, **fields}
+        return self.client.patch(f"/institutions/seat_pools/{pool_id}", json=body,
+                                 headers=bearer(as_user or self.admin) if headers is None else headers)
+
+    def signals(self, *, headers=None, **params):
+        return self.client.get("/support/licensing/signals", params=params,
+                               headers=bearer(self.admin) if headers is None else headers)
+
+    def test_clock(self, body, *, headers=None):
+        return self.client.post("/support/licensing/test-clock", json=body,
+                                headers=bearer(self.admin) if headers is None else headers)
 
 
 # ---------------------------------------------------------------------------
