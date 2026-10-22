@@ -793,8 +793,10 @@ def _build_theory_section_plan(
                             available_ids, selected_ids, available_count,
                             shortfall, status
       served_count        total selected ids — what /cbt/papers shows as count
-      complete            False iff any section is "insufficient" (or there
-                          is no free year at all)
+      complete            False iff any section is "insufficient", or a
+                          pooled row cannot fill total_required_questions
+                          from its in_pool surplus, or there is no free
+                          year at all
       unavailable_reason  None, or one sentence naming the first problem
 
     A section's pool is a record that is CBT-eligible, gradeable, in this
@@ -1004,6 +1006,34 @@ def _build_theory_section_plan(
                     f"available; the paper requires {s['required_count']}."
                 )
                 break
+
+        # Pooled papers (Pattern B): D2 at paper level. Every section can
+        # meet its own floor and the paper still be unanswerable — WAEC CRS
+        # shape, A/B/C each a floor of 1, T = 4, one question served in each:
+        # three answers possible, four required. The extra T - F answers can
+        # only come from questions served beyond a floor in an in_pool
+        # section; surplus in an in_pool false section is capped at its floor
+        # by the scoring and never counts. Checked only when no section is
+        # already insufficient, so the section-level reason, which names
+        # what to fix, wins. Uses what is served (selected_ids), so it holds
+        # in presented and legacy mode alike.
+        pooled_t = next(
+            (_whole_count(s["rule"].get("total_required_questions")) for s in plan["sections"]
+             if s["rule"].get("total_required_questions") is not None),
+            None,
+        )
+        if plan["complete"] and pooled_t is not None:
+            floors = sum(s["required_count"] for s in plan["sections"])
+            surplus = sum(
+                max(0, len(s["selected_ids"]) - s["required_count"])
+                for s in plan["sections"] if s["rule"].get("in_pool") is True
+            )
+            if surplus < pooled_t - floors:
+                plan["complete"] = False
+                plan["unavailable_reason"] = (
+                    f"The paper requires {pooled_t} answers, but only {floors + surplus} "
+                    "answers can be selected under the paper rules."
+                )
 
     return plan
 

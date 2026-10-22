@@ -522,3 +522,83 @@ def test_t14_country_specific_row_is_ignored(client, paid, auth_headers):
     s = body["sections"][0]
     assert (s["required_count"], s["presented_count"], len(s["questions"])) == (1, 2, 2)
     assert_picker_agrees(client, auth_headers, body)
+
+
+# ---------------------------------------------------------------------------
+# Pooled-paper completeness — D2 at paper level
+# ---------------------------------------------------------------------------
+#
+# A pooled row can meet every section's floor and still be unanswerable:
+# the T - F extra answers come only from questions served beyond a floor in
+# an in_pool section. Each case runs in presented and legacy mode.
+
+def pooled_rule(in_pool, presented):
+    """Sections A/B/C, floor 1 each, T = 4; presented None = legacy row."""
+    return [
+        sec(label, 1, presented=p, mpq=20, in_pool=ip, pattern_type="pooled",
+            total_required_questions=4)
+        for label, ip, p in zip(("Section A", "Section B", "Section C"), in_pool, presented)
+    ]
+
+
+POOLED_MODES = pytest.mark.parametrize("presented", [(2, 2, 2), (None, None, None)],
+                                       ids=["presented", "legacy"])
+POOLED_REASON = ("The paper requires 4 answers, but only {n} answers can be selected "
+                 "under the paper rules.")
+
+
+@POOLED_MODES
+def test_pooled_a_one_question_per_section_is_incomplete(client, paid, auth_headers, presented):
+    add_rule(pooled_rule((True, True, True), presented))
+    for lbl in ("Section A", "Section B", "Section C"):
+        add_many(lbl, 1)
+    body = session(client, auth_headers)
+    assert [s["status"] for s in body["sections"]] == (
+        ["short"] * 3 if presented[0] else ["ok"] * 3)
+    assert body["selection"]["complete"] is False
+    assert body["selection"]["unavailable_reason"] == POOLED_REASON.format(n=3)
+    entry = assert_picker_agrees(client, auth_headers, body)
+    assert entry["available"] is False and entry["count"] == 3
+
+
+@POOLED_MODES
+def test_pooled_b_one_extra_in_pool_question_completes_it(client, paid, auth_headers, presented):
+    add_rule(pooled_rule((True, True, True), presented))
+    add_many("Section A", 2)
+    add_many("Section B", 1)
+    add_many("Section C", 1)
+    body = session(client, auth_headers)
+    assert body["selection"]["complete"] is True
+    assert body["selection"]["unavailable_reason"] is None
+    entry = assert_picker_agrees(client, auth_headers, body)
+    assert entry["available"] is True and entry["count"] == 4
+
+
+@pytest.mark.parametrize("presented", [(2, 2, 3), (None, None, None)], ids=["presented", "legacy"])
+def test_pooled_c_surplus_outside_the_pool_never_counts(client, paid, auth_headers, presented):
+    add_rule(pooled_rule((True, True, False), presented))
+    add_many("Section A", 1)
+    add_many("Section B", 1)
+    add_many("Section C", 3)
+    body = session(client, auth_headers)
+    assert [len(s["questions"]) for s in body["sections"]] == [1, 1, 3]
+    assert body["selection"]["complete"] is False
+    assert body["selection"]["unavailable_reason"] == POOLED_REASON.format(n=3)
+    entry = assert_picker_agrees(client, auth_headers, body)
+    assert entry["count"] == 5 == served(body)
+    assert entry["available"] is False
+    assert entry["unavailable_reason"] == POOLED_REASON.format(n=3)
+
+
+@POOLED_MODES
+def test_pooled_d_section_reason_wins_over_pooled_reason(client, paid, auth_headers, presented):
+    add_rule(pooled_rule((True, True, True), presented))
+    add_many("Section B", 1)
+    add_many("Section C", 1)
+    body = session(client, auth_headers)
+    assert body["sections"][0]["status"] == "insufficient"
+    assert body["selection"]["complete"] is False
+    assert body["selection"]["unavailable_reason"] == (
+        "Section A has 0 questions available; the paper requires 1.")
+    entry = assert_picker_agrees(client, auth_headers, body)
+    assert entry["available"] is False

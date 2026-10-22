@@ -119,8 +119,11 @@ def cbt_theory_questions(
     selection describes the whole response:
       mode                "presented" or "legacy_uncapped"
       complete            false when any section has fewer questions than it
-                          requires (that section's status is "insufficient");
-                          /cbt/papers reports the same paper available: false
+                          requires (that section's status is "insufficient"),
+                          or a pooled paper cannot reach
+                          total_required_questions from its in_pool
+                          sections' surplus; /cbt/papers reports the same
+                          paper available: false
       unavailable_reason  null, or a sentence saying why it is incomplete
       year_scope          "all_years" or "free_year"
       free_year           the free year when year_scope is "free_year"
