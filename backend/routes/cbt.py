@@ -106,6 +106,28 @@ def cbt_theory_questions(
     sections: [] in the response means no paper_rules.rules_json exists yet
     for this exam+subject+paper — Android must fall back to the existing
     flat-list Theory session behaviour, not treat this as an error.
+
+    Pool scope follows the access tier (decision D5), as /cbt/questions and
+    /cbt/papers already did: free users draw only from the free year,
+    paid/admin users from every year.
+
+    Where rules_json declares presented_count on every section, each section
+    serves that many questions sampled at random from its pool, so a session
+    presents what the printed paper presents; where it does not, every
+    gradeable question in the section is served, as before.
+
+    selection describes the whole response:
+      mode                "presented" or "legacy_uncapped"
+      complete            false when any section has fewer questions than it
+                          requires (that section's status is "insufficient");
+                          /cbt/papers reports the same paper available: false
+      unavailable_reason  null, or a sentence saying why it is incomplete
+      year_scope          "all_years" or "free_year"
+      free_year           the free year when year_scope is "free_year"
+    Each section adds presented_count, available_count, shortfall and status
+    ("ok" | "short" | "insufficient") to its existing fields. A free user
+    whose subject has no free year still gets a 200 with complete false, not
+    an error, so the app does not fall back to the flat list.
     """
     subject = (subject or "").strip()
     exam = (exam or "WAEC").strip()
