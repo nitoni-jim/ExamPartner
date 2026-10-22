@@ -306,6 +306,12 @@ def validate_rules_json(
     Raises HTTPException(400) if rules_json is malformed or inconsistent.
     Returns None on success. A null/empty rules_json is valid — plenty of
     rows carry only duration/count/marks and no section structure at all.
+
+    presented_count (Rule 6) is optional, but all-or-none across the row:
+    when present it must be a whole number of at least 1 and at least the
+    section's required_count, equal to required_count on a compulsory
+    section, and on a pooled row the sections' presented_count must add up
+    to at least total_required_questions.
     """
     if rules_json is None or not str(rules_json).strip():
         return
@@ -445,6 +451,21 @@ def validate_rules_json(
     # so a non-pooled section on a pooled row (WAEC CRS Section C, in_pool
     # false) still carries "pooled" and T.
     pooled_total = _check_pooling(parsed)
+
+    # --- Rule 6: presented_count (Theory CBT presented-question pool) ------
+    # presented_count is how many questions the real paper PRINTS in a
+    # section — "answer two of these four" presents 4 and requires 2. CBT
+    # samples that many from the section's eligible pool, so a session looks
+    # like the paper instead of offering every gradeable question ever
+    # ingested for the section, pooled across all years.
+    #
+    # It is authored from the printed paper and never derived: not from
+    # required_count, not from the number of records in Neon. A wrong value
+    # here is not loud — the session simply offers the wrong amount of choice
+    # — so the checks below refuse anything that cannot be a real paper's
+    # count. Absent on every section is valid: cbt_service then serves the
+    # pre-existing uncapped pool ("legacy_uncapped").
+    _check_presented_counts(parsed, pooled_total)
 
     # --- Rule 4: section marks must reconcile with the row ----------------
     # This is the failure that opened this whole workstream: a hand-authored
@@ -623,6 +644,84 @@ def _check_pooling(parsed: List[Dict[str, Any]]) -> Optional[int]:
         )
 
     return total_required
+
+
+def _check_presented_counts(
+    parsed: List[Dict[str, Any]],
+    pooled_total: Optional[int],
+) -> None:
+    """
+    Rule 6. presented_count, when the row declares it:
+      1. on every section or on none;
+      2. a whole number (not a bool), at least 1, and at least the section's
+         required_count;
+      3. on a compulsory section, equal to required_count;
+      4. on a pooled row, summing to at least total_required_questions.
+    Raises HTTPException(400) naming the section and both numbers.
+    """
+    declared = [e for e in parsed if "presented_count" in e]
+    if not declared:
+        return
+    if len(declared) != len(parsed):
+        # Same reasoning as Rule 4's partial total_marks: cbt_service only
+        # caps a row whose every section declares the count, so a partial
+        # set would silently serve the whole row uncapped.
+        missing = [e["section"] for e in parsed if "presented_count" not in e]
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Some sections declare presented_count and others do not (missing: "
+                f"{missing}). Declare it on every section or none — a partial set "
+                "serves the whole paper uncapped."
+            ),
+        )
+
+    for entry in parsed:
+        label = entry["section"]
+        presented = entry["presented_count"]
+        # Rule 3 already read required_count this way, so it is int()-able.
+        required = int(entry.get("required_count", 0) or 0)
+        if not _is_whole_number(presented) or presented < 1:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"rules_json section '{label}' has presented_count {presented!r}; "
+                    "it must be a whole number of at least 1 (the number of questions "
+                    "the paper prints in this section)."
+                ),
+            )
+        if presented < required:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"rules_json section '{label}' has presented_count {presented} but "
+                    f"required_count {required}. A section cannot require more answers "
+                    "than the questions it presents."
+                ),
+            )
+        if entry.get("compulsory") is True and presented != required:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"rules_json section '{label}' is compulsory with required_count "
+                    f"{required} but presented_count {presented}. This is a consistency "
+                    "check between two authored values, not an inference: a compulsory "
+                    "section is one where every question presented must be answered, so "
+                    "the two must be equal. Correct whichever one is wrong."
+                ),
+            )
+
+    if pooled_total is not None:
+        presented_sum = sum(e["presented_count"] for e in parsed)
+        if presented_sum < pooled_total:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Pooled row: the sections' presented_count add up to {presented_sum} "
+                    f"but total_required_questions is {pooled_total}. The paper cannot "
+                    "require more answers than the questions it presents."
+                ),
+            )
 
 
 def _check_pooled_marks(

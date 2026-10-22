@@ -16,6 +16,11 @@ Why this matters: the validator only runs on write. A live row it would now
 reject keeps serving unchanged, but the next time anyone re-authors it the
 write fails. Better to learn that now than mid-authoring.
 
+Each row with rules_json also reports whether its sections declare
+presented_count (the Theory CBT presented-question pool): on every section,
+on none, or on some only — the last is a row Rule 6 would refuse. Report
+only: presence never changes the exit code beyond what the validator says.
+
 Exit code 0 when every row passes, 1 when any row fails.
 """
 from __future__ import annotations
@@ -26,6 +31,22 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def presented_presence(raw: str) -> str:
+    """'presented_count: all' / 'none' / 'partial (missing [...])' / '' if unreadable."""
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(parsed, list) or not all(isinstance(e, dict) for e in parsed):
+        return ""
+    missing = [e.get("section") for e in parsed if "presented_count" not in e]
+    if not missing:
+        return "presented_count: all"
+    if len(missing) == len(parsed):
+        return "presented_count: none"
+    return f"presented_count: partial (missing {missing})"
 
 
 def main() -> int:
@@ -56,6 +77,7 @@ def main() -> int:
         rows = [r for r in rows if row_get(r, "exam") == args.exam]
 
     passed = failed = skipped = 0
+    presence_tally = {"all": 0, "none": 0, "partial": 0}
     for r in rows:
         name = f"{row_get(r, 'exam')}/{row_get(r, 'subject')}/{row_get(r, 'paper')}"
         extra = []
@@ -75,6 +97,11 @@ def main() -> int:
         if not isinstance(raw, str):
             raw = json.dumps(raw, ensure_ascii=False)
 
+        presence = presented_presence(raw)
+        if presence:
+            presence_tally[presence.split(": ", 1)[1].split(" ", 1)[0]] += 1
+            label = f"{label} [{presence}]"
+
         total = row_get(r, "total_marks")
         try:
             validate_rules_json(
@@ -93,6 +120,8 @@ def main() -> int:
 
     print()
     print(f"{len(rows)} row(s): {passed} ok, {failed} fail, {skipped} skipped (no rules_json)")
+    print(f"presented_count: {presence_tally['all']} row(s) on every section, "
+          f"{presence_tally['none']} on none, {presence_tally['partial']} partial")
     return 1 if failed else 0
 
 
