@@ -535,8 +535,16 @@ def get_cbt_papers(
             # how many distinct paper values exist — this is qtype-driven,
             # unlike duration which is paper-driven.
             "requires_online": qtype == "theory",
-            # false only for a Theory paper whose plan has an "insufficient"
-            # section (decision D2) — the app must not start that session.
+            # false for a Theory paper the app must not start a session for,
+            # exactly when the session would report selection.complete false:
+            #   - a section is "insufficient", fewer usable questions than its
+            #     required_count (decision D2);
+            #   - a pooled paper cannot reach total_required_questions from
+            #     its in_pool sections' surplus (D2 at paper level);
+            #   - a free user's subject has no free year. That case never
+            #     reaches this line: get_cbt_papers() returns papers: [] for
+            #     it above, so the paper is not listed at all, while
+            #     /cbt/theory-questions answers it with complete false.
             # Always true for objective-side papers.
             "available": available,
             "unavailable_reason": unavailable_reason,
