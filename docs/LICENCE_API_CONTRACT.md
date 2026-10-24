@@ -1,6 +1,6 @@
 # ExamPartner Windows — Licence API Contract
 
-**Version:** 1.1 · **Date:** 8 October 2026 · **Amended:** 10, 19, 20 and 21 October 2026 (all additive; §13) · **Owner:** Planning
+**Version:** 1.1 · **Date:** 8 October 2026 · **Amended:** 10, 19, 20, 21 and 24 October 2026 (all additive; §13) · **Owner:** Planning
 
 **v1.1 (21 October 2026)** adds the school-owner endpoints (§10A) and widens the 15-minute session token from activation only to licence management (§1, §4, §11). Every v1 request and response is unchanged; a v1 client keeps working.
 **Both implementers build against this document.** The backend (Cloud Session) and the WinUI client (local agent) cannot see each other; this is the only place their shapes meet. If something you need is not here, **stop and report it** — do not invent a field, a code or a behaviour, because the other side is building against the same page and a guess silently diverges.
@@ -373,7 +373,7 @@ Key names are the survey collector's JSON keys. `disk_serials` and `mac_addresse
 | `disk_serials[].is_system_disk` | bool | `true` for the disk holding the Windows system drive: follow `Win32_DiskDrive` → `Win32_DiskDriveToDiskPartition` → `Win32_LogicalDiskToPartition` to the `Win32_LogicalDisk` whose `DeviceID` equals `%SystemDrive%`. Exactly one disk should be `true`; if it cannot be determined, all are `false`. |
 | `mac_addresses[]` | array | Every `Win32_NetworkAdapter` with `PhysicalAdapter = true` and a non-null `MACAddress`. Entry keys and sources: `mac` ← `MACAddress`, `name` ← `Name`, `pnp_device_id` ← `PNPDeviceID`, `net_connection_id` ← `NetConnectionID` |
 | `mac_addresses[].permanent_address` | string\|null | `MSFT_NetAdapter.PermanentAddress` from `root\StandardCimv2`, matched on `InterfaceIndex`. This is the burned-in address, which survives Windows' random hardware addresses on Wi-Fi. `null` if unavailable. |
-| `collection_errors` | string[] | Names of classes (or `"MachineGuid"`) that could not be read at all. Empty when everything was read. |
+| `collection_errors` | string[] | Names of classes (or `"MachineGuid"`) that could not be read at all. Empty when everything was read. The names that may appear are exactly the sources in this table: `Win32_ComputerSystemProduct`, `Win32_BaseBoard`, `Win32_BIOS`, `Win32_Processor`, `Win32_ComputerSystem`, `Win32_DiskDrive`, `Win32_DiskDriveToDiskPartition`, `Win32_LogicalDiskToPartition`, `Win32_LogicalDisk`, `Win32_NetworkAdapter`, `MSFT_NetAdapter` and `"MachineGuid"`. For `MachineGuid`, a missing key or value is `null` in `windows_machine_guid`, not an error; only a failed read (access denied, any other exception) is listed. |
 
 ### 7.4 What the server does with them (for information)
 
@@ -382,7 +382,7 @@ The server, in `services/fingerprint_service.py`, owns all of this; the client r
 - **Normalises**: trims, upper-cases, maps placeholder text to absent. The placeholder list starts as the collector's `Clean-Value` list and grows as survey data shows new ones.
 - **Filters**: identity uses the firmware signals; installation continuity (brief §4.A) uses `windows_machine_guid`, the **system disk** serial and onboard network adapters (by `pnp_device_id` prefix and `permanent_address`), ignoring USB disks, USB and virtual adapters.
 - **Hashes** a fixed, documented subset into `machine_fingerprint_hash`, and **matches signal by signal** with provisional thresholds (spec §8.2) until the survey freezes them.
-- If `collection_errors` names `Win32_ComputerSystemProduct`, `Win32_BaseBoard` or `Win32_BIOS`, the reading is unusable: the server refuses with `fingerprint_unreadable` rather than classifying the PC as degenerate.
+- If `collection_errors` names `Win32_ComputerSystemProduct`, `Win32_BaseBoard` or `Win32_BIOS`, the reading is unusable: the server refuses with `fingerprint_unreadable` rather than classifying the PC as degenerate. Other names in `collection_errors` do not change the server's decision.
 
 ---
 
@@ -699,4 +699,5 @@ For the Cloud Session; listed here because breaking any of them breaks the clien
 | 10 October 2026 | §7.3 clarified: the current survey collector does not record the continuity fields, so survey files exercise identity matching only. No wire change. |
 | 19 October 2026 | Additive, for backend Unit 3a. §9.3: `pool_inactive` can also come from refresh; `machine_mismatch` also covers a superseded installation and a refresh-raised ambiguity resolved as a different machine. §10 step 4: the outcomes of collecting a refresh-raised ambiguity. No field, format or existing meaning changed. |
 | 21 October 2026 | **v1.1**, additive, for backend Unit 3b. §1 and §4: the 15-minute session is a licence session token, authorising activation and the owner endpoints only (Nitoni, 19 October); field and path names unchanged. §3: the owner endpoints. §10A: their shapes, including release as Unit 3a built it. §9.3: `not_authenticated`, `account_access_denied` (account or pool scope), `binding_access_denied` (computer scope), `binding_released`; `request_id_reused` on rename and release. §2 and §9.3: the `client` object and `client_upgrade_required` apply to activation-session, activate and refresh only. §9.2 and §11: rename and the admin account and pool edits join the request history. §11: token scope. §10A.3: `pool_status` joins the owner-visible actions (brief §4.L L4). No v1 field, format or meaning changed. |
+| 24 October 2026 | §7.3 and §7.4 clarified, for local-agent unit L0 (collector v2) and L1: the class names that may appear in `collection_errors`, the MachineGuid missing-versus-failed rule, and that names outside the three identity classes do not change the server's decision (true of the server at `d3c15b4`). No wire change; version stays 1.1. |
 | 20 October 2026 | Additive, for backend Unit 3a, after cross-review. §9.2: one 24-hour request history across every operation; any refresh `request_id` in the window replays, not only the latest; cross-operation reuse is `request_id_reused`. §11: the history is authoritative and fails closed with `503`. §9.3: `lease_revoked` can also answer a replayed activation or collection whose binding has since been released — release beats a replay, so a released seat never receives a lease. No field or format changed; a client that follows §9.2's one-UUID-per-operation rule is unaffected. |

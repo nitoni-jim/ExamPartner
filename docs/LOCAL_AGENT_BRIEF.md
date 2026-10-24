@@ -2,7 +2,7 @@
 
 **For:** the local agent working on Nitoni's own Windows machine (`docs/WORKING_MODEL.md` §0.5 and §3)
 **Owner:** Nitoni (solo developer; evenings and weekends)
-**Date:** 21 October 2026 · **Status:** revision 4 — the whole backend is live (contract v1.1), so refresh and ambiguity collection are built and tested against production in L1. The trial scope is decided, so §5 now runs from A0 and L0 to the full trial app (L2–L8). Two test PCs are guaranteed (§4.1). Replaces the 19 October brief.
+**Date:** 24 October 2026 · **Status:** revision 5 — adds planning's rulings on the L0 pre-code report (§5, L0 rulings R1–R11) and corrects two adapter checks that named the wrong PC. Otherwise unchanged from revision 4 (21 October): the whole backend is live (contract v1.1), so refresh and ambiguity collection are built and tested against production in L1. The trial scope is decided, so §5 now runs from A0 and L0 to the full trial app (L2–L8). Two test PCs are guaranteed (§4.1).
 
 Read this first, then `docs/WORKING_MODEL.md`, then `docs/LICENCE_API_CONTRACT.md` in full. The contract is the only description of the server you may build against. Where this brief and the contract disagree on a wire detail, the contract wins; report the disagreement.
 
@@ -124,11 +124,11 @@ The current collector records the identity signals but **not** the continuity fi
 
 **Mandatory tests — both guaranteed PCs** (PERSONAL-PC-01 and OFFICE-PC-01), as a standard user, each also run **from a USB stick**. The stick must appear in the disk list with `is_system_disk: false` and must not be chosen as the system disk. On each, check:
 
-- **v1 → v2 agreement.** Every value v1 recorded is **identical, character for character**, in v2's output for the same machine — including the NVMe disk serials with their underscores and trailing full stop. Ignore only `collected_at_utc`, `schema_version` and the `diagnostics` that this unit changes. Any difference is a finding for planning, not something to fix in the collector.
+- **v1 → v2 agreement.** Every value v1 recorded is **identical, character for character**, in v2's output for the same machine — including the NVMe disk serials with their underscores and trailing full stop. Ignore only `collected_at_utc`, `schema_version` and the `diagnostics` that this unit changes. Any difference is a finding for planning, not something to fix in the collector. Keys that can legitimately change between runs are handled by ruling R8.
 - **Exactly one** disk has `is_system_disk: true`.
 - **Network adapters:**
-  - PC-01's USB Ethernet dongle is recorded, with a PnP ID that does **not** begin `PCI\`.
-  - PC-01's Wi-Fi adapter **does** begin `PCI\`, and its `permanent_address` is recorded.
+  - OFFICE-PC-01's USB Ethernet dongle is recorded, with a PnP ID that does **not** begin `PCI\`.
+  - OFFICE-PC-01's Wi-Fi adapter **does** begin `PCI\`, and its `permanent_address` is recorded.
   - Bluetooth entries, if recorded, do not begin `PCI\`.
 - **`uuid_encodes_serial`** is `"ascii"` on OFFICE-PC-01 and `"dell_scheme"` on PERSONAL-PC-01.
 - **Synthetic test of the `"no"` value.** Neither guaranteed PC gives `"no"`, so test the classifier as a function. Feed it made-up UUID and serial pairs, never real ones:
@@ -143,6 +143,48 @@ The current collector records the identity signals but **not** the continuity fi
 - **PC-02, PC-03 and PC-04:** `uuid_encodes_serial` is `"no"`.
 
 **Survey output is private.** Never commit JSON or CSV output; Nitoni sends the files to planning directly. Your L0 report and PR give results **per machine label as pass/fail**, with no identifiers.
+
+#### L0 rulings — planning, 24 October 2026
+
+Answers to the L0 pre-code report. Where these and the bullets above differ, these win. Cross-reviewed by ChatGPT (R1–R6), no changes.
+
+- **R1 — Output shape.**
+  - The v1 sections keep their keys and their meaning: values after `Clean-Value`, as v1 recorded them. The v1 → v2 comparison is therefore like for like.
+  - The new per-disk fields (`index`, `media_type`, `pnp_device_id`, `is_system_disk`) and per-adapter fields (`pnp_device_id`, `net_connection_id`, `permanent_address`) are also added to v1's `disk_serials[]` and `mac_addresses[]` entries. Strings are cleaned as the rest of those sections are; `index` and `is_system_disk` are stored as they are.
+  - A new top-level **`fingerprint_signals`** object holds the **raw** values in exactly contract §7.2's shape: `schema: 1`, every disk (USB included), every physical adapter, and `collection_errors`. As in contract §7.3, it leaves out `windows_install`, `computer_name` and `domain`.
+  - L1's harness signals file is compared with this object, key by key.
+- **R2 — `collection_errors`** (contract §7.3, clarified 24 October).
+  - It may name only the classes the contract reads from: `Win32_ComputerSystemProduct`, `Win32_BaseBoard`, `Win32_BIOS`, `Win32_Processor`, `Win32_ComputerSystem`, `Win32_DiskDrive`, `Win32_DiskDriveToDiskPartition`, `Win32_LogicalDiskToPartition`, `Win32_LogicalDisk`, `Win32_NetworkAdapter`, `MSFT_NetAdapter`, and `"MachineGuid"`.
+  - `Win32_OperatingSystem` is not a contract source. A failure to read it stays in v1's `classes_failed` only.
+  - **MachineGuid:** read it through the 64-bit registry view. A missing key or value gives `null`; only a failed read (access denied, any other exception) adds `"MachineGuid"`. v1's `catch { }`, which hid a failed read, is not kept for the raw object.
+  - L1 uses exactly the same list and the same MachineGuid rule.
+- **R3 — CSV.**
+  - v2 writes `survey-summary-v2.csv` and never appends to a v1 `survey-summary.csv`.
+  - `first_disk_serial` and `first_mac` are replaced by **`system_disk_serial`** and **`first_pci_permanent_address`**. Do not keep an old name with a new meaning. `first_pci_permanent_address` is `null` when that adapter reports none.
+  - Add `uuid_encodes_serial` and `independent_strong_signals` columns.
+- **R4 — Unusable UUIDs.** The UUID adds 1 to `independent_strong_signals` only when v1's verdict is `usable` **and** `uuid_encodes_serial` is `"no"`. Serials are "distinct" after `Clean-Value` and upper-casing, mirroring the server. The same rule for the UUID applies to `strong_signals_present`.
+- **R5 — Test scripts.** The classifier test and the v1 → v2 comparison script go into the PR under `tools/fingerprint-survey/dev/`.
+  - The classifier test uses made-up values only.
+  - The comparison script takes each file's path as an argument and prints key paths with PASS, FAIL or CHANGED, and for a FAIL only lengths and the first differing index — **never a value**.
+  - The v1 files never enter the repository.
+  - What goes to a school is only `Collect-Fingerprint.ps1`, `Run-Collector.bat` and `README.txt`.
+- **R6 — `.gitignore`.** Add `tools/fingerprint-survey/.gitignore` with `survey-output/`. The collector writes beside itself, and nothing ignored that folder.
+- **R7 — Where to write output.** Every run on Nitoni's machines passes **`-OutputDir`** to a folder outside the repository — for example `%USERPROFILE%\ExamPartner-Secrets\survey-v2\`. R6 is the safety net, not the method.
+- **R8 — Keys that may legitimately change since 15–16 October.** The comparison reports these as **CHANGED**, with the key path. A CHANGED key does not fail L0, but each one is listed in the report:
+  - `powershell`, `os_caption`, `os_version`, `windows_install.display_version` and `windows_install.build`;
+  - `bios_version` and `bios_release_date`;
+  - an adapter's current `mac`;
+  - an adapter present in one run and not the other. Report it by its name and whether its PnP ID begins `PCI\`.
+
+  Any other difference is a **FAIL**, and a finding for planning. That covers every serial, the UUID, manufacturer and model strings, disk entries, `windows_machine_guid` and memory size. Do not change the collector to make a FAIL pass.
+- **R9 — Matching array entries.**
+  - **Disks:** match a v1 entry to a v2 entry on `model` and `serial`.
+  - **Adapters:** match on `name`. `mac` is compared under R8.
+  - Positional order is reported. A change of order alone is CHANGED, not FAIL: the USB stick run adds a disk entry. A v1 entry with no match is a FAIL unless R8 covers it.
+- **R10 — The adapter checks are OFFICE-PC-01's.** The bullets above now say so. The contract §7.2 example UUID is illustrative and does not decode by the Dell scheme, so build the Dell test cases yourself, as you proposed.
+- **R11 — Standard user on OFFICE-PC-01.** If that PC has a standard account, use it. If it does not, run from a shell that is **not** "Run as administrator", and record that in the report. Your standard-user runs on PERSONAL-PC-01 carry the no-elevation requirement. Nitoni runs both OFFICE-PC-01 runs, and sends you the pass/fail output only.
+
+Everything else in your report — the system-disk walk with the all-`false` fallback, the `InterfaceIndex` join, the dot-source guard for testing, PowerShell 5.1 syntax only, not depending on Pester 3.4, and the README note — is approved as written.
 
 ### L1 — Licence core (no UI)
 
